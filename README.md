@@ -1,4 +1,4 @@
-# Project:
+# Compound disturbance resilience
 
 ## Description & Key Links
 
