@@ -1,0 +1,204 @@
+---
+title: "explore_intersects"
+author: "Tyler L. McIntosh"
+format: html
+editor: visual
+---
+
+#Access data and set up
+
+The readme for the Landfire Public Events Database is here: https://landfire.gov/sites/default/files/documents/LANDFIRE_Remap_Public_Events_README.pdf
+
+```{r}
+#| echo: true
+
+
+library(here)
+
+source(here::here('code/functions.R'))
+
+install_and_load_packages(c("sf",
+                            "tidyverse",
+                            "mapedit",
+                            "mapview",
+                            "rlandfire",
+                            "terra"))
+
+dir_ensure(here::here('data'))
+dir_raw <- dir_ensure(here::here('data/raw'))
+
+
+
+
+
+
+
+
+
+
+# #LF Public Events Geodatabase
+# download_unzip_file(url = "https://landfire.gov/sites/default/files/zip/LF_Public_Events_1999_2023.zip",
+#                     extract_to = here::here(dir_raw),
+#                     keep_zip = FALSE,
+#                     timeout = 1200)
+
+lf_gdb <- here::here('data', 'raw', 'LF_Public_Events_1999_2023.gdb')
+
+# For information on the difference between Raw and Model Ready events, view this PDF:
+# https://landfire.gov/sites/default/files/documents/Disturbance_Data_Processing.pdf
+lf_event_layers <- sf::st_layers(lf_gdb)
+lf_layer_interest <- lf_event_layers$name[2]
+
+
+lf_event_sample <- st_read(here::here('data', 'raw', 'LF_Public_Events_1999_2023.gdb'),
+                           query = paste0('SELECT * FROM "', lf_layer_interest, '" WHERE FID = 1'))
+
+lf_crs <- sf::st_crs(lf_event_sample)
+
+
+# lf_events <- sf::st_read(lf_gdb),
+#                          layer = lf_layer_interest)
+
+
+# Testing region
+dir_manual <- dir_ensure(here::here("data", "manual"))
+test_file <- here::here(dir_manual, "test.gpkg")
+if(file.exists(test_file)) {
+  test <- sf::st_read(test_file)
+} else {
+  test <- mapedit::drawFeatures()
+  test <- test |>
+    sf::st_transform(sf::st_crs(lf_crs))
+  sf::st_write(test, test_file, append = FALSE)
+}
+
+test_wkt <- test |> 
+  sf::st_geometry() |>
+  sf::st_as_text()
+
+
+lf_events <- sf::st_read(lf_gdb,
+                         layer = lf_layer_interest,
+                         wkt_filter = test_wkt)
+
+```
+
+# Explore the data
+
+```{r}
+
+names(lf_event_sample)
+event_types <- unique(lf_events$Event_Type)
+event_subtypes <- unique(lf_events$Event_Subtype)
+
+
+lf_wildfire <- lf_events |>
+  dplyr::filter(Event_Type == "Wildfire")
+
+lf_insects <- lf_events |>
+  dplyr::filter(Event_Type == "Insects" | Event_Type == "Insects/Disease")
+
+insect_sum <- lf_insects |>
+  sf::st_drop_geometry() |>
+  dplyr::group_by(Year) |>
+  dplyr::summarise(n = n())
+
+# lf_insects_2002_2006 <- lf_insects |>
+#   dplyr::filter(Year >= 2002 & Year <= 2006)
+# sf::st_write(lf_insects_2002_2006,
+#              here::here(dir_manual, "test_lf_insects_2002_2006.gpkg", append = FALSE))
+# 
+# lf_insects_2018 <- lf_insects |>
+#   dplyr::filter(Year == 2018)
+# sf::st_write(lf_insects_2018,
+#              here::here(dir_manual, "test_lf_insects_2018.gpkg", append = FALSE))
+
+hist(lf_wildfire$Year)
+hist(lf_insects$Year)
+
+both <- sf::st_intersection(lf_insects, lf_wildfire)
+
+
+
+```
+
+# Access rasterized to compare
+
+```{r}
+
+# lf_raster_insect_nm <- here::here("data", "manual", "insect_dist_stack_west.tif")
+# lf_raster_insect <- terra::rast(lf_raster_insect_nm)
+# 
+# test_insect_stack <- lf_raster_insect |>
+#   crop_careful_universal(vector = test) |>
+#   terra::project(lf_crs$wkt)
+# 
+# freq_test_insect_stack <- freq(test_insect_stack)
+
+
+
+test_beetle_total <- terra::rast(here::here("data", "manual", "beetle_totals_2002-2006.tif")) |>
+  crop_careful_universal(vector = test) |>
+  terra::project(lf_crs$wkt)
+
+freq_test_beetle_total <- freq(test_beetle_total)
+
+terra::writeRaster(test_beetle_total,
+                   here::here(dir_manual, "test_beetle_total_2002_2006.tif"))
+```
+
+
+# Examine IDS/ADS data
+```{r}
+  
+# ARD data
+ads_gdb <- here::here('data', 'manual', 'CONUS_Region2_AllYears.gdb', 'CONUS_Region2_AllYears.gdb')
+ads_layers <- sf::st_layers(ads_gdb)
+ads <- sf::st_read(ads_gdb,
+                        layer = "DAMAGE_AREAS_FLAT_AllYears_CONUS_Rgn2",
+                   wkt_filter = test_wkt) |>
+  sf::st_transform(lf_crs)
+
+co_insect_fl <- here::here(dir_manual, "co_ads_insect.gpkg")
+if(!file.exists(co_insect_fl)) {
+  sf::st_write(ads, co_insect_fl)
+}
+
+ads2023 <- ads |> filter(SURVEY_YEAR == 2023)
+
+severity_info <- ads |>
+  sf::st_drop_geometry() |>
+  group_by(SURVEY_YEAR, PERCENT_AFFECTED, LEGACY_SEVERITY) |>
+  summarise(count = n()) |>
+  ungroup()
+
+
+#bb <- st_bbox(ads)
+# 
+# ads_2005 <- ads |> dplyr::filter(SURVEY_YEAR == 2005)
+# sf::st_write(ads_2005, here::here(dir_manual, "test_ads_2005.gpkg"))
+# 
+# ads_2018 <- ads |> dplyr::filter(SURVEY_YEAR == 2018)
+# sf::st_write(ads_2018, here::here(dir_manual, "test_ads_2018.gpkg"))
+# 
+# 
+# plot(test_beetle_total$`beetle_totals_2002-2006`)
+
+```
+
+
+# Intersecting and histograms
+
+```{r}
+
+
+
+
+
+
+
+```
+
+
+
+

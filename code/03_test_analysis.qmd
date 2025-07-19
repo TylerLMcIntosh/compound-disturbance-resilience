@@ -1,0 +1,971 @@
+---
+title: "03_test_analysis"
+author: Tyler L. McIntosh
+date: last-modified
+format:
+  html:
+    embed-resources: true
+    html-math-method: katex
+    css: styles.css
+    toc: true
+    toc-depth: 1
+    toc-title: Contents
+    toc-location: right
+    code-fold: true
+    code-summary: "Show the code"
+---
+
+
+
+# Setup and read in data
+
+``` {r setupchunk}
+#| echo: true
+#| message: false
+#| warning: false
+#| results: 'hide'
+
+rm(list = ls())
+
+if(!requireNamespace("here", quietly = TRUE)) {
+  install.packages("here")
+}
+library(here)
+
+source(here::here("code", "functions.R"))
+
+install_and_load_packages(c(
+  "tidyverse",
+  "emmeans", # For Dunnett's test
+  "faraway", # For vif
+  "car", # For partial residual plots
+  "effects", # For marginal effect prediction plots
+  "data.table",
+  "gstat",
+  "spdep",
+  "randomForest",
+  "spmoran",
+  "forcats",
+  "tictoc"))
+
+dir_figs <- here::here('figs')
+dir_derived <- here::here('data', 'derived')
+dir_raw <- here::here('data', 'raw')
+dir_manual <- here::here('data', 'manual')
+dir_ensure(c(dir_figs,
+             dir_derived,
+             dir_manual,
+             dir_raw))
+
+
+set_factors <- function(dats) {
+  newdats <- dats |>
+  mutate(
+      biotic_fire_cat = factor(
+      biotic_fire_cat,
+      levels = c(
+        "no_biotic_or_outside_timeframe",
+        "biotic_6_10_prior",
+        "biotic_0_5_prior",
+        "biotic_1_5_after",
+        "biotic_6_10_after"
+      )
+    )
+  ) |>
+  mutate(frg_reclass = factor(frg_reclass,
+                         levels = c(
+                           1, 2)), #1: low/mixed, 2: replacement, 3: indeterminate / barren / etc (filtered out in script 02)
+         lf_bps = factor(lf_bps),
+         burn_year_sev = factor(burn_year_sev),
+         beneficial_fire = factor(beneficial_fire),
+         biotic_sev_binned = cut(
+            biotic_year_sev,
+            breaks = seq(20, 100, by = 20),
+            right = FALSE,
+            labels = paste0(seq(20, 80, by = 20), "-", seq(40, 100, by = 20)),
+            include.lowest = TRUE
+          ),
+          biotic_sev_binned = fct_explicit_na(biotic_sev_binned, na_level = "Missing"),
+          biotic_sev_binned = fct_relevel(biotic_sev_binned, "Missing", after = 0),
+         biotic_fire_gap2 = ifelse(biotic_fire_gap > 10 & biotic_fire_gap < -10, NA, biotic_fire_gap),
+         biotic_fire_gap_binned = cut(
+            biotic_fire_gap2,
+            breaks = seq(-10, 10, by = 5),
+            right = FALSE,
+            labels = paste0(seq(-10, 5, by = 5), "-", seq(-5, 10, by = 5)),
+            include.lowest = TRUE
+          ),
+          biotic_fire_gap_binned = fct_explicit_na(biotic_fire_gap_binned, na_level = "Beyond 10 years from fire"),
+          biotic_fire_gap_binned = fct_relevel(biotic_fire_gap_binned, "Beyond 10 years from fire", after = 0)) 
+  return(newdats)
+}
+
+
+filter_out_edge_cases <- function(dats) {
+  newdats <- dats |>
+    filter(burn_year_sev != "unburned") |>
+    filter(biotic_fire_cat != "biotic_6_10_after")
+  return(newdats)
+}
+
+
+# Load data
+dats_short <- readr::read_csv(here::here(dir_derived, "ard_short_v1.csv")) |>
+  set_factors() |>
+  filter_out_edge_cases()
+
+dats_long <- readr::read_csv(here::here(dir_derived, "ard_long_v1.csv")) |>
+  set_factors() |>
+  filter_out_edge_cases()
+
+dats_short_sf <- sf::st_read(here::here(dir_derived, "ard_short_sf_v1.gpkg")) |>
+  set_factors() |>
+  filter_out_edge_cases()
+
+
+```
+
+# Plotting
+```{r plot}
+
+ggplot() +
+  geom_sf(data = dats_short_sf, 
+          aes(color = post_fire_TRE_difference_10_yr), 
+          size = 0.3) +
+  scale_color_viridis_c(option = "D") +
+  theme_minimal() +
+  labs(title = "Tree cover difference from 5 years pre-fire to 10 years post-fire")
+
+ggplot() +
+  geom_sf(data = dats_short_sf, 
+          aes(color = biotic_fire_cat), 
+          size = 0.3) +
+  theme_minimal() +
+  labs(title = "Biotic-fire-category")
+
+
+```
+
+
+
+# ANOVA - using short data frame
+
+While our data appears to be non-normal, shapiro-wilk tests suggest that it some of our samples are close enough to normal.
+
+We do seem to have differences between our 5-year post-fire differences, although visually these differences seem to collapse at 10 an 15 years post-fire. To do a quick test we would use a parametric anova. We can follow this with a post-hoc test; here we are interested in comparing multiple treatment groups against a control group, so we will use a Dunnett's test.
+
+From our analysis we see that there is a statistically significant difference between our treatment groups and the control group for 5 and 10 year post-fire tree cover difference, but not at 15 years.
+
+
+```{r anova}
+
+# QQ plot helper with tidy evaluation
+run_qq <- function(biotic_fire_cat_value, response_col) {
+  dats_filtered <- dats_short %>%
+    filter(biotic_fire_cat == biotic_fire_cat_value)
+
+  qq_data <- pull(dats_filtered, {{ response_col }})
+
+  qqnorm(qq_data, main = paste("QQ Plot:", biotic_fire_cat_value))
+  qqline(qq_data)
+
+  if (length(qq_data) < 5000) {
+    print(shapiro.test(qq_data))
+  } else {
+    message("Too many samples to run Shapiro-Wilk test")
+  }
+}
+
+# Main test function
+basic_tests <- function(response_col) {
+  
+  response_name <- deparse(substitute(response_col))
+  message("-------------------------------------------------\nRunning tests on: ", response_name)
+  
+  # Boxplot
+  bp <- ggplot(dats_short, aes(x = biotic_fire_cat, y = {{ response_col }})) +
+    geom_boxplot() +
+    labs(title = "Boxplot by Biotic Fire Category")
+  print(bp)
+  
+  # QQ plots + normality test
+  run_qq("biotic_1_5_after", {{ response_col }})
+  run_qq("no_biotic_or_outside_timeframe", {{ response_col }})
+
+  # Fit ANOVA using tidy evaluation
+  formula <- as.formula(paste0(deparse(substitute(response_col)), " ~ biotic_fire_cat"))
+  aov_model <- aov(formula, data = dats_short)
+
+  print(summary(aov_model))
+
+  # Dunnett's test with emmeans
+  emm <- emmeans::emmeans(aov_model, "biotic_fire_cat")
+  print(emmeans::contrast(emm, method = "dunnett", ref = "no_biotic_or_outside_timeframe"))
+}
+
+
+basic_tests(post_fire_TRE_difference_5_yr)
+basic_tests(post_fire_TRE_difference_10_yr)
+basic_tests(post_fire_TRE_difference_15_yr)
+
+
+```
+
+# Simple regressions
+
+First, let's not worry about the spatial components and just quickly look at some simple regressions.
+
+Let's take a look at the relationship of CBI with post-fire tree cover difference; it looks like a 2nd degree polynomial fits a bit better than linear, but 3rd doesn't add much value.
+
+Let's also look at the relationship of time between fire and biotic agent with post-fire tree cover difference; it looks like a 2nd degree polynomial fits A LOT better than linear, but 3rd doesn't add much value.
+
+All of these relationships are significant! Let's see whether or not this remains the case when we start to take into account more variables.
+
+
+
+```{r simple-regressions}
+
+basic_regressions <- function(response_col) {
+  response_name <- deparse(substitute(response_col))
+  message("-------------------------------------------------\nRunning tests on: ", response_name)
+
+  for (i in 1:3) {
+    # Build formula for lm
+    form <- as.formula(paste(response_name, "~ poly(burn_year_cbi,", i, ")"))
+    
+    cbi_lm <- lm(form, data = dats_short)
+    print(summary(cbi_lm))
+    print(paste("AIC", AIC(cbi_lm)))
+
+    # Plot
+    p <- ggplot(data = dats_short, aes(x = burn_year_cbi, y = !!ensym(response_col))) +
+      geom_point() +
+      stat_smooth(method = 'lm', formula = y ~ poly(x, i))
+    print(p)
+  }
+
+  for (i in 1:3) {
+    gap_dats <- dats_short |>
+      filter(!is.na(biotic_fire_gap))
+
+    form_gap <- as.formula(paste(response_name, "~ poly(biotic_fire_gap,", i, ")"))
+    
+    gap_lm <- lm(form_gap, data = gap_dats)
+    print(summary(gap_lm))
+    print(paste("AIC", AIC(gap_lm)))
+
+    p <- ggplot(data = gap_dats, aes(x = biotic_fire_gap, y = !!ensym(response_col))) +
+      geom_point() +
+      stat_smooth(method = 'lm', formula = y ~ poly(x, i))
+    print(p)
+  }
+}
+
+  
+
+basic_regressions(post_fire_TRE_difference_5_yr)
+basic_regressions(post_fire_TRE_difference_10_yr)
+basic_regressions(post_fire_TRE_difference_15_yr)
+basic_regressions(post_fire_rap_slope_2_10_yrs)
+
+
+
+
+
+```
+# Before moving into doing any MLR, let's take a look at what the data looks like from a time series perspective
+
+```{r long-time-series}
+
+
+# A function to create a time series plot from the data, along with the number of samples used
+time_series_plot <- function(dat_subset, title, col_split) {
+  p <- ggplot(data = dat_subset,
+              aes(x = year_from_fire_index, y = rap_TRE, col = {{ col_split }})) +
+              #geom_point() +
+              stat_smooth(method = 'lm', formula = y ~ poly(x, 5)) +
+              ylim(0, 75) +
+              xlim(-20, 20) +
+              xlab("Normalized year from fire") +
+              ylab("Percent tree cover")
+              labs(title = title, caption = paste0("N: ", length(unique(dat_subset$`system:index`))))
+  print(p)
+}
+
+time_series_plot2 <- function(dat_subset, title) {
+  p <- ggplot(data = dat_subset,
+              aes(x = year_from_fire_index, y = rap_TRE)) +
+              #geom_point() +
+              stat_smooth(method = 'lm', formula = y ~ poly(x, 4)) +
+              ylim(0, 75) +
+              xlim(-20, 20) +
+              xlab("Normalized year from fire") +
+              ylab("Percent tree cover")
+              labs(title = title, caption = paste0("N: ", length(unique(dat_subset$`system:index`))))
+  print(p)
+}
+
+
+
+
+
+
+time_series_plot2(
+  dat_subset = dats_long,
+  title = "Generalized trajectory"
+)
+
+
+# All
+time_series_plot(
+  dat_subset = dats_long,
+  title = "All dats",
+  col_split = biotic_fire_cat
+)
+
+bf <- time_series_plot(
+  dat_subset = dats_long |>
+    filter(beneficial_fire != "not severe enough" &
+             beneficial_fire != "replacement bf"),
+  title = "All dats",
+  col_split = beneficial_fire
+)
+
+
+# By severity
+
+time_series_plot(
+  dat_subset = dats_long |>
+         filter(burn_year_cbi <1),
+  title = "Low sev",
+  col_split = biotic_fire_cat
+)
+
+time_series_plot(
+  dat_subset = dats_long |>
+         filter(burn_year_cbi >2),
+  title = "High sev",
+  col_split = biotic_fire_cat
+)
+
+
+# By FRG
+
+time_series_plot(
+  dat_subset = dats_long |>
+         filter(frg_reclass == 1),
+  title = "Low/mixed regime",
+  col_split = biotic_fire_cat
+)
+
+time_series_plot(
+  dat_subset = dats_long |>
+         filter(frg_reclass == 2),
+  title = "Replacement regime",
+  col_split = biotic_fire_cat
+)
+
+
+# By FRG & Sev
+
+time_series_plot(
+  dat_subset = dats_long |>
+         filter(frg_reclass == 1 & burn_year_cbi <1),
+  title = "Low/mixed regime, low sev",
+  col_split = biotic_fire_cat
+)
+
+time_series_plot(
+  dat_subset = dats_long |>
+         filter(frg_reclass == 2 & burn_year_cbi <1),
+  title = "Replacement regime, low sev",
+  col_split = biotic_fire_cat
+)
+
+time_series_plot(
+  dat_subset = dats_long |>
+         filter(frg_reclass == 1 & burn_year_cbi >2),
+  title = "Low/mixed regime, high sev",
+  col_split = biotic_fire_cat
+)
+
+time_series_plot(
+  dat_subset = dats_long |>
+         filter(frg_reclass == 2 & burn_year_cbi >2),
+  title = "Replacement regime, high sev",
+  col_split = biotic_fire_cat
+)
+
+
+```
+
+
+
+
+```{r beneficial fire}
+
+time_series_plot_recovery_only <- function(dat_subset, title, col_split) {
+  p <- ggplot(data = dat_subset |>
+                filter(year_from_fire_index >= 1),
+              aes(x = year_from_fire_index, y = rap_TRE, col = {{ col_split }})) +
+              #geom_point() +
+              stat_smooth(method = 'lm', formula = y ~ poly(x, 4)) +
+              ylim(0, 75) +
+              xlim(0, 40) +
+              xlab("Time since fire (years)") +
+              ylab("Percent tree cover")
+              labs(title = title, caption = paste0("N: ", length(unique(dat_subset$`system:index`))))
+  print(p)
+}
+
+time_series_plot_recovery_only <- function(dat_subset, title, col_split) {
+  library(ggplot2)
+  library(mgcv)
+  
+  p <- ggplot(
+    data = dat_subset |>
+      dplyr::filter(year_from_fire_index >= 0),
+    aes(x = year_from_fire_index, y = rap_TRE, col = {{ col_split }})
+  ) +
+    stat_smooth(method = "gam", formula = y ~ s(x, bs = "cs", k = 5), method.args = list(family = gaussian())) +
+    ylim(0, 75) +
+    xlim(0, 40) +
+    xlab("Time since fire (years)") +
+    ylab("Percent tree cover") +
+    labs(
+      title = title,
+      caption = paste0("N: ", length(unique(dat_subset$`system:index`)))
+    ) +
+    theme_minimal()
+
+  #print(p)
+}
+
+
+bf <- time_series_plot_recovery_only(
+  dat_subset = dats_long |>
+    filter(beneficial_fire != "not severe enough" &
+             beneficial_fire != "replacement bf"),
+  title = "All dats",
+  col_split = beneficial_fire
+)
+bf <- bf +
+  scale_color_manual(
+    name = "Beneficial wildfire category",
+    values = c("#dc0ab4ff", "navy"),
+    labels = c("Low Severity Good Fire", "High Severity Detrimental Fire")
+)
+bf
+
+
+```
+
+
+```{r}
+# Load required packages
+library(splines)
+library(mgcv)
+library(ggplot2)
+
+# Step 1: Generate sample data
+set.seed(123)
+n <- 200
+x <- sort(runif(n, 0, 10))
+y <- sin(x) + rnorm(n, sd = 0.3)
+data <- data.frame(x = x, y = y)
+
+# Step 2: Fit natural spline model and compute CIs
+fit_spline <- lm(y ~ ns(x, df = 5), data = data)
+pred_spline <- predict(fit_spline, newdata = data, se.fit = TRUE)
+data$fit_spline <- pred_spline$fit
+data$lower_spline <- pred_spline$fit - 1.96 * pred_spline$se.fit
+data$upper_spline <- pred_spline$fit + 1.96 * pred_spline$se.fit
+
+# Step 3: Fit GAM and compute CIs
+fit_gam <- gam(y ~ s(x), data = data)
+pred_gam <- predict(fit_gam, newdata = data, se.fit = TRUE)
+data$fit_gam <- pred_gam$fit
+data$lower_gam <- pred_gam$fit - 1.96 * pred_gam$se.fit
+data$upper_gam <- pred_gam$fit + 1.96 * pred_gam$se.fit
+
+# Step 4: Plot both fits with confidence intervals
+ggplot(data, aes(x, y)) +
+  geom_point(color = "gray70", alpha = 0.7) +
+  
+  # Spline fit and CI
+  geom_ribbon(aes(ymin = lower_spline, ymax = upper_spline), fill = "blue", alpha = 0.2) +
+  geom_line(aes(y = fit_spline), color = "blue", linetype = "dashed", size = 1) +
+  
+  # GAM fit and CI
+  geom_ribbon(aes(ymin = lower_gam, ymax = upper_gam), fill = "red", alpha = 0.2) +
+  geom_line(aes(y = fit_gam), color = "red", size = 1) +
+  
+  labs(title = "Natural Spline (blue dashed) vs GAM (red) with Confidence Intervals",
+       x = "x", y = "y") +
+  theme_minimal()
+
+
+
+
+```
+
+
+
+
+# Multiple linear regressions
+
+The full model that we first try appears to be more or less all significant, with a stepwise reduction removing no features.
+
+However, SRTM (elevation) appears to be quite collinear with our other variables. Let's remove it. Our adjusted R^2 doesn't change much, suggesting that the more parsimonious model should be used.
+
+We can also try including the 2nd degree polynomial biotic_fire_gap that we identified above. When we do this we see that while the 2nd degree is significant, it doesn't improve our adjusted R^2 very much.
+
+
+```{r multiple-linear-regressions}
+
+# Check for NAs
+col_vec <- c("post_fire_TRE_difference_5_yr", "post_fire_TRE_difference_10_yr", "post_fire_TRE_difference_15_yr", "aet", "def", "chili", "frg_reclass", "srtm", "burn_year_cbi", "biotic_sev_binned", "biotic_fire_cat", "avg_rap_TRE_6_yr_pre_fire")
+na_counts <- dats_short %>%
+  select(all_of(col_vec)) %>%
+  summarise(across(everything(), ~sum(is.na(.)), .names = "na_{.col}"))
+t(na_counts)
+
+
+# When we add avg_rap_TRE_6_yr_pre_fire frg_reclass and the frg*cbi becomes highly colinear
+# We get essentially the same results using the binned biotic data and our biotic category factor... not a good sign, there is very little additional useful information encoded in the biotic severity
+lm_full <- lm(post_fire_TRE_difference_5_yr ~ aet + def + chili + frg_reclass + srtm + burn_year_cbi + biotic_sev_binned + biotic_fire_gap_binned + burn_year_cbi * frg_reclass + avg_rap_TRE_6_yr_pre_fire,
+              data = dats_short)
+summary(lm_full) #0.733 r2
+
+lm_full <- lm(post_fire_TRE_difference_5_yr ~ aet + def + chili + frg_reclass + srtm + burn_year_cbi + biotic_fire_cat + avg_rap_TRE_6_yr_pre_fire,
+              data = dats_short)
+summary(lm_full) #0.733 r2
+
+reduced_lm_full <- step(lm_full)
+
+faraway::vif(reduced_lm_full)
+
+reduced_lm_full <- lm(post_fire_TRE_difference_5_yr ~ chili +
+                        frg_reclass + 
+                        def + 
+                        srtm +
+                        burn_year_cbi + 
+                          biotic_sev_binned + 
+                          biotic_fire_gap_binned + 
+                        avg_rap_TRE_6_yr_pre_fire,
+    data = dats_short) #remove aet from step and interaction for high vif
+
+summary(reduced_lm_full) # a-r2: 0.73
+
+
+# Test mlr with biotic info but without CBI - adjusted R^2 drops from 0.73 to 0.48.
+lm_no_cbi <- lm(post_fire_TRE_difference_5_yr ~ chili +
+                        frg_reclass + def + srtm +
+    biotic_sev_binned + 
+      biotic_fire_gap_binned + 
+    avg_rap_TRE_6_yr_pre_fire,
+    data = dats_short)
+summary(lm_no_cbi)
+
+# With CBI but not biotic - 0.73
+lm_no_bio <- lm(post_fire_TRE_difference_5_yr ~ chili +
+                        frg_reclass + def + srtm +
+    burn_year_cbi + 
+    avg_rap_TRE_6_yr_pre_fire,
+    data = dats_short)
+summary(lm_no_bio)
+
+# Test mlr without cbi - without CBI OR  biotic info adjusted R^2 drops to 0.01; with all biotic info added back in it goes back up to 0.44. But if we only have biotic_fire_cat it only goes back up to 0.02. So there's important information coded in biotic_year_sev and biotic_fire_gap. When we try adding these individually we get an r^2 of 0.17 with only biotic_fire_gap, and an r^2 of 0.1 with only biotic_year_sev. Biotic fire gap + biotic_year_sev brings us up to 0.18.
+lm_no_cbi_or_biotic <- lm(post_fire_TRE_difference_5_yr ~ aet + def + chili + frg_reclass + srtm,
+              data = dats_short)
+summary(lm_no_cbi_or_biotic)
+
+
+
+
+
+
+
+
+
+
+
+# Test on other response variables
+lm_full <- lm(post_fire_TRE_difference_10_yr ~ aet + def + chili + frg_reclass + srtm + burn_year_cbi + biotic_sev_binned + biotic_fire_gap_binned + burn_year_cbi * frg_reclass + avg_rap_TRE_6_yr_pre_fire + tpi,
+              data = dats_short)
+summary(lm_full) 
+
+reduced_lm_full <- step(lm_full)
+
+faraway::vif(reduced_lm_full)
+
+reduced_lm_full <- lm(post_fire_TRE_difference_10_yr ~ chili +
+                        #frg_reclass + 
+                        #srtm +
+                        #def + 
+                        aet +
+                        tpi +
+                        burn_year_cbi + 
+                          biotic_sev_binned + 
+                          biotic_fire_gap_binned + 
+                        avg_rap_TRE_6_yr_pre_fire,
+    data = dats_short) #remove aet from step and interaction for high vif
+summary(reduced_lm_full)
+faraway::vif(reduced_lm_full)
+
+
+reduced_lm_full <- lm(post_fire_TRE_difference_10_yr ~ chili +
+                        aet +
+                        tpi +
+                          biotic_sev_binned + 
+                          biotic_fire_gap_binned + 
+                        avg_rap_TRE_6_yr_pre_fire,
+    data = dats_short) 
+summary(reduced_lm_full)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+lm_full <- lm(post_fire_TRE_difference_15_yr ~ aet + def + chili + frg_reclass + srtm + burn_year_cbi + biotic_sev_binned + biotic_fire_gap_binned + burn_year_cbi * frg_reclass + avg_rap_TRE_6_yr_pre_fire,
+              data = dats_short)
+summary(lm_full) 
+
+
+#The models are REALLY bad at predicting the recovery slope...
+# A) probably need to aggregate the RAP data etc to appropriate resolution for insect interaction
+# B) There's likely some drought impacts?...
+lm_full <- lm(post_fire_rap_slope_2_10_yrs ~ aet + def + chili + frg_reclass + srtm + burn_year_cbi + biotic_sev_binned + biotic_fire_gap_binned + burn_year_cbi * frg_reclass + avg_rap_TRE_6_yr_pre_fire,
+              data = dats_short)
+summary(lm_full) 
+
+lm_full <- lm(post_fire_rap_slope_2_15_yrs ~ aet + def + chili + frg_reclass + srtm + burn_year_cbi + biotic_sev_binned + biotic_fire_gap_binned + burn_year_cbi * frg_reclass + avg_rap_TRE_6_yr_pre_fire,
+              data = dats_short)
+summary(lm_full) 
+
+
+
+# With 2nd degree polynomial fire gap
+lm_reduced_poly <- lm(post_fire_TRE_difference_5_yr ~ aet + def + chili + frg_reclass + burn_year_cbi + biotic_year_sev + poly(biotic_fire_gap, 2) + biotic_fire_cat,
+              data = dats_short  |>
+      filter(!is.na(biotic_fire_gap)))
+summary(lm_reduced_poly)
+
+
+# Partial and marginal effects
+
+plot(effects::allEffects(reduced_lm_full))
+car::crPlots(reduced_lm_full, terms = ~ burn_year_cbi)
+car::crPlots(reduced_lm_full, terms = ~ biotic_year_sev)
+car::crPlots(reduced_lm_full, terms = ~ biotic_fire_cat)
+
+
+lm_reduced_poly_raw <- lm(
+  post_fire_TRE_difference_5_yr ~ 
+    aet + def + chili + frg_reclass + burn_year_cbi + 
+    biotic_year_sev + poly(biotic_fire_gap, 2, raw = TRUE) + 
+    biotic_fire_cat,
+  data = dats_short |> filter(!is.na(biotic_fire_gap))
+)
+
+# CR plot for both biotic_fire_gap and biotic_fire_gap^2
+crPlots(lm_reduced_poly_raw, terms = ~ poly(biotic_fire_gap, 2, raw = TRUE))
+
+
+
+
+
+
+
+
+
+lm_full <- lm(post_fire_TRE_difference_5_yr ~ aet + def + chili + frg_reclass + burn_year_cbi + biotic_fire_cat + frg_reclass * burn_year_cbi,
+              data = dats_short)
+summary(lm_full)
+crPlots(lm_full, terms = ~ frg_reclass2:burn_year_cbi)
+
+
+
+lm_full <- lm(post_fire_TRE_difference_10_yr ~ aet + def + chili + frg_reclass + srtm + burn_year_cbi + biotic_year_sev + biotic_fire_gap + biotic_fire_cat,
+              data = dats_short)
+summary(lm_full)
+
+lm_full <- lm(post_fire_TRE_difference_15_yr ~ aet + def + chili + frg_reclass + srtm + burn_year_cbi + biotic_year_sev + biotic_fire_gap + biotic_fire_cat,
+              data = dats_short)
+summary(lm_full)
+
+
+
+#model CBI
+lm_full <- lm(burn_year_cbi ~ avg_rap_TRE_6_yr_pre_fire + aet + def + chili + frg_reclass + srtm + biotic_sev_binned + biotic_fire_gap_binned,
+              data = dats_short |>
+                filter(biotic_fire_cat != 'biotic_1_5_after'))
+summary(lm_full)
+```
+
+
+
+
+
+
+# VALIDATE AGAINST VCF
+# ADD FIRE HETEROGENEITY
+# FILTER TO ONLY INCLUDE HIGH SEV BIOTIC
+
+
+
+# Thinking spatially
+
+- Test variogram
+- Try spatial lag and spatial error models
+
+```{r spatial}
+
+# sample variogram based on Cressie method, it is often used to account for outliers
+png(filename = here::here(dir_figs, "p_vgm_plot.png"), width = 800, height = 600, res = 150)
+p.vgm <- variogram(post_fire_TRE_difference_10_yr ~ 1, data = dats_short_sf |>
+                     filter(!is.na(post_fire_TRE_difference_10_yr)), cressie=T)
+plot(p.vgm, type='l')
+dev.off()
+
+
+# Spatial modeling
+# Select columns, keeping outcome_var by name
+dats_short_sp_ready <- dats_short_sf |>
+  select(all_of(c("post_fire_TRE_difference_10_yr", "chili", "frg_reclass", "def", "aet", "srtm", 
+                  "burn_year_cbi", "biotic_sev_binned", "tpi",
+                  "biotic_fire_gap_binned", "avg_rap_TRE_6_yr_pre_fire", "biotic_fire_cat"))) |>
+  drop_na() |>
+  filter(biotic_fire_cat != "no_biotic_or_outside_timeframe")
+
+#Create clean LM to use
+
+reduced_lm_full <- lm(post_fire_TRE_difference_10_yr ~ 
+                        chili +
+                        aet +
+                        tpi +
+                        burn_year_cbi + 
+                          biotic_sev_binned + 
+                          biotic_fire_gap_binned + 
+                        avg_rap_TRE_6_yr_pre_fire,
+    data = dats_short_sp_ready) #remove aet from step and interaction for high vif
+summary(reduced_lm_full)
+
+reduced_lm_full_no_cbi <- lm(post_fire_TRE_difference_10_yr ~ 
+                        chili +
+                        aet +
+                        tpi +
+                        #burn_year_cbi + 
+                          biotic_sev_binned + 
+                          biotic_fire_gap_binned + 
+                        avg_rap_TRE_6_yr_pre_fire,
+    data = dats_short_sp_ready) #remove aet from step and interaction for high vif
+summary(reduced_lm_full_no_cbi)
+  
+reduced_lm_cbi <- lm(burn_year_cbi ~ 
+                       chili +
+                        aet +
+                        tpi +
+                          biotic_sev_binned + 
+                          biotic_fire_gap_binned + 
+                        avg_rap_TRE_6_yr_pre_fire,
+    data = dats_short_sp_ready) #remove aet from step and interaction for high vif
+summary(reduced_lm_cbi)
+  
+  
+# Create weights matrix
+tic()
+coords <- sf::st_coordinates(dats_short_sp_ready)
+
+# 8 nearest neighbors
+knn_8 <- knearneigh(coords, k = 8)
+nb_8 <- knn2nb(knn_8)
+
+# Create a spatial weights list object (row-standardized by default)
+lw_8 <- nb2listw(nb_8, style = "W", zero.policy = TRUE)
+toc()
+
+
+# Run Moran's I
+#The result shows the value Moran’s I is about 0.49 with a highly significant p-value, indicating a significant positive spatial autocorrelation
+moran_result <- moran.test(dats_short_sp_ready$post_fire_TRE_difference_10_yr, lw_8, zero.policy = TRUE)
+print(moran_result)
+
+
+
+# Run LM test to see whether we need an error or lag model
+lm_test <- spdep::lm.LMtests(model = reduced_lm_full,
+                             listw = lw_8,
+                             test = "all")
+summary(lm_test) #We should use a spatial error model
+
+lm_test <- spdep::lm.LMtests(model = reduced_lm_full_no_cbi,
+                             listw = lw_8,
+                             test = "all")
+summary(lm_test) #We should use a spatial error model
+
+
+lm_test <- spdep::lm.LMtests(model = reduced_lm_cbi,
+                             listw = lw_8,
+                             test = "all")
+summary(lm_test) #We should use a spatial error model
+
+
+# Tries to allocate large amounts of RAM; not a scalable solution
+tic()
+errorsar <- spatialreg::errorsarlm(post_fire_TRE_difference_10_yr ~
+                        chili +
+                        #frg_reclass +
+                        #def +
+                        aet +
+                        tpi +
+                        burn_year_cbi +
+                          biotic_sev_binned +
+                          biotic_fire_gap_binned +
+                        avg_rap_TRE_6_yr_pre_fire,
+    data = dats_short_sp_ready,
+                               listw = lw_8)
+summary(errorsar)
+toc()
+
+tic()
+errorsar <- spatialreg::errorsarlm(post_fire_TRE_difference_10_yr ~
+                        chili +
+                        #frg_reclass +
+                        #def +
+                        aet +
+                        tpi +
+                        #burn_year_cbi +
+                          biotic_sev_binned +
+                          biotic_fire_gap_binned +
+                        avg_rap_TRE_6_yr_pre_fire,
+    data = dats_short_sp_ready,
+                               listw = lw_8)
+summary(errorsar)
+toc()
+
+tic()
+errorsar <- spatialreg::errorsarlm(burn_year_cbi ~ chili +
+                        frg_reclass +
+                        def +
+                        aet +
+                        tpi +
+                          biotic_sev_binned +
+                          biotic_fire_gap_binned +
+                        avg_rap_TRE_6_yr_pre_fire,
+    data = dats_short_sp_ready,
+                               listw = lw_8)
+summary(errorsar)
+toc()
+
+
+
+
+
+
+
+```
+
+
+
+
+# Tree-based methods
+
+- Try RF, sRF, and boosted regression
+
+
+
+```{r}
+
+
+dats_short_rf <- dats_short_sf |>
+  select(all_of(c("post_fire_TRE_difference_10_yr", "chili", "frg_reclass", "def", "aet", "srtm", 
+                  "burn_year_cbi", "biotic_sev_binned", "tpi", "biotic_fire_cat",
+                  "biotic_fire_gap_binned", "avg_rap_TRE_6_yr_pre_fire"))) |>
+  drop_na()
+
+
+run_rf <- function(dats, outcome_var) {
+  set.seed(1)
+  
+  train <- sample(1:nrow(dats), nrow(dats)/2)
+  
+  d_test <- dats |> 
+    slice(-train) |> 
+    pull(outcome_var)  
+  
+  # Construct formula from outcome_var
+  rf_formula <- as.formula(
+    paste(outcome_var, "~ chili + frg_reclass + def + srtm + burn_year_cbi +
+          biotic_sev_binned + biotic_fire_gap_binned + avg_rap_TRE_6_yr_pre_fire")
+    # paste(outcome_var, "~ .")
+  )
+  
+  rf <- randomForest(
+    formula = rf_formula,
+    data = dats,
+    subset = train,
+    mtry = 12 / 3,
+    importance = TRUE
+  )
+  
+  plot(rf)
+  yhat_rf <- predict(rf, newdata = dats[-train, ])
+  mse_rf <- mean((yhat_rf - d_test)^2)
+  print(mse_rf)
+  
+  print(importance(rf))
+  varImpPlot(rf)
+  
+  return(rf)
+}
+
+
+run_rf(dats_short_rf, "post_fire_TRE_difference_10_yr")
+
+tic()
+run_rf(dats_short_rf, "post_fire_rap_slope_2_10_yrs")
+toc()
+
+
+
+tic()
+run_rf(dats_short_rf |>
+         filter(biotic_fire_cat != "no_biotic_or_outside_timeframe"),
+       "post_fire_TRE_difference_10_yr")
+toc()
+
+tic()
+run_rf(dats_short_rf |>
+         filter(biotic_fire_cat != "no_biotic_or_outside_timeframe"),
+       "post_fire_TRE_difference_10_yr")
+toc()
+
+
+```
+
+
+
+# Additional things
+
+- Fixed effect for fire ID!
+- Host-agent relationship
+- Forest type
+- Ecoregion level fixed effects (L3 and L4)
+
+
+
+
+
+
+

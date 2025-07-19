@@ -1,0 +1,561 @@
+---
+title: "02_prep_data"
+author: Tyler L. McIntosh
+date: last-modified
+format:
+  html:
+    embed-resources: true
+    html-math-method: katex
+    css: styles.css
+    toc: true
+    toc-depth: 1
+    toc-title: Contents
+    toc-location: right
+    code-fold: true
+    code-summary: "Show the code"
+---
+
+# Setup and read in data
+
+``` {r setupchunk}
+#| echo: true
+#| message: false
+#| warning: false
+#| results: 'hide'
+
+rm(list = ls())
+
+if(!requireNamespace("here", quietly = TRUE)) {
+  install.packages("here")
+}
+library(here)
+
+source(here::here("code", "functions.R"))
+
+install_and_load_packages(c(
+  "tidyverse",
+  "terra",
+  "mapview",
+  "jsonlite",
+  "sf",
+  "janitor",
+  "data.table",
+  "tictoc"))
+
+dir_figs <- here::here('figs')
+dir_derived <- here::here('data', 'derived')
+dir_raw <- here::here('data', 'raw')
+dir_manual <- here::here('data', 'manual')
+dir_ensure(c(dir_figs,
+             dir_derived,
+             dir_manual,
+             dir_raw))
+
+
+
+# Load data
+dats <- readr::read_csv(here::here(dir_manual, "forest_fire_points_SRockies_250.csv"))
+biotic_sev <- terra::rast(here::here(dir_derived, "biotic_gridded_1km_all_years_severity.tif"))
+
+# Crop biotic to s_rockies for now
+eco_l3 <- access_data_epa_l3_ecoregions_vsi()
+s_rockies <- eco_l3 |>
+  filter(str_detect(US_L3NAME, "Southern Rockies"))
+biotic_sev <- biotic_sev |>
+  terra::crop(sf::st_bbox(s_rockies |> sf::st_transform(terra::crs(biotic_sev))))
+
+epsg <- terra::crs(biotic_sev)
+
+
+```
+
+
+# THINGS TO ADD
+- Fire event ID -- need fixed effect
+- Day of ignition
+
+# Format data from GEE so it's more friendly to use
+
+```{r data-format}
+
+#glimpse(dats)
+
+
+# Remove all instances with re-burns
+dats_no_reburn <- dats %>%
+  filter(
+    rowSums(!is.na(select(., starts_with("cbi_year")))) <= 1
+  )
+
+# Get burn year & burn year bcCBI
+  # Identify CBI columns and corresponding years
+  cbi_cols <- grep("^cbi_year_\\d{4}$", names(dats_no_reburn), value = TRUE)
+  years <- as.integer(sub(".*_(\\d{4})$", "\\1", cbi_cols))
+  
+  # Extract the relevant subset
+  cbi_matrix <- as.data.frame(dats_no_reburn[cbi_cols], stringsAsFactors = FALSE)
+  
+  # Count non-NA values per row
+  non_na_counts <- rowSums(!is.na(cbi_matrix))
+  
+  # Rows with exactly one non-NA value
+  valid_idx <- which(non_na_counts == 1)
+  
+  # Get the column index (position) of the non-NA value
+  non_na_col_index <- max.col(!is.na(cbi_matrix[valid_idx, , drop = FALSE]), ties.method = "first")
+  
+  # Initialize result columns
+  dats_no_reburn$burn_year <- NA_integer_
+  dats_no_reburn$burn_year_cbi <- NA_real_
+  
+  # Assign values for valid rows only
+  dats_no_reburn$burn_year[valid_idx] <- years[non_na_col_index]
+  dats_no_reburn$burn_year_cbi[valid_idx] <- cbi_matrix[cbind(valid_idx, non_na_col_index)]
+  
+  rm(cbi_matrix)
+
+# Remove CBI data now that we don't need it, filter out a few that have NAs
+  ### WHY ARE THERE A FEW NAs?
+dats_no_reburn <- dats_no_reburn |>
+  select(-starts_with("cbi_year")) |>
+  filter(!is.na(burn_year))
+
+# Make spatial object
+# Extract coordinates from JSON strings
+dats_no_reburn <- dats_no_reburn |>
+  mutate(
+    coords = map(.geo, ~ parse_json(.x)$coordinates),
+    x = map_dbl(coords, 1),
+    y = map_dbl(coords, 2)
+  )
+
+# convert to sf
+dats_no_reburn_sf <- sf::st_as_sf(dats_no_reburn, coords = c("x", "y"), crs = 4326) |>
+  sf::st_transform(epsg)
+
+```
+
+# Extract biotic data at samples
+
+```{r extract-biotic}
+
+dats_no_reburn_vect <- terra::vect(dats_no_reburn_sf)
+
+dats_with_biotic <- terra::extract(x = biotic_sev,
+                                        y = dats_no_reburn_vect,
+                                        bind = TRUE) |>
+  sf::st_as_sf() |>
+  sf::st_drop_geometry()
+
+
+
+```
+
+# Continue working with data now that we have biotic data
+
+```{r multi-disturbance-data-format}
+
+
+# Only keep biotic severity values >= 25 and remove multi-biotic
+dats_with_biotic_new <- dats_with_biotic %>%
+  mutate(across(starts_with("biotic_"), ~ ifelse(. < 25, NA, .))) %>%
+  filter(
+    rowSums(!is.na(select(., starts_with("biotic_")))) <= 1
+  )
+
+
+# Get biotic year & biotic severity
+  # Identify CBI columns and corresponding years
+  biotic_cols <- grep("^biotic_\\d{4}$", names(dats_with_biotic_new), value = TRUE)
+  years <- as.integer(sub(".*_(\\d{4})$", "\\1", biotic_cols))
+  
+  # Extract the relevant subset
+  biotic_matrix <- as.data.frame(dats_with_biotic_new[biotic_cols], stringsAsFactors = FALSE)
+  
+  # Count non-NA values per row
+  non_na_counts <- rowSums(!is.na(biotic_matrix))
+  
+  # Rows with exactly one non-NA value
+  valid_idx <- which(non_na_counts == 1)
+  
+  # Get the column index (position) of the non-NA value
+  non_na_col_index <- max.col(!is.na(biotic_matrix[valid_idx, , drop = FALSE]), ties.method = "first")
+  
+  # Initialize result columns
+  dats_with_biotic_new$bio_year <- NA_integer_
+  dats_with_biotic_new$bio_year_sev <- NA_real_
+  
+  # Assign values for valid rows only
+  dats_with_biotic_new$bio_year[valid_idx] <- years[non_na_col_index]
+  dats_with_biotic_new$bio_year_sev[valid_idx] <- biotic_matrix[cbind(valid_idx, non_na_col_index)]
+  
+  rm(biotic_matrix)
+
+# Remove CBI data now that we don't need it, filter out a few that have NAs
+  ### WHY ARE THERE A FEW NAs?
+dats_with_biotic_new <- dats_with_biotic_new |>
+  select(-starts_with("biotic_")) |>
+  rename(biotic_year = bio_year,
+         biotic_year_sev = bio_year_sev) |>
+  mutate(biotic_fire_gap = biotic_year - burn_year)
+
+#Filter out those with FRG = 3 - not useful
+
+dats_with_biotic_new <- dats_with_biotic_new |>
+  filter(frg_reclass != 3)
+
+hist(dats_with_biotic_new$biotic_year_sev)
+hist(dats_with_biotic_new$biotic_year)
+
+hist(dats_with_biotic_new$biotic_fire_gap)
+
+```
+
+# Continue working with data to manage response variable
+
+```{r response-format}
+
+
+# A function to calculate the average rap tree cover percent for a time period pre or post fire
+# Uses data.table for efficiency
+# If all columns aren't available, provide NA (i.e. avoid averaging only one or two values if 3 are requested)
+
+# compute_rap_offset_avg_dt <- function(dt, offsets, new_col_name, prefix = "rap_TRE_") {
+#   # Ensure dt is a data.table
+#   dt <- as.data.table(copy(dt))
+#   dt[, id__temp := .I]  # Create unique ID for merge
+# 
+#   # Melt relevant columns (e.g., "rap_TRE_1985" to "rap_TRE_2022")
+#   melt_cols <- grep(paste0("^", prefix, "\\d{4}$"), names(dt), value = TRUE)
+#   
+#   long_dt <- melt(
+#     dt,
+#     id.vars = c("id__temp", "burn_year"),
+#     measure.vars = melt_cols,
+#     variable.name = "year_col",
+#     value.name = "value"
+#   )
+# 
+#   # Extract year from column name
+#   long_dt[, year := as.integer(sub(prefix, "", year_col))]
+# 
+#   # Calculate offset from burn year
+#   long_dt[, offset := year - burn_year]
+# 
+#   # Keep only rows with offset in desired range
+#   long_dt <- long_dt[offset %in% offsets]
+# 
+#   # Summarise by id only if there are ≥ 2 non-NA values
+#   summary_dt <- long_dt[!is.na(value), .(
+#     n = .N,
+#     avg = mean(value, na.rm = TRUE)
+#   ), by = id__temp][n >= 2, .(id__temp, avg)]
+# 
+#   # Join back and assign new column
+#   dt <- merge(dt, summary_dt, by = "id__temp", all.x = TRUE)
+#   setnames(dt, "avg", new_col_name)
+#   dt[, id__temp := NULL]
+# 
+#   return(as_tibble(dt))
+# }
+# 
+compute_rap_offset_avg_dt <- function(dt, offsets, new_col_name, prefix = "rap_TRE_") {
+  # Ensure dt is a data.table
+  dt <- as.data.table(copy(dt))
+  dt[, id__temp := .I]  # Create unique ID for merge
+
+  # Melt relevant columns
+  melt_cols <- grep(paste0("^", prefix, "\\d{4}$"), names(dt), value = TRUE)
+
+  long_dt <- melt(
+    dt,
+    id.vars = c("id__temp", "burn_year"),
+    measure.vars = melt_cols,
+    variable.name = "year_col",
+    value.name = "value"
+  )
+
+  # Extract year from column name
+  long_dt[, year := as.integer(sub(prefix, "", year_col))]
+
+  # Calculate offset from burn year
+  long_dt[, offset := year - burn_year]
+
+  # Only keep rows with desired offsets
+  long_dt <- long_dt[offset %in% offsets]
+
+  # Now, summarize carefully
+  summary_dt <- long_dt[, .(
+    n_available = sum(!is.na(value)),
+    n_expected = length(offsets),
+    avg = if (sum(!is.na(value)) == length(offsets)) mean(value, na.rm = TRUE) else NA_real_
+  ), by = id__temp]
+
+  # Keep only id and avg
+  summary_dt <- summary_dt[, .(id__temp, avg)]
+
+  # Merge back
+  dt <- merge(dt, summary_dt, by = "id__temp", all.x = TRUE)
+  setnames(dt, "avg", new_col_name)
+  dt[, id__temp := NULL]
+
+  return(as_tibble(dt))
+}
+
+
+
+tic()
+dats_response_clean <- dats_with_biotic_new |>
+  compute_rap_offset_avg_dt(4:6, "avg_rap_TRE_5_yr_post_fire") |>
+  compute_rap_offset_avg_dt(9:11, "avg_rap_TRE_10_yr_post_fire") |>
+  compute_rap_offset_avg_dt(14:16, "avg_rap_TRE_15_yr_post_fire") |>
+  compute_rap_offset_avg_dt(-7:-5, "avg_rap_TRE_6_yr_pre_fire")
+toc()
+
+hist(dats_response_clean$avg_rap_TRE_5_yr_post_fire)
+hist(dats_response_clean$avg_rap_TRE_10_yr_post_fire)
+hist(dats_response_clean$avg_rap_TRE_15_yr_post_fire)
+hist(dats_response_clean$avg_rap_TRE_6_yr_pre_fire)
+
+dats_response_clean <- dats_response_clean |>
+  dplyr::mutate(post_fire_TRE_difference_5_yr = avg_rap_TRE_5_yr_post_fire - avg_rap_TRE_6_yr_pre_fire,
+                post_fire_TRE_difference_10_yr = avg_rap_TRE_10_yr_post_fire - avg_rap_TRE_6_yr_pre_fire,
+                post_fire_TRE_difference_15_yr = avg_rap_TRE_15_yr_post_fire - avg_rap_TRE_6_yr_pre_fire)
+
+
+hist(dats_response_clean$post_fire_TRE_difference_5_yr)
+hist(dats_response_clean$post_fire_TRE_difference_10_yr)
+hist(dats_response_clean$post_fire_TRE_difference_15_yr)
+
+
+dats_response_clean <- dats_response_clean %>%
+  mutate(
+    biotic_fire_cat = case_when(
+      biotic_fire_gap >= -10 & biotic_fire_gap <= -6 ~ "biotic_6_10_prior",
+      biotic_fire_gap >= -5  & biotic_fire_gap <= 0  ~ "biotic_0_5_prior",
+      biotic_fire_gap >= 1   & biotic_fire_gap <= 5  ~ "biotic_1_5_after",
+      biotic_fire_gap >= 6   & biotic_fire_gap <= 10  ~ "biotic_6_10_after",
+      TRUE ~ "no_biotic_or_outside_timeframe"
+    ),
+    biotic_fire_cat = factor(
+      biotic_fire_cat,
+      levels = c(
+        "no_biotic_or_outside_timeframe",
+        "biotic_6_10_prior",
+        "biotic_0_5_prior",
+        "biotic_1_5_after",
+        "biotic_6_10_after"
+      )
+    ),
+    burn_year_sev = case_when(
+      burn_year_cbi >= 2.25 ~ "high-sev",
+      burn_year_cbi < 0.1 ~ "unburned",
+      burn_year_cbi >= 0.1 & burn_year_cbi < 2.25 ~ "low-moderate-sev"
+    ),
+    beneficial_fire = case_when(
+      burn_year_sev == "high-sev" & frg_reclass == 2 ~ "replacement bf",
+      burn_year_sev == "high-sev" & frg_reclass == 1 ~ "too severe",
+      burn_year_sev == "low-moderate-sev" & frg_reclass == 2 ~ "not severe enough",
+      burn_year_sev == "low-moderate-sev" & frg_reclass == 1 ~ "low sev bf",
+    )
+  )
+
+
+compute_post_fire_rap_slope_dt <- function(
+  dt,
+  offsets = 2:10,
+  req_yrs = 5,
+  new_col_name = "post_fire_rap_slope",
+  r2_col_name = "post_fire_rap_r2",
+  prefix = "rap_TRE_"
+) {
+  dt <- as.data.table(copy(dt))
+  dt[, id__temp := .I]  # Unique ID
+
+  # Melt RAP TRE columns
+  melt_cols <- grep(paste0("^", prefix, "\\d{4}$"), names(dt), value = TRUE)
+  
+  long_dt <- melt(
+    dt,
+    id.vars = c("id__temp", "burn_year"),
+    measure.vars = melt_cols,
+    variable.name = "year_col",
+    value.name = "value"
+  )
+
+  # Extract year
+  long_dt[, year := as.integer(sub(prefix, "", year_col))]
+
+  # Calculate offset from burn year
+  long_dt[, offset := year - burn_year]
+
+  # Keep only desired offsets
+  long_dt <- long_dt[offset %in% offsets]
+
+  # Group and compute slope + R2 if enough data
+  slope_dt <- long_dt[
+    !is.na(value),
+    {
+      if (.N >= req_yrs) {
+        model <- lm(value ~ offset)
+        list(
+          slope = coef(model)[2],
+          r2 = summary(model)$r.squared
+        )
+      } else {
+        list(
+          slope = NA_real_,
+          r2 = NA_real_
+        )
+      }
+    },
+    by = id__temp
+  ]
+
+  # Merge results back
+  dt <- merge(dt, slope_dt, by = "id__temp", all.x = TRUE)
+  setnames(dt, c("slope", "r2"), c(new_col_name, r2_col_name))
+  dt[, id__temp := NULL]
+
+  return(as_tibble(dt))
+}
+
+
+
+dats_response_clean <- dats_response_clean |>
+  compute_post_fire_rap_slope_dt(
+    offsets = 2:10,
+    req_yrs = 9,
+    new_col_name = "post_fire_rap_slope_2_10_yrs",
+    r2_col_name = "post_fire_rap_2_10_yrs_r2",
+    prefix = "rap_TRE_") |>
+  compute_post_fire_rap_slope_dt(
+    offsets = 2:15,
+    req_yrs = 9,
+    new_col_name = "post_fire_rap_slope_2_15_yrs",
+    r2_col_name = "post_fire_rap_2_15_yrs_r2",
+    prefix = "rap_TRE_")
+
+hist(dats_response_clean$post_fire_rap_slope_2_10_yrs)
+hist(dats_response_clean$post_fire_rap_2_10_yrs_r2)
+hist(dats_response_clean$post_fire_rap_slope_2_15_yrs)
+hist(dats_response_clean$post_fire_rap_2_15_yrs_r2)
+
+
+# Create long version of data
+dats_response_clean_long <- dats_response_clean |>
+  pivot_longer(
+    cols = starts_with("rap_TRE_"),
+    names_to = "year",
+    names_prefix = "rap_TRE_",
+    names_transform = list(year = as.integer),
+    values_to = "rap_TRE"
+  ) |>
+  mutate(year_from_fire_index = year - burn_year)
+
+dats_response_clean_short <- dats_response_clean |>
+  select(-starts_with("rap_TRE"))
+
+```
+
+
+# Create long-form cross-tabulation
+
+```{r n-tables}
+
+
+# Basic counts
+create_cross_tab <- function(dats) {
+    
+  summary_table <- dats %>%
+    count(frg_reclass, biotic_fire_cat, burn_year_sev) %>%
+    mutate(across(c(frg_reclass, biotic_fire_cat, burn_year_sev), as.character))
+  
+  # Subtotals
+  subtotal_frg_reclass <- dats %>%
+    count(frg_reclass) %>%
+    mutate(
+      frg_reclass = as.character(frg_reclass),
+      biotic_fire_cat = "ALL",
+      burn_year_sev = "ALL"
+    )
+  
+  subtotal_biotic_fire_cat <- dats %>%
+    count(biotic_fire_cat) %>%
+    mutate(
+      frg_reclass = "ALL",
+      biotic_fire_cat = as.character(biotic_fire_cat),
+      burn_year_sev = "ALL"
+    )
+  
+  subtotal_burn_year_sev <- dats %>%
+    count(burn_year_sev) %>%
+    mutate(
+      frg_reclass = "ALL",
+      biotic_fire_cat = "ALL",
+      burn_year_sev = as.character(burn_year_sev)
+    )
+  
+  # Grand total
+  grand_total <- dats %>%
+    summarise(n = n()) %>%
+    mutate(
+      frg_reclass = "ALL",
+      biotic_fire_cat = "ALL",
+      burn_year_sev = "ALL"
+    )
+  
+  # Combine all together
+  full_summary_table <- bind_rows(
+    summary_table,
+    subtotal_frg_reclass,
+    subtotal_biotic_fire_cat,
+    subtotal_burn_year_sev,
+    grand_total
+  ) %>%
+    arrange(frg_reclass, biotic_fire_cat, burn_year_sev)
+    
+  return(full_summary_table)
+}
+
+full_summary_table <- create_cross_tab(dats_response_clean_short)
+high_sev_biotic_summary_table <- create_cross_tab(dats_response_clean_short |> filter(biotic_year_sev >= 50))
+
+print(full_summary_table, n = Inf)
+print(high_sev_biotic_summary_table, n = Inf)
+
+readr::write_csv(full_summary_table,
+                 append = FALSE,
+                 file = here::here(dir_derived, "cross_tabs.csv"))
+
+```
+
+
+# Write data for analysis
+
+```{r write-out}
+
+dats_response_clean_short_sf <- dats_response_clean_short |>
+  left_join(dats_no_reburn_sf |>
+              select(`system:index`),
+            by = join_by(`system:index`)) |>
+  sf::st_as_sf()
+
+
+readr::write_csv(dats_response_clean_short,
+                 file = here::here(dir_derived, "ard_short_v1.csv"))
+sf::st_write(dats_response_clean_short_sf,
+             here::here(dir_derived, "ard_short_sf_v1.gpkg"),
+             append = FALSE)
+readr::write_csv(dats_response_clean_long,
+                 file = here::here(dir_derived, "ard_long_v1.csv"))
+```
+
+
+<button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne" >Click to see Session Information</button><div id="collapseOne" class="accordion-collapse collapse"><div>
+
+```{r sessionInfo}
+sessionInfo()
+```
+
+</div></div>
