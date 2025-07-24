@@ -1,0 +1,462 @@
+---
+title: "04_causal_forest"
+author: Tyler L. McIntosh
+date: last-modified
+format:
+  html:
+    embed-resources: true
+    html-math-method: katex
+    css: styles.css
+    toc: true
+    toc-depth: 1
+    toc-title: Contents
+    toc-location: right
+    code-fold: true
+    code-summary: "Show the code"
+---
+
+
+``` {r setupchunk}
+#| echo: true
+#| message: false
+#| warning: false
+#| results: 'hide'
+
+rm(list = ls())
+
+if(!requireNamespace("here", quietly = TRUE)) {
+  install.packages("here")
+}
+library(here)
+
+source(here::here("utils", "functions.R"))
+
+install_and_load_packages(c(
+  "tidyverse",
+  "tictoc",
+  "grf",
+  "kernelshap",
+  "hstats",
+  "shapviz",
+  "patchwork",
+  "cobalt",
+  "corrplot",
+  "gridExtra",
+  "tictoc"))
+
+dir_figs <- here::here('figs')
+dir_derived <- here::here('data', 'derived')
+dir_raw <- here::here('data', 'raw')
+dir_manual <- here::here('data', 'manual')
+dir_ensure(c(dir_figs,
+             dir_derived,
+             dir_manual,
+             dir_raw))
+
+seed = 1234
+set.seed(seed)
+
+```
+
+# Load and explore data
+- Correlation matrix
+- Covariate balance: love & density plots
+
+```{r}
+
+dats <- read_csv(here(dir_derived, "test_dats.csv"))
+
+hist(dats$post_fire_forest_difference_10_yr)
+
+# Correlation matrix
+correlations <- dats |>
+  select(where(is.numeric)) |>
+  cor(use = "pairwise.complete.obs")
+png(here(dir_figs, 'corr_plot.png'), width = 2000, height = 2000)
+corrplot(correlations, method = 'circle', type = "lower", diag = FALSE, use = 'pairwise.complete.obs') 
+dev.off()
+
+
+
+# Use cobalt to asses covariate balance for FIRE treatment
+
+cobalt::bal.tab(x = fire ~ aet + def + frg_reclass + srtm + tpi + chili + biotic_5_yrs_prior_sum + biotic_5_yrs_after_sum + pdsi_annual_5_yrs_prior_sum + pdsi_annual_5_yrs_after_sum + avg_forest_2_yr_pre_fire, 
+                data = dats)
+
+png(here(dir_figs, "love_plot_fire.png"))
+cobalt::love.plot(x = fire ~ aet + def + frg_reclass + srtm + tpi + chili + biotic_5_yrs_prior_sum + biotic_5_yrs_after_sum + pdsi_annual_5_yrs_prior_sum + pdsi_annual_5_yrs_after_sum + avg_forest_2_yr_pre_fire, 
+                data = dats,
+                stats = c("mean.diffs", "ks.statistics"),
+                stars = "raw",
+                position = "bottom",
+                threshold = c(m = .1, ks = .05),
+                title = "Covariate balance love plot for FIRE treatment")
+dev.off()
+
+
+
+fire_covars <- c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+            "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+            "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum", "avg_forest_2_yr_pre_fire")
+
+# Make a working copy of your data
+dats_trans <- dats
+
+# Transform biotic variables using log1p (handles 0s safely)
+for (v in fire_covars) {
+  if (startsWith(v, "biotic")) {
+    new_name <- paste0(v, "_log")
+    dats_trans[[new_name]] <- log1p(dats_trans[[v]])
+  }
+}
+
+# Plot all variables, using log-transformed versions when appropriate
+plot_list <- lapply(fire_covars, function(v) {
+  # If biotic, use transformed version
+  if (startsWith(v, "biotic")) {
+    v_use <- paste0(v, "_log")
+    label <- paste0(v, " (log)")
+  } else {
+    v_use <- v
+    label <- v
+  }
+
+  # Construct formula and plot
+  f <- reformulate(v_use, response = "fire")
+  cobalt::bal.plot(
+    x = f,
+    data = dats_trans,
+    var.name = v_use,
+    which = "both"
+  ) + ggtitle(label)
+})
+
+# Arrange in grid and save
+# Create a title grob
+title_grob <- textGrob("Covariate Balance by FIRE Treatment Group",
+                       gp = gpar(fontsize = 20, fontface = "bold"))
+
+# Add title and plots to a single grid
+grid_plot <- grid.arrange(
+  title_grob,
+  do.call(arrangeGrob, c(plot_list, ncol = 2)),
+  nrow = 2,
+  heights = c(0.05, 0.95)
+)
+# Save
+ggsave(here(dir_figs, "covariate_balance_grid_fire.png"), grid_plot, units = "px", width = 3000, height = 3000, dpi = 300)
+
+
+
+
+
+
+# FOR CBI TREATMENT
+
+cobalt::bal.tab(x = burn_cbi ~ aet + def + frg_reclass + srtm + tpi + chili + biotic_5_yrs_prior_sum + biotic_5_yrs_after_sum + pdsi_annual_5_yrs_prior_sum + pdsi_annual_5_yrs_after_sum + avg_forest_2_yr_pre_fire + burn_cbi_1kmmwmedian + burn_cbi_1kmmwstd + mock_burn_year, 
+                data = dats)
+
+
+burn_cbi_covars <- c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+            "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+            "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum", "avg_forest_2_yr_pre_fire", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year")
+
+# Make a working copy of your data
+dats_trans <- dats
+
+# Transform biotic variables using log1p (handles 0s safely)
+for (v in burn_cbi_covars) {
+  if (startsWith(v, "biotic")) {
+    new_name <- paste0(v, "_log")
+    dats_trans[[new_name]] <- log1p(dats_trans[[v]])
+  }
+}
+
+# Plot all variables, using log-transformed versions when appropriate
+plot_list <- lapply(burn_cbi_covars, function(v) {
+  # If biotic, use transformed version
+  if (startsWith(v, "biotic")) {
+    v_use <- paste0(v, "_log")
+    label <- paste0(v, " (log)")
+  } else {
+    v_use <- v
+    label <- v
+  }
+
+  # Construct formula and plot
+  f <- reformulate(v_use, response = "burn_cbi")
+  cobalt::bal.plot(
+    x = f,
+    data = dats_trans,
+    var.name = v_use,
+    which = "both"
+  ) + ggtitle(label)
+})
+
+# Arrange in grid and save
+# Create a title grob
+title_grob <- textGrob("Covariate Balance by CBI Treatment Group",
+                       gp = gpar(fontsize = 20, fontface = "bold"))
+
+# Add title and plots to a single grid
+grid_plot <- grid.arrange(
+  title_grob,
+  do.call(arrangeGrob, c(plot_list, ncol = 2)),
+  nrow = 2,
+  heights = c(0.05, 0.95)
+)
+# Save
+ggsave(here(dir_figs, "covariate_balance_grid_cbi.png"), grid_plot, units = "px", width = 3000, height = 6000, dpi = 300)
+
+
+
+
+
+```
+
+
+```{r}
+
+
+cf_analysis <- function(dats, yvar, xvars, trt, data_nm, seed = 1234) {
+  # Filter out rows with NA in the outcome variable
+  dats_filt <- dats %>%
+    filter(!is.na(.data[[yvar]]))
+
+  # Select covariates and outcome
+  covariates <- dats_filt %>%
+    select(all_of(xvars))
+  outcome <- dats_filt[[yvar]]
+  treatment <- dats_filt[[trt]]
+
+  # Fit causal forest
+  fit <- grf::causal_forest(
+    X = covariates,
+    Y = outcome,
+    W = treatment,
+    seed = seed
+  )
+
+  # Variable importance - ensure normalized
+  imp_raw <- sort(setNames(variable_importance(fit), xvars))
+  imp_normalized <- imp_raw / sum(imp_raw)
+  
+  imp_df <- tibble(
+    variable = names(imp_normalized),
+    importance = as.numeric(imp_normalized)
+  ) %>%
+    arrange(importance)  # So the smallest is at the bottom of the horizontal bar plot
+
+  imp_p <- ggplot(imp_df, aes(x = importance, y = reorder(variable, importance))) +
+    geom_col(fill = "orange") +
+    labs(
+      x = "Variable Importance (Normalized)",
+      y = NULL,
+      title = "Causal Forest Variable Importance",
+      subtitle = data_nm
+    ) +
+    theme_minimal(base_size = 13) +
+    theme(
+      axis.text.y = element_text(hjust = 1),
+      plot.margin = margin(10, 20, 5, 5)
+    )
+  ggsave(plot = imp_p,
+         filename = here(dir_figs, paste0("var_importance_", data_nm, ".png")),
+         bg = "white")
+
+  pred_fun <- function(object, newdata, ...) {
+    predict(object, newdata, ...)$predictions
+  }
+
+  xvars_sorted <- rev(names(imp_normalized))
+
+  pdps <- lapply(xvars_sorted, function(v) {
+    pd <- partial_dep(fit, v, X = covariates, pred_fun = pred_fun)
+    plot(pd) +
+      theme(axis.title.y = element_blank())
+  })
+
+  #For adding y axis label to overall plot
+  ylab_plot <- ggplot() +
+    theme_void() +
+    annotate("text", x = 0, y = 0.5, label = "Treatment effect", angle = 90, hjust = 0.5, size = 4)
+
+  pdps_p <- wrap_plots(pdps, guides = "collect", ncol = 3) #&
+    #ylab("Treatment effect")
+
+  # Add format & add titles
+  pdps_p <- ylab_plot + pdps_p +
+    plot_layout(widths = c(0.05, 1)) +
+    plot_annotation(
+      title = "Partial Dependence Plots",
+      subtitle = data_nm,
+      caption = "NOTES:\nNegative values mean a stronger (positive) treatment effect (i.e. fire is causing a greater difference in forest cover change)\nPDPs are in order of variable importance")
+
+  ggsave(filename = here(dir_figs, paste0("partial_dependence_", data_nm, ".png")),
+         plot = pdps_p,
+         units = 'px',
+         width = 2000,
+         height = 2000)
+
+  return(list(fit = fit,
+              imp_p = imp_p,
+              pdps = pdps))
+}
+
+tic() #takes about 1.5 minutes to run
+test <- cf_analysis(dats = dats,
+            yvar = "post_fire_forest_difference_10_yr",
+            xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+           "burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
+           "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+           "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum", "avg_forest_2_yr_pre_fire"),
+            trt = "fire",
+            data_nm = "idBatholith_post_fire_forest_difference_10_yr",
+            seed = seed)
+toc()
+
+
+
+tic() #takes about 1.5 minutes to run
+test <- cf_analysis(dats = dats,
+            yvar = "post_fire_forest_slope_5_10_yrs",
+            xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+           "burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
+           "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+           "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
+           "avg_forest_2_yr_pre_fire"),
+            trt = "fire",
+            data_nm = "idBatholith_post_fire_forest_slope_5_10_yrs",
+            seed = seed)
+toc()
+
+tic() 
+test <- cf_analysis(dats = dats,
+            yvar = "post_fire_forest_difference_10_yr",
+            xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+           "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
+           "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+           "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
+           "avg_forest_2_yr_pre_fire"),
+            trt = "burn_cbi",
+            data_nm = "CBITRT_idBatholith_post_fire_forest_difference_10_yr",
+            seed = seed)
+toc()
+
+
+
+
+# yvar = "post_fire_forest_difference_10_yr"
+# xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+#            "burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
+#            "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+#            "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum")
+# trt = "fire"
+#   # Filter out rows with NA in the outcome variable
+#   dats_filt <- dats %>%
+#     filter(!is.na(.data[[yvar]]))
+# 
+#   # Select covariates and outcome
+#   covariates <- dats_filt %>%
+#     select(all_of(xvars))
+#   outcome <- dats_filt[[yvar]]
+#   treatment <- dats_filt[[trt]]
+# 
+#   # Fit causal forest
+#   fit <- grf::causal_forest(
+#     X = covariates,
+#     Y = outcome,
+#     W = treatment,
+#     seed = seed
+#   )
+# 
+#   # Variable importance
+#   imp_raw <- sort(setNames(variable_importance(fit), xvars))
+#   imp_normalized <- imp / sum(imp)
+# 
+#   imp_df <- tibble(
+#     variable = names(imp_normalized),
+#     importance = as.numeric(imp_normalized)
+#   ) %>%
+#     arrange(importance)  # So the smallest is at the bottom of the horizontal bar plot
+# 
+#   imp_p <- ggplot(imp_df, aes(x = importance, y = reorder(variable, importance))) +
+#     geom_col(fill = "orange") +
+#     labs(
+#       x = "Variable Importance",
+#       y = NULL,
+#       title = "Causal Forest Variable Importance",
+#       subtitle = "test"
+#     ) +
+#     theme_minimal(base_size = 13) +
+#     theme(
+#       axis.text.y = element_text(hjust = 1),
+#       plot.margin = margin(10, 20, 5, 5)
+#     )
+#   imp_p
+#   ggsave(plot = imp_p,
+#          filename = here(dir_figs, paste0("var_importance_", data_nm, ".png")),
+#          bg = "white")
+# 
+#   pred_fun <- function(object, newdata, ...) {
+#     predict(object, newdata, ...)$predictions
+#   }
+# 
+#   xvars_sorted <- rev(names(imp))
+# 
+#   pdps <- lapply(xvars_sorted, function(v) {
+#     pd <- partial_dep(fit, v, X = covariates, pred_fun = pred_fun)
+#     plot(pd) +
+#       theme(axis.title.y = element_blank())
+#   })
+# 
+#   #For adding y axis label to overall plot
+#   ylab_plot <- ggplot() +
+#     theme_void() +
+#     annotate("text", x = 0, y = 0.5, label = "Treatment effect", angle = 90, hjust = 0.5, size = 4)
+# 
+#   pdps_p <- wrap_plots(pdps, guides = "collect", ncol = 3) #&
+#     #ylab("Treatment effect")
+# 
+#   # Add format & add titles
+#   pdps_p <- ylab_plot + pdps_p +
+#     plot_layout(widths = c(0.05, 1)) +
+#     plot_annotation(
+#       title = "Partial Dependence Plots",
+#       subtitle = data_nm,
+#       caption = "NOTES:\nNegative values mean a stronger (positive) treatment effect (i.e. fire is causing a greater difference in forest cover change)\nPDPs are in order of variable importance")
+# 
+#   ggsave(filename = here(dir_figs, paste0("partial_dependence_", data_nm, ".png")),
+#          plot = pdps_p,
+#          units = 'px',
+#          width = 2000,
+#          height = 2000)
+# 
+
+```
+
+
+These initial results mean that: (YES = makes sense, NO = doesn't make sense)
+- As AET increases (there is more AET), there is greater difference between pre-and post-fire cover
+- As DEF increases (sites get drier), there is decreased difference between pre-and post-fire cover
+- YES - When there is biotic disturbance prior to burn there is a greater difference between pre and post-fire cover
+- ??? - When there is more drought after fire there is greater difference between pre and post-fire cover; but then also a much larger difference between pre and post-fire cover with wetter conditions after fire?..
+- YES - The difference between pre and post-fire is least when elevation is ~2000, and greater at low elevatoins or high elevations (at the edges of forest range forest causes more change in forest cover?)
+- YES - The difference between pre and post fire forest cover is greatest when CHILI is high (very warm)
+- The treatment effect is greatest for FRG classes 3,4,5,6
+- YES? - The treatment effect is greatest for negative values of TPI (i.e. in valleys); there are denser forests pre-burn in valleys
+- NO - The treatment effect is greatest earlier in the time frame
+
+
+```{r}
+hist(dats$pdsi_annual_5_yrs_after_sum)
+
+```
+
+
+
+<button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne" >Click to see Session Information</button><div id="collapseOne" class="accordion-collapse collapse"><div>
+
+```{r sessionInfo}
+sessionInfo()
+```
