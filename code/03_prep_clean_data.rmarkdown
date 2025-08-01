@@ -16,7 +16,11 @@ format:
 ---
 
 
+
+
 # Setup and read in data
+
+
 
 ``` {r setupchunk}
 #| echo: true
@@ -57,16 +61,20 @@ set.seed(1234)
 
 ```
 
+
+
 # Load data from GDrive
+
+
 
 ```{r}
 ##### Run to authenticate gdrive access
-# drive_auth()
-# ####
-# 
+drive_auth()
+####
+
 # idb <- read_matching_csvs_from_gdrive("GEE_Exports", "fc_tile_IDBatholith")
 # write_csv(idb, file = here(dir_derived, "all_IDBatholith.csv"))
-# 
+
 # nc <- read_matching_csvs_from_gdrive("GEE_Exports", "fc_tile_NCascades")
 # write_csv(nc, file = here(dir_derived, "all_NCascades.csv"))
 # 
@@ -76,48 +84,17 @@ set.seed(1234)
 # sr <- read_matching_csvs_from_gdrive("GEE_Exports", "fc_tile_SRockies")
 # write_csv(sr, file = here(dir_derived, "all_SRockies.csv"))
 
+idb_dats <- read_csv(here(dir_derived, "all_IDBatholith.csv")) |>
+  mutate(ecoregion = "IDBatholith")
+nc_dats <- read_csv(here(dir_derived, "all_NCascades.csv")) |>
+  mutate(ecoregion = "NCascades")
+sn_dats <- read_csv(here(dir_derived, "all_SierraNevada.csv")) |>
+  mutate(ecoregion = "SierraNevada")
+sr_dats <- read_csv(here(dir_derived, "all_SRockies.csv")) |>
+  mutate(ecoregion = "SRockies")
 
-#There is a problem where some instances of '1's with NAs in the CBI columns can end up being treated as logical; ensure doesn't happen
-read_csv_ensure_cbi_dbl <- function(path) {
-  # Preview column names without reading all data
-  col_names <- names(read_csv(path, n_max = 0))
-  
-  # Find columns that start with "CBI"
-  cbi_cols <- grep("^cbi", col_names, value = TRUE)
-  
-  # Create a list of column specs: all CBI columns as double
-  col_spec <- do.call(cols, c(
-    setNames(rep(list(col_double()), length(cbi_cols)), cbi_cols),
-    .default = col_guess()
-  ))
-  
-  # Read the CSV with specified col_types
-  dats <- read_csv(path, col_types = col_spec)
-  
-  return(dats)
-}
-
-
-raw_dats_fl <- here(dir_derived, "raw_test_dats.csv")
-
-if(!file.exists(raw_dats_fl)) {
-  #Use safe read function
-  idb_dats <- read_csv_ensure_cbi_dbl(here(dir_derived, "all_IDBatholith.csv")) |>
-    mutate(ecoregion = "IDBatholith")
-  nc_dats <- read_csv_ensure_cbi_dbl(here(dir_derived, "all_NCascades.csv")) |>
-    mutate(ecoregion = "NCascades")
-  sn_dats <- read_csv_ensure_cbi_dbl(here(dir_derived, "all_SierraNevada.csv")) |>
-    mutate(ecoregion = "SierraNevada")
-  sr_dats <- read_csv_ensure_cbi_dbl(here(dir_derived, "all_SRockies.csv")) |>
-    mutate(ecoregion = "SRockies")
-  
-  dats <- bind_rows(idb_dats, nc_dats, sn_dats, sr_dats)
-  
-  write_csv(dats, file = raw_dats_fl)
-}
-
-
-dats <- read_csv_ensure_cbi_dbl(here(dir_derived, "raw_test_dats.csv"))
+dats <- bind_rows(idb_dats, nc_dats, sn_dats, sr_dats)
+write_csv(dats, file = here(dir_derived, "raw_test_dats.csv"))
 
 
 
@@ -125,19 +102,21 @@ dats <- read_csv_ensure_cbi_dbl(here(dir_derived, "raw_test_dats.csv"))
 
 
 
+
+
 # Deal with fire and fire heterogeneity data
 
-```{r}
-# replace -1 signifier in CBI bands with NA
-dats <- dats %>%
-  mutate(across(starts_with("cbi_year"), ~ na_if(.x, -1)))
 
-# Remove all instances with re-burns and instances where biotic_sum is NA (i.e. at the very edge of AOI)
+
+```{r}
+
+
+# Remove all instances with re-burns
 dats_no_reburn <- dats %>%
   filter(
     rowSums(!is.na(select(., starts_with("cbi_year")))) <= 1
-  ) |>
-  filter(!is.na(biotic_sum))
+  )
+
 
 # Get burn year & burn year bcCBI
 # Identify CBI columns and corresponding years
@@ -223,18 +202,18 @@ for (col in cols_to_fill) {
   dats_no_reburn[[col]][is.na(dats_no_reburn[[col]])] <- 0
 }
 
-# Remove the few rows that still have the strange fire but no burn year phenomenon
-dats_no_reburn <- dats_no_reburn |>
-  filter(!(fire == 1 & is.na(burn_year)))
-
 ```
 
 
 
+
+
 # Get biotic & drought sums and means in time before/after burn
+
+
 ```{r}
 
-transform_annual_to_priorafter <- function(df, column_pattern, summary_fn_name, nyears) {
+transform_annual_to_5_priorbefore <- function(df, column_pattern, summary_fn_name) {
   # Validate the summary function
   if (!exists(summary_fn_name, mode = "function")) {
     stop("Summary function '", summary_fn_name, "' is not a valid function.")
@@ -261,27 +240,27 @@ transform_annual_to_priorafter <- function(df, column_pattern, summary_fn_name, 
     byr <- df$mock_burn_year[i]
     if (!is.na(byr)) {
       # Prior 5 years
-      yrs_prior <- (byr - nyears):(byr - 1)
+      yrs_prior <- (byr - 5):(byr - 1)
       if (all(yrs_prior %in% col_years)) {
         cols <- col_year_map[as.character(yrs_prior)]
         vals <- unlist(df[i, cols])
-        if (!any(is.na(vals))) prior_vals[i] <- summary_fn(vals, na.rm = TRUE)
+        if (!any(is.na(vals))) prior_vals[i] <- summary_fn(vals)
       }
       
       # After 5 years
-      yrs_after <- (byr + 1):(byr + nyears)
+      yrs_after <- (byr + 1):(byr + 5)
       if (all(yrs_after %in% col_years)) {
         cols <- col_year_map[as.character(yrs_after)]
         vals <- unlist(df[i, cols])
-        if (!any(is.na(vals))) after_vals[i] <- summary_fn(vals, na.rm = TRUE)
+        if (!any(is.na(vals))) after_vals[i] <- summary_fn(vals)
       }
     }
   }
   
   # Construct column names with function name
   fn_suffix <- tolower(summary_fn_name)
-  prior_col <- paste0(base_name, "_", nyears, "_yrs_prior_", fn_suffix)
-  after_col <- paste0(base_name, "_", nyears, "_yrs_after_", fn_suffix)
+  prior_col <- paste0(base_name, "_5_yrs_prior_", fn_suffix)
+  after_col <- paste0(base_name, "_5_yrs_after_", fn_suffix)
   
   df[[prior_col]] <- prior_vals
   df[[after_col]] <- after_vals
@@ -289,167 +268,60 @@ transform_annual_to_priorafter <- function(df, column_pattern, summary_fn_name, 
   # Filter out rows where either summary column is NA
   df <- df[!is.na(df[[prior_col]]) & !is.na(df[[after_col]]), ]
   
-  return(df)
-}
-
-
-n_beyond_threshold_x_yrs <- function(df, column_pattern, nyears, threshold) {
-  # Validate and parse the threshold expression
-  threshold_fn <- tryCatch(
-    {
-      eval(parse(text = paste0("function(x) x", threshold)))
-    },
-    error = function(e) stop("Invalid threshold expression: ", threshold)
-  )
-  
-  # Identify columns matching the pattern
-  matched_cols <- grep(column_pattern, names(df), value = TRUE)
-  if (length(matched_cols) == 0) return(df)
-  
-  # Extract base name and year info
-  base_name <- sub("^(.*?)_\\d{4}$", "\\1", matched_cols[1])
-  col_years <- as.integer(sub(".*_(\\d{4})$", "\\1", matched_cols))
-  col_year_map <- setNames(matched_cols, col_years)
-  
-  # Initialize result vectors
-  n <- nrow(df)
-  prior_counts <- integer(n)
-  after_counts <- integer(n)
-  
-  for (i in seq_len(n)) {
-    byr <- df$mock_burn_year[i]
-    if (!is.na(byr)) {
-      # Prior years
-      yrs_prior <- (byr - nyears):(byr - 1)
-      if (all(yrs_prior %in% col_years)) {
-        cols <- col_year_map[as.character(yrs_prior)]
-        vals <- unlist(df[i, cols])
-        prior_counts[i] <- sum(threshold_fn(vals), na.rm = TRUE)
-      } else {
-        prior_counts[i] <- NA_integer_
-      }
-      
-      # After years
-      yrs_after <- (byr + 1):(byr + nyears)
-      if (all(yrs_after %in% col_years)) {
-        cols <- col_year_map[as.character(yrs_after)]
-        vals <- unlist(df[i, cols])
-        after_counts[i] <- sum(threshold_fn(vals), na.rm = TRUE)
-      } else {
-        after_counts[i] <- NA_integer_
-      }
-    } else {
-      prior_counts[i] <- NA_integer_
-      after_counts[i] <- NA_integer_
-    }
-  }
-  
-  # Create new column names
-  prior_col <- paste0(base_name, "_", nyears, "_yrs_prior_threshold")
-  after_col <- paste0(base_name, "_", nyears, "_yrs_after_threshold")
-  
-  # Append to df
-  df[[prior_col]] <- prior_counts
-  df[[after_col]] <- after_counts
+  # Drop original year-tagged columns
+  df <- df[ , !grepl(column_pattern, names(df))]
   
   return(df)
 }
 
 
-dats_simple_added <- transform_annual_to_priorafter(
+dats_simple_added <- transform_annual_to_5_priorbefore(
   df = dats_no_reburn,
   column_pattern = "^biotic_\\d{4}$",
-  summary_fn_name = "sum",
-  nyears = 5
+  summary_fn_name = "sum"
 )
 
-dats_simple_added <- transform_annual_to_priorafter(
+dats_simple_added <- transform_annual_to_5_priorbefore(
   df = dats_simple_added,
   column_pattern = "^hd_fingerprint_\\d{4}$",
-  summary_fn_name = "sum",
-  nyears = 5
+  summary_fn_name = "sum"
 )
 
-dats_simple_added <- transform_annual_to_priorafter(
+dats_simple_added <- transform_annual_to_5_priorbefore(
   df = dats_simple_added,
   column_pattern = "^hd_fingerprint_\\d{4}$",
-  summary_fn_name = "mean",
-  nyears = 5
+  summary_fn_name = "mean"
 )
 
-dats_simple_added <- transform_annual_to_priorafter(
+dats_simple_added <- transform_annual_to_5_priorbefore(
   df = dats_simple_added,
   column_pattern = "^pdsi_annual_\\d{4}$",
-  summary_fn_name = "sum",
-  nyears = 5
+  summary_fn_name = "sum"
 )
 
-dats_simple_added <- transform_annual_to_priorafter(
+dats_simple_added <- transform_annual_to_5_priorbefore(
   df = dats_simple_added,
   column_pattern = "^pdsi_annual_\\d{4}$",
-  summary_fn_name = "mean",
-  nyears = 5
+  summary_fn_name = "mean"
 )
 
-dats_simple_added <- transform_annual_to_priorafter(
+dats_simple_added <- transform_annual_to_5_priorbefore(
   df = dats_simple_added,
   column_pattern = "^pdsi_summer_\\d{4}$",
-  summary_fn_name = "sum",
-  nyears = 5
+  summary_fn_name = "sum"
 )
 
-dats_simple_added <- transform_annual_to_priorafter(
+dats_simple_added <- transform_annual_to_5_priorbefore(
   df = dats_simple_added,
   column_pattern = "^pdsi_summer_\\d{4}$",
-  summary_fn_name = "mean",
-  nyears = 5
+  summary_fn_name = "mean"
 )
 
 
-
-# Add thresholded data
-dats_simple_added <- n_beyond_threshold_x_yrs(
-  df = dats_simple_added,
-  column_pattern = "^pdsi_annual_\\d{4}$",
-  nyears = 5,
-  threshold = "<=-400"
-)
-
-dats_simple_added <- n_beyond_threshold_x_yrs(
-  df = dats_simple_added,
-  column_pattern = "^pdsi_summer_\\d{4}$",
-  nyears = 5,
-  threshold = "<=-400"
-)
-
-dats_simple_added <- n_beyond_threshold_x_yrs(
-  df = dats_simple_added,
-  column_pattern = "^pdsi_annual_\\d{4}$",
-  nyears = 5,
-  threshold = "<=-300"
-)
-
-dats_simple_added <- n_beyond_threshold_x_yrs(
-  df = dats_simple_added,
-  column_pattern = "^pdsi_summer_\\d{4}$",
-  nyears = 5,
-  threshold = "<=-300"
-)
-
-dats_simple_added <- n_beyond_threshold_x_yrs(
-  df = dats_simple_added,
-  column_pattern = "^hd_fingerprint_\\d{4}$",
-  nyears = 5,
-  threshold = ">=6"
-)
-
-
-# hist(dats_simple_added$hd_fingerprint_5_yrs_prior_threshold)
-# hist(dats_simple_added$hd_fingerprint_5_yrs_after_threshold)
-# hist(dats_simple_added$pdsi_annual_5_yrs_prior_threshold)
-# hist(dats_simple_added$pdsi_annual_5_yrs_after_threshold)
 
 ```
+
+
 
 
 # Deal with RAP data
@@ -457,6 +329,8 @@ dats_simple_added <- n_beyond_threshold_x_yrs(
 
 - change functions to be named as 'forest_cover_response'
 - fix post-fire slope to ignore the two years post fire
+
+
 
 ```{r}
 
@@ -505,9 +379,9 @@ compute_forest_response_offset <- function(dt, offsets, new_col_name, prefix = "
 
 
 
-#' Compute Post-Fire Forest Trend Slope from forest cover Time Series
+#' Compute Post-Fire Forest Trend Slope from RAP Time Series
 #'
-#' This function calculates the slope and R-squared value of a thiel-sen regression 
+#' This function calculates the slope and R-squared value of a linear regression 
 #' fitted to post-fire remote sensing time series data (e.g., RAP TRE) over 
 #' specified year offsets. The output includes the computed slope and R² for each 
 #' observation where sufficient data is available.
@@ -523,7 +397,7 @@ compute_forest_response_offset <- function(dt, offsets, new_col_name, prefix = "
 #'
 #' @details 
 #' The function internally melts the RAP time series into long format, filters values 
-#' by offset from the `mock_burn_year`, and fits a thiel-sen model (`value ~ offset`) for each 
+#' by offset from the `mock_burn_year`, and fits a linear model (`value ~ offset`) for each 
 #' row. If the number of non-NA years is below `req_yrs`, NA values are returned.
 #'
 #' @importFrom data.table as.data.table copy melt setnames
@@ -579,18 +453,10 @@ compute_post_fire_forest_slope_dt <- function(
     !is.na(value),
     {
       if (.N >= req_yrs) {
-        # model <- lm(value ~ offset, data = .SD) ####################SWITCH TO USE THEIL-SEN REGRESSION
-        # list(
-        #   slope = coef(model)[["offset"]],
-        #   r2 = summary(model)$r.squared
-        # )
-        model <- mblm::mblm(value ~ offset, data = .SD, repeated = FALSE)
-        preds <- predict(model)
-        r2 <- 1 - sum((.SD$value - preds)^2, na.rm = TRUE) / sum((.SD$value - mean(.SD$value, na.rm = TRUE))^2, na.rm = TRUE)
-        
+        model <- lm(value ~ offset, data = .SD)
         list(
           slope = coef(model)[["offset"]],
-          r2 = r2
+          r2 = summary(model)$r.squared
         )
       } else {
         list(
@@ -619,12 +485,6 @@ dats_simple_added <- dats_simple_added %>%
       burn_cbi >= 2.25 ~ "high-sev",
       burn_cbi < 0.1 ~ "unburned",
       burn_cbi >= 0.1 & burn_cbi < 2.25 ~ "low-moderate-sev"
-    ),
-    burn_sev_tagged = case_when(
-      fire == 1 & burn_cbi >= 2.25 ~ "high-sev",
-      fire == 1 & burn_cbi < 0.1 ~ "unburned",
-      fire == 1 & burn_cbi >= 0.1 & burn_cbi < 2.25 ~ "low-moderate-sev",
-      fire == 0 ~ "unburned-mock"
     )
   )
 
@@ -645,9 +505,6 @@ dats_response <- dats_simple_added |>
                                  prefix = "rap_TRE_") |>
   compute_forest_response_offset(offsets = -3:-1,
                                  new_col_name = "avg_forest_2_yr_pre_fire",
-                                 prefix = "rap_TRE_") |>
-  compute_forest_response_offset(offsets = 2:4, 
-                                 new_col_name = "avg_forest_3_yr_post_fire",  # USE 3 YRS POST FIRE SO THAT WINDOW CAPTURES 2-4, missing most delayed mortality
                                  prefix = "rap_TRE_")
 toc()
 
@@ -655,10 +512,7 @@ toc()
 dats_response <- dats_response |>
   dplyr::mutate(post_fire_forest_difference_5_yr = avg_forest_5_yr_post_fire - avg_forest_2_yr_pre_fire,
                 post_fire_forest_difference_10_yr = avg_forest_10_yr_post_fire - avg_forest_2_yr_pre_fire,
-                post_fire_forest_difference_15_yr = avg_forest_15_yr_post_fire - avg_forest_2_yr_pre_fire,
-                post_fire_forest_difference_3_yr = avg_forest_3_yr_post_fire - avg_forest_2_yr_pre_fire,
-                perc_recovery_10yr = (post_fire_forest_difference_3_yr - post_fire_forest_difference_10_yr) / post_fire_forest_difference_3_yr * 100,
-                perc_recovery_15yr = (post_fire_forest_difference_3_yr - post_fire_forest_difference_15_yr) / post_fire_forest_difference_3_yr * 100)
+                post_fire_forest_difference_15_yr = avg_forest_15_yr_post_fire - avg_forest_2_yr_pre_fire)
 
 
 
@@ -674,60 +528,43 @@ dats_response <- dats_response |>
     req_yrs = 5,
     new_col_name = "post_fire_forest_slope_10_15_yrs",
     r2_col_name = "post_fire_forest_10_15_yrs_r2",
-    prefix = "rap_TRE_") |>
-  compute_post_fire_forest_slope_dt(
-    offsets = 2:10,
-    req_yrs = 8,
-    new_col_name = "post_fire_forest_slope_2_10_yrs",
-    r2_col_name = "post_fire_forest_2_10_yrs_r2",
-    prefix = "rap_TRE_") |>
-  compute_post_fire_forest_slope_dt(
-    offsets = 5:15,
-    req_yrs = 10,
-    new_col_name = "post_fire_forest_slope_5_15_yrs",
-    r2_col_name = "post_fire_forest_5_15_yrs_r2",
-    prefix = "rap_TRE_") |>
-  compute_post_fire_forest_slope_dt(
-    offsets = 5:20,
-    req_yrs = 15,
-    new_col_name = "post_fire_forest_slope_5_20_yrs",
-    r2_col_name = "post_fire_forest_5_20_yrs_r2",
     prefix = "rap_TRE_")
 
-
+hist(dats_response$post_fire_forest_slope_5_10_yrs)
+hist(dats_response$post_fire_forest_5_10_yrs_r2)
+hist(dats_response$post_fire_forest_slope_10_15_yrs)
+hist(dats_response$post_fire_forest_10_15_yrs_r2)
 
 
 
 ```
+
+
 
 
 
 
 # Clean and write short data
 
+
+
 ```{r}
 # Clean up unnecessary columns
 dats_clean <- dats_response |>
-  remove_columns_with_prefix(prefixes = c("distance_unburned",
-                                          "^pdsi_summer_\\d{4}$",
-                                          "^pdsi_annual_\\d{4}$",
-                                          "^hd_fingerprint_\\d{4}$",
-                                          "cbi",
-                                          "^biotic_\\d{4}$")) |>
-  mutate(uniqueID = row_number()) # apply a unique ID to be sure it has one
+  remove_columns_with_prefix(prefixes = c("distance_unburned", "pdsi_summer", "cbi", "rap_TRE"))
 
-dats_short_clean <- dats_clean |>
-  remove_columns_with_prefix(prefixes = c("rap_TRE"))
-
-write_csv(x = dats_short_clean, file = here(dir_derived, "test_dats.csv"))
-
+write_csv(x = dats_clean, file = here(dir_derived, "test_dats.csv"))
 
 ```
 
 
+
+
 # Long data
+
+
 ```{r}
-dats_long <- dats_clean |>
+dats_long <- dats_response |>
   remove_columns_with_prefix(prefixes = c("distance_unburned", "pdsi_summer", "cbi")) |>
   pivot_longer(
     cols = starts_with("rap_TRE_"),
@@ -736,9 +573,7 @@ dats_long <- dats_clean |>
     names_transform = list(year = as.integer),
     values_to = "rap_TRE"
   ) |>
-  mutate(year_from_fire_index = year - mock_burn_year,
-         fire_timeframe = ifelse(year_from_fire_index < 0, "before_burn", ifelse(year_from_fire_index > 0, "after_burn", "year_of_burn")),
-         treated = ifelse(year_from_fire_index >= 0 & fire == 1, 1, 0))
+  mutate(year_from_fire_index = year - mock_burn_year)
 
 write_csv(x = dats_long, file = here(dir_derived, "test_dats_long.csv"))
 
@@ -747,10 +582,16 @@ write_csv(x = dats_long, file = here(dir_derived, "test_dats_long.csv"))
 
 
 
+
+
 <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne" >Click to see Session Information</button><div id="collapseOne" class="accordion-collapse collapse"><div>
+
+
 
 ```{r sessionInfo}
 sessionInfo()
 ```
+
+
 
 </div></div>

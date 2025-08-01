@@ -1,0 +1,570 @@
+---
+title: "04_causal_forest"
+author: Tyler L. McIntosh
+date: last-modified
+format:
+  html:
+    embed-resources: true
+    html-math-method: katex
+    css: styles.css
+    toc: true
+    toc-depth: 1
+    toc-title: Contents
+    toc-location: right
+    code-fold: true
+    code-summary: "Show the code"
+---
+
+# Setup for analysis
+
+``` {r setupchunk}
+#| echo: true
+#| message: false
+#| warning: false
+#| results: 'hide'
+
+rm(list = ls())
+
+if(!requireNamespace("here", quietly = TRUE)) {
+  install.packages("here")
+}
+library(here)
+
+source(here::here("utils", "functions.R"))
+
+install_and_load_packages(c(
+  "tidyverse",
+  "tictoc",
+  "hstats",
+  "glue",
+  "shapviz",
+  "patchwork",
+  "cobalt",
+  "purrr",
+  "corrplot",
+  "gridExtra",
+  "tictoc"))
+
+# # install packages from CRAN
+# packages <- c("fixest", "did", "didimputation", 
+#          "panelView", "bacondecomp", "HonestDiD",
+#               "DIDmultiplegtDYN", "PanelMatch")
+# install.packages(setdiff(packages, rownames(installed.packages())))  
+# 
+# # install most up-to-date "fect" from Github
+# if ("fect" %in% rownames(installed.packages()) == FALSE) {
+#   devtools:: install_github("xuyiqing/fect")
+# }
+# 
+# # install forked "HonestDiD" package compatible with "fect"
+# if ("HonestDiDFEct" %in% rownames(installed.packages()) == FALSE) {
+#   devtools:: install_github("lzy318/HonestDiDFEct")
+# }
+
+#library(readstata13)
+library(fixest)
+library(did)
+library(fect)
+library(panelView)
+library(PanelMatch)
+library(bacondecomp)
+library(fect)
+library(didimputation)
+library(doParallel)
+library(HonestDiD)
+library(HonestDiDFEct)
+library(DIDmultiplegtDYN) # may require XQuartz 
+
+dir_figs <- here::here('figs')
+dir_derived <- here::here('data', 'derived')
+dir_raw <- here::here('data', 'raw')
+dir_manual <- here::here('data', 'manual')
+dir_ensure(c(dir_figs,
+             dir_derived,
+             dir_manual,
+             dir_raw))
+
+seed = 1234
+set.seed(seed)
+
+
+```
+
+#
+
+```{r}
+
+run_nm <- paste0("did_conley_", timestamp('for_file'))
+dir_figs <- here(dir_figs, run_nm)
+dir_ensure(dir_figs)
+  
+dats_long <- read_csv(here(dir_derived, "test_dats_long.csv"))
+dats_short <- read_csv(here(dir_derived, "test_dats.csv"))
+
+
+```
+
+
+
+# Test key assumptions
+
+- Parallel trends
+- No anticipatory behavior
+- Treatment effect heterogeneity - “Since treatment effects heterogeneity violates Assumption 3 and can alter how we interpret μg , it is important to think through when different cohorts likely experience different paths of treatment effect. Such heterogeneity could arise for many reasons. For example, cohorts may differ in their covariates, which affect how they respond to treatment. We will explore a concrete example in our application: if treatment effects differ with age, and there is variation in age across units first treated at different times, we will have heterogeneous effects (see Section 5 for details)” ([Sun and Abraham, 2021, p. 182](zotero://select/library/items/86R62KQ4)) ([pdf](zotero://open-pdf/library/items/3WRC5CP7?page=8&annotation=QUPBLF69))
+
+IT APPEARS THAT WE HAVE A PROBLEM OF HETEROGENEOUS TREATMENT EFFECTS - We need to use an interaction-weighted estimator (i.e. dynamic DiD from Sun & Abraham)
+
+
+
+```{r}
+
+
+# Parallel trends - see results from 04_causal_forest
+
+
+# Heterogeneous treatment effects?
+
+ggplot() +
+  geom_boxplot(data = dats_short |> filter(fire == 1), aes(x = as.factor(burn_year), y = biotic_5_yrs_prior_sum))
+
+ggplot() +
+  geom_boxplot(data = dats_short |> filter(fire == 1), aes(x = as.factor(burn_year), y = biotic_5_yrs_after_sum))
+
+ggplot() +
+  geom_boxplot(data = dats_short |> filter(fire == 1), aes(x = as.factor(burn_year), y = pdsi_annual_5_yrs_prior_sum))
+
+ggplot() +
+  geom_boxplot(data = dats_short |> filter(fire == 1), aes(x = as.factor(burn_year), y = pdsi_annual_5_yrs_after_sum))
+
+ggplot() +
+  geom_boxplot(data = dats_short |> filter(fire == 1), aes(x = as.factor(burn_year), y = chili))
+
+ggplot() +
+  geom_boxplot(data = dats_short |> filter(fire == 1), aes(x = as.factor(burn_year), y = def))
+
+
+# Number of points for disturbance interactions
+n_bio_greater_10 <- dats_short |>
+  filter(fire == 1 & biotic_5_yrs_prior_sum >= 10)
+n_hd_greater_17 <- dats_short |>
+  filter(fire == 1 & hd_fingerprint_5_yrs_after_sum >= 17)
+
+n <- dats_short |>
+  filter(fire == 1 & pdsi_annual_5_yrs_after_threshold >= 1)
+
+
+only_burned <- dats_short |>
+  filter(fire == 1)
+
+ggplot(only_burned, aes(x = biotic_5_yrs_prior_sum, y = burn_cbi)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(
+    x = "Biotic Sum (5 Years Prior)",
+    y = "Burn Severity",
+    title = "Linear Relationship: Burn Severity vs Biotic Sum"
+  ) +
+  theme_minimal()
+
+
+
+burn_sev_model <- lm(burn_cbi ~ biotic_5_yrs_prior_sum + def + aet + avg_forest_2_yr_pre_fire + pdsi_annual_5_yrs_prior_sum + tpi + ecoregion + chili + frg_reclass, data = only_burned)
+summary(burn_sev_model)
+
+```
+
+```{r}
+
+
+
+# #Visualize treatment status over time
+# panelview(rap_TRE ~ treated, data = testset, index = c("uniqueID", "year"),
+#   xlab = "Year", ylab = "Unit", display.all = T,
+#   gridOff = TRUE, by.timing = TRUE)
+# 
+# 
+# hist(testset |> filter(fire_timeframe == "year_of_burn") |> pull(year))
+
+```
+
+# Run Dynamic DiD with Sun-Abraham estimators and two-way fixed effects
+
+PROBLEM: Our error bars pre-event are often NOT covering zero; this suggests that we are violating the parallel trends assumption. We are missing important covariates (?) and/or need to perform pre-fire matching/weighting.
+
+
+
+```{r}
+
+# model.twfe.0 <- feols(rap_TRE~treated|uniqueID+year,
+#                       data=dats_long, cluster = "uniqueID") 
+# print(model.twfe.0)
+
+
+# # We don't have any always-treated units, so we don't need to worry about the Goodman-Bacon decomposition
+
+
+dats_long_did <- get.cohort(dats_long, D = "treated",
+                                 index = c("uniqueID", "year"),
+                                 start0 = TRUE)
+dats_long_did[which(is.na(dats_long_did$FirstTreat)),"FirstTreat"] <- 1000 
+df.use <- dats_long_did |>
+  mutate(biotic_before_10t = case_when(biotic_5_yrs_prior_sum >= 10 ~ "biotic_prior_10t",
+                                  biotic_5_yrs_prior_sum < 10 ~ "no_biotic_prior_10t"),
+         biotic_before_20t = case_when(biotic_5_yrs_prior_sum >= 20 ~ "biotic_prior_20t",
+                                  biotic_5_yrs_prior_sum < 20 ~ "no_biotic_prior_20t"),
+         hd_after_17t = case_when(hd_fingerprint_5_yrs_after_sum >= 17 ~ "hd_after_17t",
+                              hd_fingerprint_5_yrs_after_sum < 17 ~ "no_hd_after_17t"),
+         pdsi_before_n500t = case_when(pdsi_annual_5_yrs_prior_sum <= -500 ~ "pdsi_before_n500t",
+                                 pdsi_annual_5_yrs_prior_sum > -500 ~ "no_pdsi_before_n500t"),
+         pdsi_before_n1000t = case_when(pdsi_annual_5_yrs_prior_sum <= -1000 ~ "pdsi_before_n1000t",
+                                 pdsi_annual_5_yrs_prior_sum > -1000 ~ "no_pdsi_before_n1000t"))
+
+
+# testset <- df.use |>
+#   filter(ecoregion == "IDBatholith") |>
+#   mutate(biotic_before = case_when(biotic_5_yrs_prior_sum >= 10 ~ "biotic_prior",
+#                                   biotic_5_yrs_prior_sum <= 10 ~ "no_biotic_prior"))
+# 
+# n_bio_greater_10 <- dats_short |>
+#     filter(ecoregion == "IDBatholith") |>
+#   filter(fire == 1 & biotic_5_yrs_prior_sum >= 10)
+# n_bio_greater_10_control <- dats_short |>
+#     filter(ecoregion == "IDBatholith") |>
+#   filter(fire == 0 & biotic_5_yrs_prior_sum >= 10)
+
+# # Dynamic TWFE
+# df.twfe <- df.use
+# 
+# # drop always treated units
+# #df.twfe$treat <- as.numeric(df.twfe$treatment_mean>0) 
+# df.twfe[which(is.na(df.twfe$Time_to_Treatment)),'Time_to_Treatment'] <- -999 # can be an arbitrary value
+# twfe.est <- feols(rap_TRE ~ i(Time_to_Treatment, fire, ref = c(-1, -999))| uniqueID + year, 
+#                   data = df.twfe,
+#                   cluster = "uniqueID")
+# 
+# twfe.output <- as.matrix(twfe.est$coeftable)
+# print(round(twfe.output, 3))
+# 
+# twfe.est$collin.var
+# 
+# table(df.twfe$treated, useNA = "always")
+# table(df.twfe$treated, is.na(df.twfe$Time_to_Treatment))
+# 
+# 
+# twfe.output <- as.data.frame(twfe.output)
+# twfe.output$Time <- c(c(-29:-2),c(0:21))+1 
+# p.twfe <- esplot(twfe.output,Period = 'Time',Estimate = 'Estimate',
+#                                SE = 'Std. Error', xlim = c(-29,21))
+# p.twfe
+
+
+# Interaction-weighted simple model
+
+
+# model <- feols(
+#   rap_TRE ~ sunab(FirstTreat, year),
+#   data = testset |>
+#     filter(biotic_before == 1),
+#   cluster = "uniqueID"
+# )
+# summary(model)
+# plot_sunab_models(model_list = list(model),
+#                   model_labels = "test - biotic before")
+# 
+# model <- feols(
+#   rap_TRE ~ sunab(FirstTreat, year) | year + uniqueID,
+#   data = testset |>
+#     filter(biotic_before == 0),
+#   cluster = "uniqueID"
+# )
+# summary(model)
+# plot_sunab_models(model_list = list(model),
+#                   model_labels = "test2 - no biotic before")
+
+
+
+
+# Multi-model functions ----
+
+iw_estimator_subg <- function(subgrp_col, grps, df) {
+  # Convert string to symbol
+  col_sym <- sym(subgrp_col)
+  
+  if(subgrp_col == "burn_sev_tagged") {
+    df_sub <- df %>%
+      filter((!!col_sym) == grps | burn_sev_tagged == "unburned-mock")
+  } else {
+    df_sub <- df %>%
+      filter((!!col_sym) == grps)    
+  }
+
+  model <- feols(
+    rap_TRE ~ sunab(FirstTreat, year) | uniqueID + year,
+    data = df_sub,
+    cluster = "conley",
+    conley_cutoff = 100, # CHANGE BASED ON SEMIVARIOGRAM
+    coords ~ long + lat,
+    mem.clean = TRUE,
+    lean = TRUE
+  )
+  return(model)
+}
+
+
+
+
+plot_sunab_models <- function(model_list, model_labels = NULL, title = "Dynamic-DiD Event-Study Estimates from Multiple Models") {
+  
+  # If no labels provided, auto-label as Model 1, Model 2, etc.
+  if (is.null(model_labels)) {
+    model_labels <- paste0("Model ", seq_along(model_list))
+  }
+  
+  # Extract coefficients for each model and attach model label
+  plot_data <- map2_dfr(model_list, model_labels, function(model, label) {
+    df <- as.data.frame(as.matrix(model$coeftable))
+    df$term <- rownames(model$coeftable)
+    
+    df %>%
+      filter(str_detect(term, "^year::")) %>%
+      mutate(
+        Time = as.numeric(str_extract(term, "-?\\d+")),
+        CI_upper = Estimate + 1.96 * `Std. Error`,
+        CI_lower = Estimate - 1.96 * `Std. Error`,
+        Model = label
+      )
+  })
+
+  # Plot
+  ggplot(plot_data, aes(x = Time, y = Estimate, color = Model, fill = Model)) +
+    geom_line(size = 1) +
+    geom_point(size = 2) +
+    geom_ribbon(aes(ymin = CI_lower, ymax = CI_upper), alpha = 0.2, color = NA) +
+    geom_vline(xintercept = -1, linetype = "dashed", color = "gray40") +
+    geom_hline(yintercept = 0, color = "black") +
+    labs(
+      x = "Event Time",
+      y = "Treatment Effect of fire on forest cover",
+      title = title,
+      caption = "95% confidence intervals shown; Interaction-weighted (Sun-Abraham) estimates used"
+    ) +
+    theme_minimal(base_size = 13) +
+    theme(legend.position = "bottom")
+}
+
+
+plot_all_together_did <- function(subg_col, df, title = "Interaction-Weighted Estimates for all Ecoregions") {
+  
+  if(subg_col == "burn_sev_tagged") {
+    subgs <- c("low-moderate-sev", "unburned", "high-sev")
+  } else {
+    subgs <- unique(df |> pull(subg_col))
+  }  
+  
+    # Fit models for each subgroup level
+  iw_results <- subgs %>%
+    set_names() %>%
+    map(~ iw_estimator_subg(grps = .x,
+                            subgrp_col = subg_col,
+                            df = df))
+  
+  # Generate the overlay plot
+  p <- plot_sunab_models(
+    model_list = iw_results,
+    model_labels = subgs,
+    title = title
+  )
+  return(p)
+}
+
+
+plot_ecoregion_did <- function(ecoregion_name, subg_col, df) {
+  df_ecoregion <- df %>% filter(ecoregion == ecoregion_name)
+  
+  if(subg_col == "burn_sev_tagged") {
+    subgs <- c("low-moderate-sev", "unburned", "high-sev")
+  } else {
+    subgs <- unique(df_ecoregion |> pull(subg_col))
+  }
+  
+  # Fit models for each subgroup level
+  iw_results <- subgs %>%
+    set_names() %>%
+    map(~ iw_estimator_subg(grps = .x,
+                            subgrp_col = subg_col,
+                            df = df_ecoregion))
+  
+  # Generate the overlay plot
+  p <- plot_sunab_models(
+    model_list = iw_results,
+    model_labels = subgs,
+    title = ecoregion_name
+  )
+  return(p)
+}
+
+plot_all_ecoregions_did <- function(subg_col, df, title = "Interaction-Weighted Estimates by Ecoregion") {
+  # Get unique ecoregions
+  ecoregions <- unique(df$ecoregion)
+  
+  # Generate a plot per ecoregion
+  ecoregion_plots <- map(ecoregions, ~ plot_ecoregion_did(ecoregion_name = .x,
+                                                          subg_col = subg_col,
+                                                          df = df))
+  
+  # Combine into grid
+  final_plot <- wrap_plots(ecoregion_plots, ncol = 2) +
+    plot_annotation(title = title )
+  
+  return(final_plot)
+  
+}
+
+
+# Operate ----
+
+# USE FUNCTIONS TO VIEW SEVERITY BY ECOREGION
+
+all_by_sev_p <- plot_all_ecoregions_did(subg_col = "burn_sev_tagged",
+                                        df = df.use,
+                                        title = "Interaction-Weighted Estimates \nby Ecoregion & Burn Severity, conley100km")
+
+
+ggsave(plot = all_by_sev_p,
+       filename = here(dir_figs, "all_did_by_eco_and_sev_plot.png"),
+       bg = 'white',
+       units = "px",
+       width = 4000,
+       height = 4000)
+
+
+
+
+all_by_biotic_p <- plot_all_ecoregions_did(subg_col = "biotic_before_10t",
+                                        df = df.use,
+                                        title = "Interaction-Weighted Estimates by \nEcoregion & Pre-Fire Biotic (10%, 5-yr), conley100km")
+
+ggsave(plot = all_by_biotic_p,
+       filename = here(dir_figs, "all_did_by_eco_and_biotic10t_plot.png"),
+       bg = 'white',
+       units = "px",
+       width = 4000,
+       height = 4000)
+
+
+
+all_by_hd_p <- plot_all_ecoregions_did(subg_col = "hd_after",
+                                        df = df.use,
+                                        title = "Interaction-Weighted Estimates by Ecoregion & Post-fire HD (17, sum, 5-yr)")
+
+ggsave(plot = all_by_hd_p,
+       filename = here(dir_figs, "all_did_by_eco_and_hd_plot.png"),
+       bg = 'white',
+       units = "px",
+       width = 4000,
+       height = 4000)
+
+
+
+all_by_pdsi_p <- plot_all_ecoregions_did(subg_col = "pdsi_before",
+                                        df = df.use,
+                                        title = "Interaction-Weighted Estimates by Ecoregion & Pre-Fire PDSI (-500, sum, 5-yr)")
+
+ggsave(plot = all_by_pdsi_p,
+       filename = here(dir_figs, "all_did_by_eco_and_pdsi_plot.png"),
+       bg = 'white',
+       units = "px",
+       width = 4000,
+       height = 4000)
+
+
+
+
+# RESULTS FOR ALL ECOREGIONS MERGED
+together_by_sev_p <- plot_all_together_did(subg_col = "burn_sev_tagged",
+                                           df = df.use,
+                                           title = "Interaction-Weighted Estimates for all Ecoregions by severity")
+
+ggsave(plot = together_by_sev_p,
+       filename = here(dir_figs, "together_did_plot_sev.png"),
+       bg = 'white')
+
+
+
+
+together_by_biotic_p <- plot_all_together_did(subg_col = "biotic_before",
+                                           df = df.use,
+                                           title = "Interaction-Weighted Estimates for all Ecoregions by pre-fire biotic (10%, 5-yr)")
+
+ggsave(plot = together_by_biotic_p,
+       filename = here(dir_figs, "together_did_plot_biotic.png"),
+       bg = 'white')
+
+
+
+
+together_by_hd_p <- plot_all_together_did(subg_col = "hd_after",
+                                           df = df.use,
+                                           title = "Interaction-Weighted Estimates for all Ecoregions by post-fire hd (17, sum, 5yr)")
+
+ggsave(plot = together_by_hd_p,
+       filename = here(dir_figs, "together_did_plot_hd.png"),
+       bg = 'white')
+
+
+
+
+
+together_by_pdsi_p <- plot_all_together_did(subg_col = "pdsi_before",
+                                           df = df.use,
+                                           title = "Interaction-Weighted Estimates for all Ecoregions by pre-fire PDSI (-500, sum, 5yr)")
+
+ggsave(plot = together_by_pdsi_p,
+       filename = here(dir_figs, "together_did_plot_pdsi.png"),
+       bg = 'white')
+
+
+
+
+
+
+# MULTI-SPLIT
+
+for(burn_l in c("low-moderate-sev", "unburned", "high-sev")) {
+  df <- df.use |>
+    filter(burn_sev_tagged == burn_l | burn_sev_tagged == "unburned-mock")
+  
+  by_biotic_sev_p <- plot_all_ecoregions_did(subg_col = "biotic_before_20t",
+                                          df = df,
+                                          title = paste0(burn_l, ": Interaction-Weighted Estimates by Ecoregion & Pre-Fire Biotic (10%, 5-yr)"))
+  
+  ggsave(plot = by_biotic_sev_p,
+         filename = here(dir_figs, paste0("did_by_eco_and_biotic_20t_plot_", burn_l, ".png")),
+         bg = 'white',
+         units = "px",
+         width = 4000,
+         height = 4000)
+  
+  gc()
+
+}
+
+
+# 
+# objs <- ls(envir = .GlobalEnv)
+# sizes <- sapply(objs, function(x) object.size(get(x)))
+# sizes_df <- data.frame(
+#   Object = objs,
+#   Size_Bytes = as.numeric(sizes),
+#   Size_GB = round(as.numeric(sizes) / 1024^3, 3)
+# )
+# sizes_df[order(sizes_df$Size_Bytes, decreasing = TRUE), ]
+
+```
+
+
+<button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne" >Click to see Session Information</button><div id="collapseOne" class="accordion-collapse collapse"><div>
+
+```{r sessionInfo}
+sessionInfo()
+```

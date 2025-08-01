@@ -15,6 +15,7 @@ format:
     code-summary: "Show the code"
 ---
 
+# Setup for analysis
 
 ``` {r setupchunk}
 #| echo: true
@@ -37,9 +38,11 @@ install_and_load_packages(c(
   "grf",
   "kernelshap",
   "hstats",
+  "glue",
   "shapviz",
   "patchwork",
   "cobalt",
+  "purrr",
   "corrplot",
   "gridExtra",
   "tictoc"))
@@ -56,157 +59,337 @@ dir_ensure(c(dir_figs,
 seed = 1234
 set.seed(seed)
 
+
 ```
+# Load dats
+
+```{r}
+
+dats_long <- read_csv(here(dir_derived, "test_dats_long.csv"))
+
+
+#Short dats
+dats <- read_csv(here(dir_derived, "test_dats.csv"))
+ecoregions <- unique(dats$ecoregion)
+
+```
+
+# Load and explore long data
+
+We see that tree cover shifts lower more dramatically under high severity fire, which is what we would expect. However, these trends vary by ecoregion. Tree cover in the Southern Rockies shifts much more dramatically towards zero--since this is long data, we can theorize that this is potentially due to lack of regeneration (let's test this). We also see that the shift towards lower tree cover is more severe even under low/moderate severity fire in the Southern Rockies than it is in other ecoregions.
+
+When we check the before/after densities of tree cover for our mock fires (i.e. the rest of the forested area used as control), we see that the after_burn values are higher than pre-burn, with the greatest change in the North Cascades. This is what we would expect as a result of growth rates in areas that have not been impacted by fires.
+
+From the trajectories (both ribbon and boxplot) we see that there are varied recovery trajectories by ecoregion. Most ecoregions and fire severity groups have some element of delayed mortality. Most of these appear to last two years, although there are longer delayed mortality patterns in the North Cascades under low/moderate severity fire (~5 years) and under low/moderate severity fire in the Southern Rockies (~10 years!).
+
+Interestingly, across all ecoregions, even in the 'unburned' areas (i.e. CBI < 0.1) we see a trajectory of long-term forest cover loss following fire occurrence, suggesting that the forest pattern changes from fire may have resulted in lowered resilience to other disturbances, or other fallout effects from nearby higher severity patches.
+
+We find that the parallel trajectories hypothesis more or less holds for all ecoregions and fire severities with the exception of unburned (actual) ares in the Northern Cascades.
+
+In the North Cascades and Sierra Nevada we see what looks like a signature of forest decline prior to low, moderate, and high severity burns.
+
+*FINDINGS OF INTEREST:*
+- Lack of recovery under high severity fire in S.Rockies, also under ANY fire in S.Nevada!
+- Parallel assumption (more or less) holds
+- Delayed mortality primarily in low/moderate severity areas (which is what we would expect)
+  - QUESTION: Is this delayed mortality linked to post-fire drought?
+- There is a notable signature of forest loss even in unburned areas within fire perimeters
+  - QUESTION: Is this linked to other disturbances? Or to fire heterogeneity patterning?
+- We see forest decline in the years just prior to burn in the North Cascades and Sierra Nevada
+  - QUESTION: Is this linked to other disturbances? Does probability of burn / burn severity change depending on prior drought/biotic agents?
+  
+
+```{r}
+
+
+# Plot density plots grouped by fire_group
+ggplot(dats_long |>
+         filter(fire_timeframe != "year_of_burn"),
+       aes(x = rap_TRE, fill = fire_timeframe)) +
+  geom_density(alpha = 0.5) +
+  labs(
+    title = "Density Plot of rap_TRE by Fire severity and pre/post burn",
+    x = "Tree cover % (RAP)",
+    fill = "Years Since Fire",
+    caption = "NOTE: 'unburned_mock' represents the control sample \n'burned' in random years and given CBI values of 0"
+  ) +
+  theme_minimal() +
+  facet_grid(ecoregion ~ burn_sev_tagged)
+
+ggsave(filename = here(dir_figs, "density_p_pre_post_fire_by_sev.png"),
+       plot = last_plot(),
+       bg = "white")
+
+
+# Examine trajectories by ecoregion
+
+# BOXPLOTS
+
+ggplot(data = dats_long) +
+  geom_boxplot(
+    aes(
+      x = as.factor(year_from_fire_index),
+      y = rap_TRE,
+      fill = year_from_fire_index == 0  # TRUE for 0, FALSE otherwise
+    )
+  ) +
+  scale_fill_manual(
+    values = c("TRUE" = "red", "FALSE" = "gray70"),
+    guide = "none"  # hide legend
+  ) +
+  labs(
+    title = "Tree cover by years from fire",
+    y = "Tree cover %",
+    x = "Years from fire",
+    caption = "NOTE: 'unburned_mock' represents the control sample \n'burned' in random years and given CBI values of 0"
+  ) +
+  theme_minimal() +
+  facet_grid(ecoregion ~ burn_sev_tagged)
+ggsave(filename = here(dir_figs, "boxplot_time_series.png"),
+       plot = last_plot(),
+       bg = "white",
+       units = "px",
+       width = 5000,
+       height = 3000)
+
+
+
+# LINE TRAJECTORIES
+# Step 1: Summarize the data
+summary_data <- dats_long %>%
+  group_by(ecoregion, burn_sev_tagged, year_from_fire_index) %>%
+  summarise(
+    q25 = quantile(rap_TRE, 0.25, na.rm = TRUE),
+    median = median(rap_TRE, na.rm = TRUE),
+    q75 = quantile(rap_TRE, 0.75, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Step 2: Extract 'unburned-mock' data
+unburned_mock <- summary_data %>%
+  filter(burn_sev_tagged == "unburned-mock") %>%
+  select(ecoregion, year_from_fire_index, median)
+
+# Step 3: Plot
+ggplot(summary_data, aes(x = year_from_fire_index, y = median)) +
+  # IQR ribbon
+  geom_ribbon(aes(ymin = q25, ymax = q75), fill = "gray80", alpha = 0.5) +
+  
+  # Main median line for each facet
+  geom_line(color = "black", size = 1) +
+
+  # Dotted blue overlay from unburned-mock
+  geom_line(
+    data = unburned_mock,
+    aes(y = median),
+    color = "blue",
+    linetype = "dotted",
+    inherit.aes = TRUE
+  ) +
+
+  # Solid blue line only in unburned-mock facet
+  geom_line(
+    data = summary_data %>% filter(burn_sev_tagged == "unburned-mock"),
+    aes(y = median),
+    color = "blue",
+    size = 1,
+    linetype = "solid"
+  ) +
+
+  geom_vline(xintercept = 0, linetype = "dotted", color = "red", size = 1) +
+  
+  facet_grid(ecoregion ~ burn_sev_tagged) +
+
+  labs(
+    title = "Tree Cover by Years from Fire (IQR shaded)",
+    x = "Years from fire",
+    y = "Tree cover %",
+    caption = "NOTE: 'unburned_mock' represents the control sample \n'burned' in random years and given CBI values of 0"
+  ) +
+  theme_minimal()
+ggsave(filename = here(dir_figs, "iqr_line_time_series.png"),
+       plot = last_plot(),
+       bg = "white",
+       units = "px",
+       width = 5000,
+       height = 3000)
+
+```
+
 
 # Load and explore data
 - Correlation matrix
 - Covariate balance: love & density plots
 
+*FINDINGS:*
+- High correlation among post-event tree cover (expected)
+- Burn severity and heterogeneity are most highly correlated with post-fire cover in the S.Rockies. Minimal correlation in S.Nevada & ID.Batholith, only with immediate post-fire in N.Cascades
+- There's some correlation between long-term average AET/DEF and the HD/PDSI, but not as much as there might be
+- The S.Rockies and S.Nevada have the best covariate balance out of the box, while the N.Cascades has extremely poor covariate balance, and IDBatholith isn't great. Both IDB & NC have imbalances in the biotic disturbance before and after fire, which is interesting
+- We probably want to conduct pre-DiD matching
+
+
+
 ```{r}
 
-dats <- read_csv(here(dir_derived, "test_dats.csv"))
-
-hist(dats$post_fire_forest_difference_10_yr)
-
-# Correlation matrix
-correlations <- dats |>
-  select(where(is.numeric)) |>
-  cor(use = "pairwise.complete.obs")
-png(here(dir_figs, 'corr_plot.png'), width = 2000, height = 2000)
-corrplot(correlations, method = 'circle', type = "lower", diag = FALSE, use = 'pairwise.complete.obs') 
-dev.off()
 
 
 
-# Use cobalt to asses covariate balance for FIRE treatment
+# Function to assess correlation with corrplot and covariate balance with cobalt, output results
+assess_covariate_balance <- function(d, nm) {
+  
+  # Correlation matrix
+  correlations <- d |>
+    select(where(is.numeric)) |>
+    cor(use = "pairwise.complete.obs")
+  png(here(dir_figs, glue('corr_plot_{nm}.png')), width = 2000, height = 2000)
+  corrplot(correlations, method = 'circle', type = "lower", diag = FALSE, use = 'pairwise.complete.obs') 
+  dev.off()
+  
+      
+    
+  cobalt::bal.tab(x = fire ~ aet + def + frg_reclass + srtm + tpi + chili + biotic_5_yrs_prior_sum + biotic_5_yrs_after_sum + pdsi_annual_5_yrs_prior_sum + pdsi_annual_5_yrs_after_sum + avg_forest_2_yr_pre_fire, 
+                  data = d)
+  
+  png(here(dir_figs, glue("love_plot_fire_{nm}.png")))
+  cobalt::love.plot(x = fire ~ aet + def + frg_reclass + srtm + tpi + chili + biotic_5_yrs_prior_sum + biotic_5_yrs_after_sum + pdsi_annual_5_yrs_prior_sum + pdsi_annual_5_yrs_after_sum + avg_forest_2_yr_pre_fire, 
+                  data = d,
+                  stats = c("mean.diffs", "ks.statistics"),
+                  stars = "raw",
+                  position = "bottom",
+                  threshold = c(m = .1, ks = .05),
+                  limits = list(c(-1, 1), c(0, 0.6)),
+                  title = glue("Covariate balance love plot for FIRE treatment: {nm}"))
+  dev.off()
 
-cobalt::bal.tab(x = fire ~ aet + def + frg_reclass + srtm + tpi + chili + biotic_5_yrs_prior_sum + biotic_5_yrs_after_sum + pdsi_annual_5_yrs_prior_sum + pdsi_annual_5_yrs_after_sum + avg_forest_2_yr_pre_fire, 
-                data = dats)
-
-png(here(dir_figs, "love_plot_fire.png"))
-cobalt::love.plot(x = fire ~ aet + def + frg_reclass + srtm + tpi + chili + biotic_5_yrs_prior_sum + biotic_5_yrs_after_sum + pdsi_annual_5_yrs_prior_sum + pdsi_annual_5_yrs_after_sum + avg_forest_2_yr_pre_fire, 
-                data = dats,
-                stats = c("mean.diffs", "ks.statistics"),
-                stars = "raw",
-                position = "bottom",
-                threshold = c(m = .1, ks = .05),
-                title = "Covariate balance love plot for FIRE treatment")
-dev.off()
-
-
-
-fire_covars <- c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
-            "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
-            "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum", "avg_forest_2_yr_pre_fire")
-
-# Make a working copy of your data
-dats_trans <- dats
-
-# Transform biotic variables using log1p (handles 0s safely)
-for (v in fire_covars) {
-  if (startsWith(v, "biotic")) {
-    new_name <- paste0(v, "_log")
-    dats_trans[[new_name]] <- log1p(dats_trans[[v]])
+  
+    
+  fire_covars <- c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+              "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+              "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum", "avg_forest_2_yr_pre_fire")
+  
+  # Make a working copy of your data
+  dats_trans <- d
+  
+  # Transform biotic variables using log1p (handles 0s safely)
+  for (v in fire_covars) {
+    if (startsWith(v, "biotic")) {
+      new_name <- paste0(v, "_log")
+      dats_trans[[new_name]] <- log1p(dats_trans[[v]])
+    }
   }
+  
+  # Plot all variables, using log-transformed versions when appropriate
+  plot_list <- lapply(fire_covars, function(v) {
+    # If biotic, use transformed version
+    if (startsWith(v, "biotic")) {
+      v_use <- paste0(v, "_log")
+      label <- paste0(v, " (log)")
+    } else {
+      v_use <- v
+      label <- v
+    }
+  
+    # Construct formula and plot
+    f <- reformulate(v_use, response = "fire")
+    cobalt::bal.plot(
+      x = f,
+      data = dats_trans,
+      var.name = v_use,
+      which = "both"
+    ) + ggtitle(label)
+  })
+  
+  # Arrange in grid and save
+  # Create a title grob
+  title_grob <- textGrob(glue("Covariate Balance by FIRE Treatment Group: {nm}"),
+                         gp = gpar(fontsize = 20, fontface = "bold"))
+  
+  # Add title and plots to a single grid
+  grid_plot <- grid.arrange(
+    title_grob,
+    do.call(arrangeGrob, c(plot_list, ncol = 2)),
+    nrow = 2,
+    heights = c(0.05, 0.95)
+  )
+  # Save
+  ggsave(here(dir_figs, glue("covariate_balance_grid_fire_{nm}.png")), grid_plot, units = "px", width = 3000, height = 3000, dpi = 300)
+  
+  
+  
+  
+  
+  
+  # FOR CBI TREATMENT
+  
+  cobalt::bal.tab(x = burn_cbi ~ aet + def + frg_reclass + srtm + tpi + chili + biotic_5_yrs_prior_sum + biotic_5_yrs_after_sum + pdsi_annual_5_yrs_prior_sum + pdsi_annual_5_yrs_after_sum + avg_forest_2_yr_pre_fire + burn_cbi_1kmmwmedian + burn_cbi_1kmmwstd + mock_burn_year, 
+                  data = d)
+  
+  
+  burn_cbi_covars <- c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+              "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+              "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum", "avg_forest_2_yr_pre_fire", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year")
+  
+  # Make a working copy of data
+  dats_trans <- d
+  
+  # Transform biotic variables using log1p (handles 0s safely)
+  for (v in burn_cbi_covars) {
+    if (startsWith(v, "biotic")) {
+      new_name <- paste0(v, "_log")
+      dats_trans[[new_name]] <- log1p(dats_trans[[v]])
+    }
+  }
+  
+  # Plot all variables, using log-transformed versions when appropriate
+  plot_list <- lapply(burn_cbi_covars, function(v) {
+    # If biotic, use transformed version
+    if (startsWith(v, "biotic")) {
+      v_use <- paste0(v, "_log")
+      label <- paste0(v, " (log)")
+    } else {
+      v_use <- v
+      label <- v
+    }
+  
+    # Construct formula and plot
+    f <- reformulate(v_use, response = "burn_cbi")
+    cobalt::bal.plot(
+      x = f,
+      data = dats_trans,
+      var.name = v_use,
+      which = "both"
+    ) + ggtitle(label)
+  })
+  
+  # Arrange in grid and save
+  # Create a title grob
+  title_grob <- textGrob("Covariate Balance by CBI Treatment Group",
+                         gp = gpar(fontsize = 20, fontface = "bold"))
+  
+  # Add title and plots to a single grid
+  grid_plot <- grid.arrange(
+    title_grob,
+    do.call(arrangeGrob, c(plot_list, ncol = 2)),
+    nrow = 2,
+    heights = c(0.05, 0.95)
+  )
+  # Save
+  ggsave(here(dir_figs, glue("covariate_balance_grid_cbi{nm}.png")), grid_plot, units = "px", width = 3000, height = 6000, dpi = 300)
+  
 }
 
-# Plot all variables, using log-transformed versions when appropriate
-plot_list <- lapply(fire_covars, function(v) {
-  # If biotic, use transformed version
-  if (startsWith(v, "biotic")) {
-    v_use <- paste0(v, "_log")
-    label <- paste0(v, " (log)")
-  } else {
-    v_use <- v
-    label <- v
-  }
 
-  # Construct formula and plot
-  f <- reformulate(v_use, response = "fire")
-  cobalt::bal.plot(
-    x = f,
-    data = dats_trans,
-    var.name = v_use,
-    which = "both"
-  ) + ggtitle(label)
-})
-
-# Arrange in grid and save
-# Create a title grob
-title_grob <- textGrob("Covariate Balance by FIRE Treatment Group",
-                       gp = gpar(fontsize = 20, fontface = "bold"))
-
-# Add title and plots to a single grid
-grid_plot <- grid.arrange(
-  title_grob,
-  do.call(arrangeGrob, c(plot_list, ncol = 2)),
-  nrow = 2,
-  heights = c(0.05, 0.95)
-)
-# Save
-ggsave(here(dir_figs, "covariate_balance_grid_fire.png"), grid_plot, units = "px", width = 3000, height = 3000, dpi = 300)
-
-
-
-
-
-
-# FOR CBI TREATMENT
-
-cobalt::bal.tab(x = burn_cbi ~ aet + def + frg_reclass + srtm + tpi + chili + biotic_5_yrs_prior_sum + biotic_5_yrs_after_sum + pdsi_annual_5_yrs_prior_sum + pdsi_annual_5_yrs_after_sum + avg_forest_2_yr_pre_fire + burn_cbi_1kmmwmedian + burn_cbi_1kmmwstd + mock_burn_year, 
-                data = dats)
-
-
-burn_cbi_covars <- c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
-            "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
-            "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum", "avg_forest_2_yr_pre_fire", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year")
-
-# Make a working copy of your data
-dats_trans <- dats
-
-# Transform biotic variables using log1p (handles 0s safely)
-for (v in burn_cbi_covars) {
-  if (startsWith(v, "biotic")) {
-    new_name <- paste0(v, "_log")
-    dats_trans[[new_name]] <- log1p(dats_trans[[v]])
-  }
+# USE FUNCTION FOR ECOREGIONS AND FULL DATSET
+for(eco in ecoregions) {
+  d <- dats |> filter(ecoregion == eco)
+  assess_covariate_balance(d = d,
+                           nm = eco)
 }
+assess_covariate_balance(d = dats,
+                         nm = "ALL")
 
-# Plot all variables, using log-transformed versions when appropriate
-plot_list <- lapply(burn_cbi_covars, function(v) {
-  # If biotic, use transformed version
-  if (startsWith(v, "biotic")) {
-    v_use <- paste0(v, "_log")
-    label <- paste0(v, " (log)")
-  } else {
-    v_use <- v
-    label <- v
-  }
 
-  # Construct formula and plot
-  f <- reformulate(v_use, response = "burn_cbi")
-  cobalt::bal.plot(
-    x = f,
-    data = dats_trans,
-    var.name = v_use,
-    which = "both"
-  ) + ggtitle(label)
-})
-
-# Arrange in grid and save
-# Create a title grob
-title_grob <- textGrob("Covariate Balance by CBI Treatment Group",
-                       gp = gpar(fontsize = 20, fontface = "bold"))
-
-# Add title and plots to a single grid
-grid_plot <- grid.arrange(
-  title_grob,
-  do.call(arrangeGrob, c(plot_list, ncol = 2)),
-  nrow = 2,
-  heights = c(0.05, 0.95)
-)
-# Save
-ggsave(here(dir_figs, "covariate_balance_grid_cbi.png"), grid_plot, units = "px", width = 3000, height = 6000, dpi = 300)
 
 
 
@@ -222,7 +405,11 @@ cf_analysis <- function(dats, yvar, xvars, trt, data_nm, seed = 1234) {
   # Filter out rows with NA in the outcome variable
   dats_filt <- dats %>%
     filter(!is.na(.data[[yvar]]))
-
+  
+  n_total <- nrow(dats_filt)
+  n_burned <- nrow(dats_filt |>
+                      filter(fire == 1))
+  
   # Select covariates and outcome
   covariates <- dats_filt %>%
     select(all_of(xvars))
@@ -253,7 +440,8 @@ cf_analysis <- function(dats, yvar, xvars, trt, data_nm, seed = 1234) {
       x = "Variable Importance (Normalized)",
       y = NULL,
       title = "Causal Forest Variable Importance",
-      subtitle = data_nm
+      subtitle = data_nm,
+      caption = glue("Total sample size: {n_total}\nBurned sample size: {n_burned}")
     ) +
     theme_minimal(base_size = 13) +
     theme(
@@ -290,7 +478,7 @@ cf_analysis <- function(dats, yvar, xvars, trt, data_nm, seed = 1234) {
     plot_annotation(
       title = "Partial Dependence Plots",
       subtitle = data_nm,
-      caption = "NOTES:\nNegative values mean a stronger (positive) treatment effect (i.e. fire is causing a greater difference in forest cover change)\nPDPs are in order of variable importance")
+      caption = glue("NOTES:\nNegative values mean a stronger (positive) treatment effect (i.e. fire is causing a greater difference in forest cover change)\nPDPs are in order of variable importance\nTotal sample size: {n_total}\nBurned sample size: {n_burned}"))
 
   ggsave(filename = here(dir_figs, paste0("partial_dependence_", data_nm, ".png")),
          plot = pdps_p,
@@ -302,46 +490,184 @@ cf_analysis <- function(dats, yvar, xvars, trt, data_nm, seed = 1234) {
               imp_p = imp_p,
               pdps = pdps))
 }
+# 
+# tic() #takes about 1.5 minutes to run
+# test <- cf_analysis(dats = dats |> filter(ecoregion = "IDBatholith"),
+#             yvar = "post_fire_forest_difference_10_yr",
+#             xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+#            "burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
+#            "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+#            "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum", "avg_forest_2_yr_pre_fire"),
+#             trt = "fire",
+#             data_nm = "idBatholith_post_fire_forest_difference_10_yr",
+#             seed = seed)
+# toc()
+# 
+# 
+# 
+# tic() #takes about 1.5 minutes to run
+# test <- cf_analysis(dats = dats |> filter(ecoregion = "IDBatholith"),
+#             yvar = "post_fire_forest_slope_5_10_yrs",
+#             xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+#            "burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
+#            "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+#            "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
+#            "avg_forest_2_yr_pre_fire"),
+#             trt = "fire",
+#             data_nm = "idBatholith_post_fire_forest_slope_5_10_yrs",
+#             seed = seed)
+# toc()
+# 
+# tic() 
+# test <- cf_analysis(dats = dats |> filter(ecoregion = "IDBatholith"),
+#             yvar = "post_fire_forest_difference_10_yr",
+#             xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+#            "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
+#            "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+#            "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
+#            "avg_forest_2_yr_pre_fire"),
+#             trt = "burn_cbi",
+#             data_nm = "CBITRT_idBatholith_post_fire_forest_difference_10_yr",
+#             seed = seed)
+# toc()
 
-tic() #takes about 1.5 minutes to run
-test <- cf_analysis(dats = dats,
-            yvar = "post_fire_forest_difference_10_yr",
-            xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
-           "burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
-           "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
-           "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum", "avg_forest_2_yr_pre_fire"),
-            trt = "fire",
-            data_nm = "idBatholith_post_fire_forest_difference_10_yr",
-            seed = seed)
-toc()
 
 
 
-tic() #takes about 1.5 minutes to run
-test <- cf_analysis(dats = dats,
-            yvar = "post_fire_forest_slope_5_10_yrs",
-            xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
-           "burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
-           "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
-           "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
-           "avg_forest_2_yr_pre_fire"),
-            trt = "fire",
-            data_nm = "idBatholith_post_fire_forest_slope_5_10_yrs",
-            seed = seed)
-toc()
+# OUTCOMES OF INTEREST
+outcome_vars <- c("perc_recovery_10yr", "post_fire_forest_slope_2_10_yrs", "post_fire_forest_slope_5_15_yrs", "post_fire_forest_slope_10_15_yrs", "perc_recovery_15yr", "post_fire_forest_slope_5_10_yrs")
 
-tic() 
-test <- cf_analysis(dats = dats,
-            yvar = "post_fire_forest_difference_10_yr",
-            xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
-           "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
-           "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
-           "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
-           "avg_forest_2_yr_pre_fire"),
-            trt = "burn_cbi",
-            data_nm = "CBITRT_idBatholith_post_fire_forest_difference_10_yr",
-            seed = seed)
-toc()
+# Switch to use pwalk from purrr for ease of switch to parallelized furrr in future
+# Create combinations of ecoregions and outcome variables
+param_grid <- tidyr::expand_grid(
+  eco = ecoregions,
+  var = outcome_vars
+)
+
+# Walk through each combination and call cf_analysis() for side effects
+pwalk(
+  .l = list(eco = param_grid$eco, var = param_grid$var),
+  .f = function(eco, var) {
+    d <- dats |> filter(ecoregion == eco)
+
+    # Binary fire treatment
+    cf_analysis(
+      dats = d,
+      yvar = var,
+      xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+                "burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
+                "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+                "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
+                #"pdsi_annual_5_yrs_prior_mean", "pdsi_annual_5_yrs_after_mean",
+                "hd_fingerprint_5_yrs_prior_sum", "hd_fingerprint_5_yrs_after_sum",
+                #"hd_fingerprint_5_yrs_prior_mean", "hd_fingerprint_5_yrs_after_mean",
+                #"avg_forest_2_yr_pre_fire"
+                ),
+      trt = "fire",
+      data_nm = glue("{eco}_{var}_firebinary"),
+      seed = seed
+    )
+    
+    # Continuous CBI treatment
+    cf_analysis(
+      dats = d,
+      yvar = var,
+      xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+                "burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
+                "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+                "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
+                #"pdsi_annual_5_yrs_prior_mean", "pdsi_annual_5_yrs_after_mean",
+                "hd_fingerprint_5_yrs_prior_sum", "hd_fingerprint_5_yrs_after_sum",
+                #"hd_fingerprint_5_yrs_prior_mean", "hd_fingerprint_5_yrs_after_mean",
+                "avg_forest_2_yr_pre_fire"),
+      trt = "burn_cbi",
+      data_nm = glue("{eco}_{var}_cbi"),
+      seed = seed
+    )
+  }
+)
+
+# RUN FOR FULL DATASET
+walk(
+  .x = outcome_vars,
+  .f = function(var) {
+    cf_analysis(
+      dats = dats,
+      yvar = var,
+      xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+                "burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
+                "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+                "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
+                # "pdsi_annual_5_yrs_prior_mean", "pdsi_annual_5_yrs_after_mean",
+                "hd_fingerprint_5_yrs_prior_sum", "hd_fingerprint_5_yrs_after_sum",
+                # "hd_fingerprint_5_yrs_prior_mean", "hd_fingerprint_5_yrs_after_mean",
+                "avg_forest_2_yr_pre_fire"),
+      trt = "fire",
+      data_nm = glue("ALL_{var}_firebinary"),
+      seed = seed
+    )
+  }
+)
+
+walk(
+  .x = outcome_vars,
+  .f = function(var) {
+    cf_analysis(
+      dats = dats,
+      yvar = var,
+      xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+                "burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
+                "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+                "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
+                # "pdsi_annual_5_yrs_prior_mean", "pdsi_annual_5_yrs_after_mean",
+                "hd_fingerprint_5_yrs_prior_sum", "hd_fingerprint_5_yrs_after_sum",
+                # "hd_fingerprint_5_yrs_prior_mean", "hd_fingerprint_5_yrs_after_mean",
+                "avg_forest_2_yr_pre_fire"),
+      trt = "burn_cbi",
+      data_nm = glue("ALL_{var}_cbi"),
+      seed = seed
+    )
+  }
+)
+
+
+
+
+# RUN SIMPLE ANALYSIS
+cf_analysis(
+  dats = dats,
+  yvar = "post_fire_forest_slope_2_10_yrs",
+  xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+            "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+            "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
+            "hd_fingerprint_5_yrs_prior_sum", "hd_fingerprint_5_yrs_after_sum",
+            "avg_forest_2_yr_pre_fire"),
+  trt = "fire",
+  data_nm = glue("ALL_simple_post_fire_forest_slope_2_10_yrs_fire"),
+  seed = seed
+)
+
+
+for(burn_l in c("low-moderate-sev", "unburned", "high-sev")) {
+  df <- dats |>
+    filter(burn_sev_tagged == burn_l | burn_sev_tagged == "unburned-mock")
+  
+  cf_analysis(
+    dats = df,
+    yvar = "post_fire_forest_slope_2_10_yrs",
+    xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+              "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+              "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
+              "hd_fingerprint_5_yrs_prior_sum", "hd_fingerprint_5_yrs_after_sum",
+              "avg_forest_2_yr_pre_fire"),
+    trt = "fire",
+    data_nm = glue("ALL_simple_{burn_l}_post_fire_forest_slope_2_10_yrs_fire"),
+    seed = seed
+  )
+  
+}
+
+
 
 
 

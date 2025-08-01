@@ -27,6 +27,78 @@ merge_biotic_year <- function(tifs) {
 # Data ----
 
 
+#' Download and Unzip a File
+#'
+#' Downloads a ZIP file from a specified URL and extracts its contents to a specified directory.
+#' Optionally, the ZIP file can be retained after extraction.
+#'
+#' @param url Character. The URL of the ZIP file to download.
+#' @param extract_to Character. The directory where the contents should be extracted.
+#' @param keep_zip Logical. If `TRUE`, retains the ZIP file after extraction. Defaults to `FALSE`.
+#'
+#' @return Invisible `NULL`. The function is used for its side effects of downloading and extracting files.
+#'
+#' @details The function downloads a ZIP file from a URL and extracts its contents to a specified directory.
+#' If `keep_zip` is set to `FALSE`, the ZIP file will be deleted after extraction.
+#'
+#' @importFrom utils download.file unzip
+#' @export
+#'
+#' @examples
+#' \dontrun{
+#' download_unzip_file("https://example.com/data.zip", "path/to/extract", keep_zip = TRUE)
+#' }
+download_unzip_file <- function(url, extract_to, keep_zip = FALSE) {
+  # Validate URL and extraction path
+  if (!is.character(url) || length(url) != 1) stop("`url` must be a single character string.")
+  if (!is.character(extract_to) || length(extract_to) != 1) stop("`extract_to` must be a single character string.")
+  if (!is.logical(keep_zip) || length(keep_zip) != 1) stop("`keep_zip` must be a single logical value.")
+  
+  # Ensure the extraction directory exists
+  if (!dir.exists(extract_to)) dir.create(extract_to, recursive = TRUE)
+  
+  # Determine the path to save the ZIP file
+  zip_path <- if (keep_zip) {
+    # Save the ZIP file to the specified extraction directory
+    file.path(extract_to, basename(url))
+  } else {
+    # Use a temporary file path for the ZIP file
+    tempfile(fileext = ".zip")
+  }
+  
+  # Ensure temporary file cleanup if there's an error and keep_zip is FALSE
+  on.exit({
+    if (!keep_zip && file.exists(zip_path)) {
+      unlink(zip_path)
+    }
+  }, add = TRUE)
+  
+  # Attempt to download the ZIP file
+  tryCatch({
+    download.file(url, zip_path, mode = "wb")
+  }, error = function(e) {
+    stop("Failed to download the file from the specified URL: ", e$message)
+  })
+  
+  # Attempt to unzip the file to the specified extraction directory
+  tryCatch({
+    unzip(zip_path, exdir = extract_to)
+  }, error = function(e) {
+    stop("Failed to unzip the file: ", e$message)
+  })
+  
+  # Delete the ZIP file if 'keep_zip' is FALSE
+  if (!keep_zip) {
+    unlink(zip_path)
+  }
+  
+  gc()
+  
+  invisible(NULL)
+}
+
+
+
 #' Access EPA Level III Ecoregions Data via VSI
 #'
 #' This function retrieves the U.S. EPA Level III ecoregions shapefile from a remote server via VSI (Virtual Spatial Infrastructure).
@@ -162,6 +234,97 @@ read_csv_from_gdrive_v2 <- function(drive_folder, file_name) {
 
 
 # Utility ----
+
+#' Generate a Timestamp
+#'
+#' This function generates a timestamp in various formats representing the current date and time along with the time zone.
+#'
+#' @param type Either 'human_read' or 'for_file'
+#' @return A character string representing the current date and time in the selected
+#' @examples
+#' # Generate a timestamp
+#' timestamp()
+#'
+#' @export
+timestamp <- function(type = 'human_read'){
+  if(type == 'human_read') {
+    t <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z")    
+  }
+  if(type == 'for_file') {
+    t <- format(Sys.time(), "%Y%m%d%H%M%S")
+  }
+  
+  
+  return(t)
+}
+
+
+#' Write Shapefile to a New Directory and Create a Zipped Version
+#'
+#' This function writes an `sf` object to a shapefile in a new, file-specific directory and optionally creates a zipped version of the shapefile.
+#' It also allows for the removal of the original unzipped files and handles overwriting existing files.
+#'
+#' @param shp An `sf` object to write as a shapefile.
+#' @param location A character string specifying the path of the directory to create the new file-specific subdirectory in.
+#' @param filename A character string specifying the name of the file without the `.shp` extension.
+#' @param zip_only A logical value indicating whether the original (unzipped) files should be removed after zipping. Defaults to `FALSE`.
+#' @param overwrite A logical value indicating whether existing files should be overwritten. Defaults to `FALSE`.
+#' @return No return value. The function writes a shapefile to a specified directory, optionally zips the files, and manages file cleanup based on user input.
+#' @examples
+#' \dontrun{
+#' # Example usage
+#' st_write_shp(shp = prepped_for_parks_etal,
+#'              location = here::here("data/derived"),
+#'              filename = "career_lba_for_parks_v1",
+#'              zip_only = TRUE,
+#'              overwrite = TRUE)
+#' }
+#' @importFrom sf st_write
+#' @importFrom zip zip
+#' @export
+st_write_shp <- function(shp, location, filename, zip_only = FALSE, overwrite = FALSE) {
+  
+  # Define paths
+  out_dir <- file.path(location, filename)
+  zip_file <- file.path(out_dir, paste0(filename, ".zip"))
+  zip_file_dest <- file.path(location, paste0(filename, ".zip"))
+  
+  # Manage overwriting and directory creation
+  if (dir.exists(out_dir)) {
+    if (overwrite) {
+      unlink(out_dir, recursive = TRUE)
+    } else {
+      stop("Directory '", out_dir, "' already exists and overwrite is set to FALSE.")
+    }
+  }
+  
+  if (file.exists(zip_file_dest) && zip_only) {
+    if (overwrite) {
+      unlink(zip_file_dest)
+    } else {
+      stop("Zip file '", zip_file_dest, "' already exists and overwrite is set to FALSE.")
+    }
+  }
+  
+  # Create the directory if not there
+  dir_ensure(out_dir)
+  
+  # Write the shapefile
+  shapefile_path <- file.path(out_dir, paste0(filename, ".shp"))
+  sf::st_write(shp, shapefile_path, append = FALSE)
+  
+  # Get all shapefile components
+  all_shp_files <- list.files(out_dir, pattern = paste0(filename, ".*"), full.names = TRUE)
+  
+  # Create zip file
+  zip::zip(zipfile = zip_file, files = all_shp_files, mode = "cherry-pick")
+  
+  # Remove raw files if zip_only is TRUE
+  if (zip_only) {
+    file.copy(zip_file, zip_file_dest)
+    unlink(out_dir, recursive = TRUE)
+  }
+}
 
 #' Remove Columns Based on One or More Prefixes
 #'
