@@ -220,10 +220,7 @@ df.use <- dats_long_did |>
                                  pdsi_annual_5_yrs_prior_sum > -1000 ~ "no_pdsi_before_n1000t"))
 
 
-# testset <- df.use |>
-#   filter(ecoregion == "IDBatholith") |>
-#   mutate(biotic_before = case_when(biotic_5_yrs_prior_sum >= 10 ~ "biotic_prior",
-#                                   biotic_5_yrs_prior_sum <= 10 ~ "no_biotic_prior"))
+
 # 
 # n_bio_greater_10 <- dats_short |>
 #     filter(ecoregion == "IDBatholith") |>
@@ -258,18 +255,8 @@ df.use <- dats_long_did |>
 # p.twfe
 
 
-# Interaction-weighted simple model
 
 
-# model <- feols(
-#   rap_TRE ~ sunab(FirstTreat, year),
-#   data = testset |>
-#     filter(biotic_before == 1),
-#   cluster = "uniqueID"
-# )
-# summary(model)
-# plot_sunab_models(model_list = list(model),
-#                   model_labels = "test - biotic before")
 # 
 # model <- feols(
 #   rap_TRE ~ sunab(FirstTreat, year) | year + uniqueID,
@@ -301,9 +288,6 @@ iw_estimator_subg <- function(subgrp_col, grps, df) {
   model <- feols(
     rap_TRE ~ sunab(FirstTreat, year) | uniqueID + year,
     data = df_sub,
-    cluster = "conley",
-    conley_cutoff = 100, # CHANGE BASED ON SEMIVARIOGRAM
-    coords ~ long + lat,
     mem.clean = TRUE,
     lean = TRUE
   )
@@ -337,7 +321,7 @@ plot_sunab_models <- function(model_list, model_labels = NULL, title = "Dynamic-
 
   # Plot
   ggplot(plot_data, aes(x = Time, y = Estimate, color = Model, fill = Model)) +
-    geom_line(size = 1) +
+    geom_line(linewidth = 1) +
     geom_point(size = 2) +
     geom_ribbon(aes(ymin = CI_lower, ymax = CI_upper), alpha = 0.2, color = NA) +
     geom_vline(xintercept = -1, linetype = "dashed", color = "gray40") +
@@ -561,6 +545,79 @@ for(burn_l in c("low-moderate-sev", "unburned", "high-sev")) {
 # sizes_df[order(sizes_df$Size_Bytes, decreasing = TRUE), ]
 
 ```
+
+```{r}
+
+
+# SIMPLE
+testset <- df.use |>
+  filter(ecoregion == "IDBatholith")
+model <- feols(
+  rap_TRE ~ sunab(FirstTreat, year) | uniqueID + year,
+  data = testset,
+  cluster = "uniqueID")
+
+# INTERACTED
+model_interact <- feols(
+  rap_TRE ~ sunab(FirstTreat, year):biotic_before_10t | uniqueID + year,
+  data = testset,
+  cluster = "uniqueID")
+
+# SUBGROUPED
+p_test <- plot_all_together_did(subg_col = "biotic_before_10t",
+                      df = testset, title = "Test subg")
+
+
+# RESULTS
+summary(model)
+plot_sunab_models(model_list = list(model),
+                  model_labels = "test")
+
+summary(model_interact)
+interacted_coef <- summary(model_interact)$coefficients
+interacted_coef
+
+
+plot_sunab_models(model_list = list(model_interact),
+                  model_labels = "test interact")
+
+p_test
+
+
+# TRYING TO PLOT THE INTERACTED RESULTS
+
+etable(model_interact, keep = "%year::")
+
+
+agg_main <- aggregate(model_interact, agg = "cohort", fun = "mean", keep = "^(?!.*biotic_before_10t)")
+agg_inter <- aggregate(model_interact, agg = "cohort", fun = "mean", keep = "biotic_before_10t")
+
+
+tidy_main <- broom::tidy(agg_main) %>%
+  mutate(type = "Baseline (biotic_before_10t = 0)")
+
+tidy_inter <- broom::tidy(agg_inter) %>%
+  mutate(type = "Effect of biotic_before_10t (per unit)")
+
+
+
+plot_df <- bind_rows(tidy_main, tidy_inter) %>%
+  mutate(rel_year = as.numeric(gsub("year::(-?\\d+).*", "\\1", term)))
+
+ggplot(plot_df, aes(x = rel_year, y = estimate, color = type)) +
+  geom_line() +
+  geom_point() +
+  geom_errorbar(aes(ymin = estimate - 1.96 * std.error,
+                    ymax = estimate + 1.96 * std.error),
+                width = 0.2) +
+  geom_vline(xintercept = -1, linetype = "dashed") +
+  theme_minimal() +
+  labs(x = "Event time (years)", y = "Estimated effect",
+       color = "Series")
+
+```
+
+
 
 
 <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne" >Click to see Session Information</button><div id="collapseOne" class="accordion-collapse collapse"><div>
