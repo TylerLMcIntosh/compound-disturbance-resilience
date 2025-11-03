@@ -393,44 +393,203 @@ dir_ensure <- function(path) {
 }
 
 
-install_and_load_packages <- function(package_list, auto_install = "n") {
-  # Ensure pak is available
-  if (!requireNamespace("pak", quietly = TRUE)) {
-    cat("The 'pak' package is required for fast installation of packages, installing now.\n")
-    install.packages("pak")
+#' Install and Load R Packages with Optional Version Control
+#'
+#' Ensures that specified R packages are installed and loaded, optionally using
+#' \pkg{pak} for efficient installation or \pkg{groundhog} for reproducible
+#' versioned installations. The function handles missing packages, installs
+#' dependencies, sets repository sources, and provides informative messages
+#' about installation and loading status.
+#'
+#' @param pkgs Character vector of package names to install and load.
+#' @param date Optional character string in the format \code{"YYYY-MM-DD"} specifying
+#'   a CRAN snapshot date. If provided, the function uses the corresponding Posit Package
+#'   Manager repository (\url{https://packagemanager.posit.co/}) for reproducibility.
+#'   Required if \code{groundhog = TRUE}.
+#' @param groundhog Logical; if \code{TRUE}, uses the \pkg{groundhog} package to
+#'   load packages at the specific version available on the given date. Defaults to \code{FALSE}.
+#' @param pak_quiet Logical; if \code{TRUE} (default), suppresses verbose output
+#'   from \pkg{pak} during installation.
+#'
+#' @details
+#' This function performs the following steps:
+#' \enumerate{
+#'   \item Checks whether requested packages are already installed.
+#'   \item Optionally installs and uses \pkg{pak} for efficient package installation.
+#'   \item Optionally installs and uses \pkg{groundhog} for reproducible version loading.
+#'   \item Falls back to base R \code{install.packages()} if necessary.
+#'   \item Sets the CRAN repository URL, optionally tied to a date snapshot.
+#'   \item Loads all requested packages, reporting any that fail to load.
+#' }
+#'
+#' The function automatically installs \pkg{pak} if missing, attempting both
+#' CRAN installation and the official bootstrap script if needed. If packages
+#' are newly installed or updated, a restart of the R session may be required
+#' to ensure all dependencies load properly.
+#'
+#' @return
+#' A named character vector (invisible) of loaded package versions, with
+#' \code{NA} for any packages that failed to load.
+#'
+#' @note
+#' - Include \pkg{pak} and \pkg{groundhog} in your \code{Suggests} field if used.
+#' - The helper function internally suppresses warnings during installation to
+#'   maintain a clean console output.
+#' - It is recommended to restart R after major updates or new installations.
+#'
+#' @examples
+#' \dontrun{
+#' # Standard installation and loading
+#' install_load_packages(c("dplyr", "ggplot2"))
+#'
+#' # Using a CRAN snapshot for reproducibility
+#' install_load_packages(c("dplyr", "ggplot2"), date = "2023-01-01")
+#'
+#' # Using groundhog for strict version control
+#' install_load_packages(c("dplyr", "ggplot2"), groundhog = TRUE, date = "2023-01-01")
+#' }
+#'
+#' @importFrom utils install.packages packageVersion
+#' @importFrom utils installed.packages
+#' @importFrom base requireNamespace library
+#'
+#' @export
+install_load_packages <- function(pkgs, date = NULL, groundhog = FALSE, pak_quiet = TRUE) {
+  
+  # --- Helper: quiet install with base R ---
+  safe_install <- function(pkg, repos = "https://cloud.r-project.org") {
+    tryCatch(
+      suppressWarnings(install.packages(pkg, repos = repos, dependencies = TRUE)),
+      error = function(e) message("Could not install ", pkg, ": ", e$message)
+    )
   }
   
-  # Helper: Extract base name of a package for require()
-  parse_pkg_name <- function(pkg) {
-    if (grepl("/", pkg)) {
-      sub("^.+/(.+?)(@.+)?$", "\\1", pkg)  # GitHub: extract repo name
-    } else {
-      sub("@.*$", "", pkg)  # CRAN: remove @version if present
+  # --- Check which packages are missing ---
+  not_installed <- vapply(pkgs, function(p) !requireNamespace(p, quietly = TRUE), logical(1))
+  missing_pkgs <- pkgs[not_installed]
+  
+  if (length(missing_pkgs) == 0) {
+    message("All requested packages are already installed.")
+  }
+  
+  # --- Only ensure pak if actually needed ---
+  has_pak <- requireNamespace("pak", quietly = TRUE)
+  if (length(missing_pkgs) > 0 && !has_pak) {
+    message("Some packages are missing; installing 'pak'...")
+    
+    pak_install_success <- FALSE
+    try({
+      suppressWarnings(
+        install.packages("pak", repos = "https://cloud.r-project.org", dependencies = TRUE)
+      )
+      pak_install_success <- requireNamespace("pak", quietly = TRUE)
+    }, silent = TRUE)
+    
+    if (!pak_install_success) {
+      message("Standard install failed; trying pak bootstrap installer...")
+      try({
+        source("https://pak.r-lib.org/install.R")
+        pak_install_success <- requireNamespace("pak", quietly = TRUE)
+      }, silent = TRUE)
+    }
+    
+    if (!pak_install_success) {
+      warning("Failed to install 'pak' by any method; will fall back to base installers only.")
+    }
+    
+    has_pak <- requireNamespace("pak", quietly = TRUE)
+  }
+  
+  # --- Optionally ensure groundhog ---
+  if (groundhog) {
+    if (!requireNamespace("groundhog", quietly = TRUE)) {
+      message("Installing 'groundhog'...")
+      safe_install("groundhog")
+    }
+    if (is.null(date)) {
+      stop("groundhog = TRUE requires a non-null 'date' argument (YYYY-MM-DD).")
     }
   }
   
-  # Classify and separate packages
-  missing_pkgs <- c()
-  for (pkg in package_list) {
-    pkg_name <- parse_pkg_name(pkg)
-    if (!requireNamespace(pkg_name, quietly = TRUE)) {
-      missing_pkgs <- c(missing_pkgs, pkg)
-    }
+  # --- Repository selection ---
+  repo <- if (!is.null(date)) {
+    sprintf("https://packagemanager.posit.co/cran/%s", date)
+  } else {
+    "https://cloud.r-project.org"
   }
+  message("Using CRAN repository: ", repo)
+  options(repos = c(CRAN = repo))
   
-  # Install missing ones (CRAN or GitHub), with version support
+  # --- Install missing packages ---
+  installed_or_updated <- FALSE
+  
   if (length(missing_pkgs) > 0) {
-    pak::pkg_install(missing_pkgs, upgrade = TRUE)
+    message("Missing packages detected: ", paste(missing_pkgs, collapse = ", "))
+    
+    if (has_pak) {
+      tryCatch({
+        if (pak_quiet) {
+          message("Attempting install with pak (quietly)...")
+          suppressMessages(suppressWarnings(
+            pak::pkg_install(missing_pkgs, ask = FALSE, upgrade = FALSE)
+          ))
+        } else {
+          message("Attempting install with pak...")
+          pak::pkg_install(missing_pkgs, ask = FALSE, upgrade = FALSE)
+        }
+        installed_or_updated <<- TRUE
+      }, error = function(e) {
+        message("pak installation failed: ", e$message)
+        message("Falling back to install.packages()...")
+        for (p in missing_pkgs) safe_install(p, repos = repo)
+        installed_or_updated <<- TRUE
+      })
+    } else {
+      message("pak unavailable; installing missing packages with install.packages()...")
+      for (p in missing_pkgs) safe_install(p, repos = repo)
+      installed_or_updated <- TRUE
+    }
   }
   
-  # Load all packages
-  for (pkg in package_list) {
-    pkg_name <- parse_pkg_name(pkg)
-    success <- require(pkg_name, character.only = TRUE, quietly = TRUE)
-    if (!success) cat("Failed to load package:", pkg_name, "\n")
+  # --- Load packages ---
+  failed_to_load <- character()
+  
+  if (groundhog) {
+    message("Loading packages with groundhog (date = ", date, ")...")
+    tryCatch({
+      groundhog::groundhog.library(pkgs, date = date)
+    }, error = function(e) {
+      message("groundhog loading error: ", e$message)
+      failed_to_load <<- pkgs
+    })
+  } else {
+    message("Loading packages...")
+    for (p in pkgs) {
+      ok <- tryCatch({
+        library(p, character.only = TRUE, quietly = TRUE)
+        TRUE
+      }, error = function(e) {
+        message("Failed to load ", p, ": ", e$message)
+        FALSE
+      })
+      if (!ok) failed_to_load <- c(failed_to_load, p)
+    }
   }
   
-  cat("All specified packages installed and loaded.\n")
+  # --- Restart message if needed ---
+  if (installed_or_updated || length(failed_to_load) > 0) {
+    message("\nSome packages were newly installed, updated, or failed to load.\n",
+            "This may be due to updated dependencies already loaded in memory.\n",
+            "Please restart R and re-run this function to ensure all packages load correctly.\n")
+  }
+  
+  # --- Report loaded versions ---
+  loaded_versions <- sapply(pkgs, function(p) {
+    if (requireNamespace(p, quietly = TRUE)) as.character(packageVersion(p)) else NA_character_
+  })
+  message("Packages loaded:\n",
+          paste(names(loaded_versions), loaded_versions, collapse = "\n"))
+  invisible(loaded_versions)
 }
 
 
