@@ -1,0 +1,463 @@
+---
+title: "05_dydid"
+author: Tyler L. McIntosh
+date: last-modified
+format:
+  html:
+    embed-resources: true
+    html-math-method: katex
+    css: styles.css
+    toc: true
+    toc-depth: 1
+    toc-title: Contents
+    toc-location: right
+    code-fold: true
+    code-summary: "Show the code"
+---
+
+# Setup for analysis
+
+``` {r setupchunk}
+#| echo: true
+#| message: false
+#| warning: false
+#| results: 'hide'
+
+rm(list = ls())
+
+if(!requireNamespace("here", quietly = TRUE)) {
+  install.packages("here")
+}
+library(here)
+
+source(here::here("utils", "functions.R"))
+
+install_load_packages(c(
+  "tidyverse",
+  "tictoc",
+  "hstats",
+  "glue",
+  "shapviz",
+  "patchwork",
+  "cobalt",
+  "purrr",
+  "corrplot",
+  "gridExtra",
+  "tictoc",
+  "fect",
+  "fixest",
+  "did",
+  "panelView",
+  "PanelMatch",
+  "bacondecomp",
+  "didimputation",
+  "doParallel",
+  "HonestDid",
+  "HonestDidFEct",
+  "DIDmultiplegtDYN",
+  "sf",
+  "spdep",
+  "purrr",
+  "gstat",
+  "scales",
+  "broom",
+  "ggfixest"))
+
+# # install packages from CRAN
+# packages <- c("fixest", "did", "didimputation", 
+#          "panelView", "bacondecomp", "HonestDiD",
+#               "DIDmultiplegtDYN", "PanelMatch")
+# install.packages(setdiff(packages, rownames(installed.packages())))  
+# 
+# # install most up-to-date "fect" from Github
+# if ("fect" %in% rownames(installed.packages()) == FALSE) {
+#   devtools:: install_github("xuyiqing/fect")
+# }
+# 
+# # install forked "HonestDiD" package compatible with "fect"
+# if ("HonestDiDFEct" %in% rownames(installed.packages()) == FALSE) {
+#   devtools:: install_github("lzy318/HonestDiDFEct")
+# }
+
+
+dir_figs <- here::here('figs')
+dir_derived <- here::here('data', 'derived')
+dir_raw <- here::here('data', 'raw')
+dir_manual <- here::here('data', 'manual')
+dir_ensure(c(dir_figs,
+             dir_derived,
+             dir_manual,
+             dir_raw))
+
+seed = 1234
+set.seed(seed)
+
+
+```
+
+#
+
+```{r}
+  
+dats_long <- read_csv(here(dir_derived, "test_dats_long.csv"))
+#dats_short <- read_csv(here(dir_derived, "test_dats_short.csv"))
+
+
+```
+
+
+```{r}
+
+# model.twfe.0 <- feols(rap_TRE~treated|uniqueID+year,
+#                       data=dats_long, cluster = "uniqueID") 
+# print(model.twfe.0)
+
+
+# # We don't have any always-treated units, so we don't need to worry about the Goodman-Bacon decomposition
+
+
+dats_long_did <- get.cohort(dats_long, D = "treated",
+                                 index = c("uniqueID", "year"),
+                                 start0 = TRUE)
+dats_long_did[which(is.na(dats_long_did$FirstTreat)),"FirstTreat"] <- 1000 
+df.use <- dats_long_did |>
+  mutate(biotic_before_10t = case_when(biotic_5_yrs_prior_sum >= 10 ~ "biotic_prior_10t",
+                                  biotic_5_yrs_prior_sum < 10 ~ "no_biotic_prior_10t"),
+         biotic_before_20t = case_when(biotic_5_yrs_prior_sum >= 20 ~ "biotic_prior_20t",
+                                  biotic_5_yrs_prior_sum < 20 ~ "no_biotic_prior_20t"),
+         hd_after_17t = case_when(hd_fingerprint_5_yrs_after_sum >= 17 ~ "hd_after_17t",
+                              hd_fingerprint_5_yrs_after_sum < 17 ~ "no_hd_after_17t"),
+         pdsi_before_n500t = case_when(pdsi_annual_5_yrs_prior_sum <= -500 ~ "pdsi_before_n500t",
+                                 pdsi_annual_5_yrs_prior_sum > -500 ~ "no_pdsi_before_n500t"),
+         pdsi_before_n1000t = case_when(pdsi_annual_5_yrs_prior_sum <= -1000 ~ "pdsi_before_n1000t",
+                                 pdsi_annual_5_yrs_prior_sum > -1000 ~ "no_pdsi_before_n1000t"))
+
+
+
+# 
+# n_bio_greater_10 <- dats_short |>
+#     filter(ecoregion == "IDBatholith") |>
+#   filter(fire == 1 & biotic_5_yrs_prior_sum >= 10)
+# n_bio_greater_10_control <- dats_short |>
+#     filter(ecoregion == "IDBatholith") |>
+#   filter(fire == 0 & biotic_5_yrs_prior_sum >= 10)
+
+# # Dynamic TWFE
+# df.twfe <- df.use
+# 
+# # drop always treated units
+# #df.twfe$treat <- as.numeric(df.twfe$treatment_mean>0) 
+# df.twfe[which(is.na(df.twfe$Time_to_Treatment)),'Time_to_Treatment'] <- -999 # can be an arbitrary value
+# twfe.est <- feols(rap_TRE ~ i(Time_to_Treatment, fire, ref = c(-1, -999))| uniqueID + year, 
+#                   data = df.twfe,
+#                   cluster = "uniqueID")
+# 
+# twfe.output <- as.matrix(twfe.est$coeftable)
+# print(round(twfe.output, 3))
+# 
+# twfe.est$collin.var
+# 
+# table(df.twfe$treated, useNA = "always")
+# table(df.twfe$treated, is.na(df.twfe$Time_to_Treatment))
+# 
+# 
+# twfe.output <- as.data.frame(twfe.output)
+# twfe.output$Time <- c(c(-29:-2),c(0:21))+1 
+# p.twfe <- esplot(twfe.output,Period = 'Time',Estimate = 'Estimate',
+#                                SE = 'Std. Error', xlim = c(-29,21))
+# p.twfe
+
+
+
+
+# 
+# model <- feols(
+#   rap_TRE ~ sunab(FirstTreat, year) | year + uniqueID,
+#   data = testset |>
+#     filter(biotic_before == 0),
+#   cluster = "uniqueID"
+# )
+# summary(model)
+# plot_sunab_models(model_list = list(model),
+#                   model_labels = "test2 - no biotic before")
+
+
+```
+
+# Operate using internal fixest commands and ggfixest
+
+# Test ATE model on Sierra Nevada and compare to TWFE without sun abraham estimate
+We find that there is a meaningful difference between the two estimates
+```{r}
+
+x <- df.use |>
+  filter(ecoregion == "SierraNevada")
+
+est_sunab <- feols(
+  rap_TRE ~ sunab(FirstTreat, year, ref.p = -1) | uniqueID + year,
+  data = x,
+  mem.clean = TRUE,
+  lean = FALSE
+)
+
+
+ggiplot(sunab, ci_level = 0.95, geom_style = "ribbon", col = "turquoise") +
+  xlim(-10, 20)
+
+est_twfe <- feols(
+  rap_TRE ~ i(factor_var = Time_to_Treatment, var = treated, ref = -1) | uniqueID + year,
+  data = x,
+  mem.clean = TRUE,
+  lean = FALSE
+)
+
+
+ggiplot(list('Sunab' = sunab, 'TWFE' = twfe),
+        ci_level = 0.95,
+        #geom_style = "ribbon",
+        col = c("turquoise", "pink")) +
+  xlim(-10, 20)
+
+
+```
+
+# Use internal functions to test Conley cutoffs
+NOTE: Doesn't work, still need to iterate over 
+
+
+```{r}
+
+# 1) Build Conley "requests" (not matrices!)
+V25_req  <- vcov_conley(lat = ~lat, lon = ~long, cutoff = 25,  pixel = 20, distance = "spherical")
+V150_req <- vcov_conley(lat = ~lat, lon = ~long, cutoff = 150, pixel = 20, distance = "spherical")
+
+# 2) Replicate the model into a fixest_list with different VCOVs
+mods <- rep(
+  est_sunab,
+  times = 3,
+  vcov = list("hc1", "Conley 25km" = V25_req, "Conley 150km" = V150_req)
+)
+
+# 3) Plot both with ggiplot, faceting by model label
+ggiplot(mods) +
+  theme(legend.position = "right") +
+  xlim(-10, 20)
+
+```
+
+
+
+# Test split samples using internal fixest functions
+The internal functions work well for splitting on things like ecoregion, but I will need custom code to split on anything related to the treatment
+```{r}
+
+xx <- df.use |>
+  filter(ecoregion == "SierraNevada" | ecoregion == "IDBatholith")
+
+est_sunab_eco_test <- feols(
+  rap_TRE ~ sunab(FirstTreat, year, ref.p = -1) | uniqueID + year,
+  data = xx,
+  mem.clean = TRUE,
+  lean = FALSE,
+  split = ~ ecoregion,
+  vcov = fixest::vcov_conley(lat = "lat",
+                             lon = "long",
+                             cutoff = 125,
+                             pixel = 20,
+                             distance = "triangular"
+                             )
+)
+
+ggiplot(
+  est_sunab_eco_test,
+  ref.line = -1,
+  main = 'Staggered treatment: Split multi-sample',
+  xlab = 'Time to treatment',
+  multi_style = 'facet',
+  geom_style = 'ribbon',
+  facet_args = list(labeller = labeller(id = function(x) gsub(".*: ", "", x))),
+  theme = theme_minimal()) +
+  xlim(-10, 20)
+
+
+
+
+
+xx_ls <- df.use |>
+  filter(ecoregion == "SierraNevada" | ecoregion == "IDBatholith") |>
+  filter(is.na(burn_sev) | burn_sev == "low-moderate-sev")
+
+xx_hs <- df.use |>
+  filter(ecoregion == "SierraNevada" | ecoregion == "IDBatholith") |>
+  filter(is.na(burn_sev) | burn_sev == "high-sev")
+
+# 76.83 sec to run
+tic()
+est_sunab_eco_test_ls <- feols(
+  rap_TRE ~ sunab(FirstTreat, year, ref.p = -1) | uniqueID + year,
+  data = xx_ls,
+  mem.clean = TRUE,
+  lean = FALSE,
+  split = ~ ecoregion,
+  vcov = fixest::vcov_conley(lat = "lat",
+                             lon = "long",
+                             cutoff = 125,
+                             pixel = 20,
+                             distance = "triangular"
+                             )
+)
+toc()
+
+# 63.05 sec
+tic()
+est_sunab_eco_test_hs <- feols(
+  rap_TRE ~ sunab(FirstTreat, year, ref.p = -1) | uniqueID + year,
+  data = xx_hs,
+  mem.clean = TRUE,
+  lean = FALSE,
+  split = ~ ecoregion,
+  vcov = fixest::vcov_conley(lat = "lat",
+                             lon = "long",
+                             cutoff = 125,
+                             pixel = 20,
+                             distance = "triangular"
+                             )
+)
+toc()
+
+ggiplot(
+  list('LS' = est_sunab_eco_test_ls, 'HS' = est_sunab_eco_test_hs),
+  ref.line = -1,
+  main = 'Staggered treatment: Split multi-sample',
+  xlab = 'Time to treatment',
+  #multi_style = 'facet',
+  geom_style = 'ribbon',
+  facet_args = list(labeller = labeller(id = function(x) gsub(".*: ", "", x))),
+  theme = theme_minimal()) +
+  xlim(-10, 20)
+
+
+
+
+# 1) Extract data for each split set
+df_ls <- iplot_data(est_sunab_eco_test_ls) |> mutate(Severity = "Low/Moderate")
+df_hs <- iplot_data(est_sunab_eco_test_hs) |> mutate(Severity = "High")
+
+# 2) Bind and clean facet labels
+df_all <- bind_rows(df_ls, df_hs) |>
+  mutate(
+    # 'sample' contains strings like "ecoregion: SierraNevada"
+    ecoregion = sub(".*: ", "", sample)
+  )
+
+# 3) Plot: one facet per ecoregion; both severities overlaid
+ggplot(df_all, aes(x = estimate_names, y = estimate,
+                   #ymin = ci_low, ymax = ci_high,
+                   color = Severity, fill = Severity, linetype = Severity)) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_ribbon(aes(ymin = ci_low, ymax = ci_high, fill = Severity),
+              alpha = 0.3, color = NA) +
+  geom_line() +
+  facet_wrap(~ ecoregion) +
+  coord_cartesian(xlim = c(-10, 20)) +
+  labs(x = "Time to treatment", y = "Forest cover effect estimate",
+       title = "Staggered treatment: LS vs HS overlaid by ecoregion",
+      caption = "95% CIs, Conley standard errors with 125km cutoff and 20km pixel") +
+  theme_minimal() +
+  guides(fill = guide_legend(title = "Severity"),
+         color = guide_legend(title = "Severity"),
+         linetype = guide_legend(title = "Severity"))
+  
+
+```
+
+# Test computation time with drought & biotic time series included
+
+```{r}
+
+
+tic()
+est_sunab_eco_test_ls_controlled <- feols(
+  rap_TRE ~ biotic_sum + pdsi_annual + sunab(FirstTreat, year, ref.p = -1) | uniqueID + year,
+  data = xx_ls,
+  mem.clean = TRUE,
+  lean = FALSE,
+  split = ~ ecoregion,
+  vcov = fixest::vcov_conley(lat = "lat",
+                             lon = "long",
+                             cutoff = 125,
+                             pixel = 20,
+                             distance = "triangular"
+                             )
+)
+toc()
+
+tic()
+est_sunab_eco_test_hs_controlled <- feols(
+  rap_TRE ~ biotic_sum + pdsi_annual + sunab(FirstTreat, year, ref.p = -1) | uniqueID + year,
+  data = xx_hs,
+  mem.clean = TRUE,
+  lean = FALSE,
+  split = ~ ecoregion,
+  vcov = fixest::vcov_conley(lat = "lat",
+                             lon = "long",
+                             cutoff = 125,
+                             pixel = 20,
+                             distance = "triangular"
+                             )
+)
+toc()
+
+
+
+
+
+# 1) Extract data for each split set
+df_ls_c <- iplot_data(est_sunab_eco_test_ls_controlled) |> mutate(Severity = "Low/Moderate")
+df_hs_c <- iplot_data(est_sunab_eco_test_hs_controlled) |> mutate(Severity = "High")
+
+# 2) Bind and clean facet labels
+df_all_c <- bind_rows(df_ls_c, df_hs_c) |>
+  mutate(
+    # 'sample' contains strings like "ecoregion: SierraNevada"
+    ecoregion = sub(".*: ", "", sample)
+  )
+
+# 3) Plot: one facet per ecoregion; both severities overlaid
+ggplot(df_all_c, aes(x = estimate_names, y = estimate,
+                   #ymin = ci_low, ymax = ci_high,
+                   color = Severity, fill = Severity, linetype = Severity)) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_ribbon(aes(ymin = ci_low, ymax = ci_high, fill = Severity),
+              alpha = 0.3, color = NA) +
+  geom_line() +
+  facet_wrap(~ ecoregion) +
+  coord_cartesian(xlim = c(-10, 20)) +
+  labs(x = "Time to treatment", y = "Forest cover effect estimate",
+       title = "Staggered treatment: LS vs HS overlaid by ecoregion",
+      caption = "95% CIs, Conley standard errors with 125km cutoff and 20km pixel") +
+  theme_minimal() +
+  guides(fill = guide_legend(title = "Severity"),
+         color = guide_legend(title = "Severity"),
+         linetype = guide_legend(title = "Severity"))
+  
+
+```
+
+
+# Test pre-fire disturbance with -5 as baseline
+
+```{r}
+
+
+
+
+
+```
+
+
+<button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne" >Click to see Session Information</button><div id="collapseOne" class="accordion-collapse collapse"><div>
+
+```{r sessionInfo}
+sessionInfo()
+```

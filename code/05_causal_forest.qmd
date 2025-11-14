@@ -32,7 +32,7 @@ library(here)
 
 source(here::here("utils", "functions.R"))
 
-install_and_load_packages(c(
+install_load_packages(c(
   "tidyverse",
   "tictoc",
   "grf",
@@ -45,7 +45,11 @@ install_and_load_packages(c(
   "purrr",
   "corrplot",
   "gridExtra",
+  "arrow",
   "tictoc"))
+
+devtools::install_github("grf-labs/sufrep")
+library(sufrep)
 
 dir_figs <- here::here('figs')
 dir_derived <- here::here('data', 'derived')
@@ -65,337 +69,136 @@ set.seed(seed)
 
 ```{r}
 
-dats_long <- read_csv(here(dir_derived, "test_dats_long.csv"))
-
-
 #Short dats
-dats <- read_csv(here(dir_derived, "test_dats.csv"))
+dats <- read_parquet(here(dir_derived, "test_dats_short.parquet"))
 ecoregions <- unique(dats$ecoregion)
 
 ```
 
-# Load and explore long data
+# Sufrep function
+```{r}
 
-We see that tree cover shifts lower more dramatically under high severity fire, which is what we would expect. However, these trends vary by ecoregion. Tree cover in the Southern Rockies shifts much more dramatically towards zero--since this is long data, we can theorize that this is potentially due to lack of regeneration (let's test this). We also see that the shift towards lower tree cover is more severe even under low/moderate severity fire in the Southern Rockies than it is in other ecoregions.
-
-When we check the before/after densities of tree cover for our mock fires (i.e. the rest of the forested area used as control), we see that the after_burn values are higher than pre-burn, with the greatest change in the North Cascades. This is what we would expect as a result of growth rates in areas that have not been impacted by fires.
-
-From the trajectories (both ribbon and boxplot) we see that there are varied recovery trajectories by ecoregion. Most ecoregions and fire severity groups have some element of delayed mortality. Most of these appear to last two years, although there are longer delayed mortality patterns in the North Cascades under low/moderate severity fire (~5 years) and under low/moderate severity fire in the Southern Rockies (~10 years!).
-
-Interestingly, across all ecoregions, even in the 'unburned' areas (i.e. CBI < 0.1) we see a trajectory of long-term forest cover loss following fire occurrence, suggesting that the forest pattern changes from fire may have resulted in lowered resilience to other disturbances, or other fallout effects from nearby higher severity patches.
-
-We find that the parallel trajectories hypothesis more or less holds for all ecoregions and fire severities with the exception of unburned (actual) ares in the Northern Cascades.
-
-In the North Cascades and Sierra Nevada we see what looks like a signature of forest decline prior to low, moderate, and high severity burns.
-
-*FINDINGS OF INTEREST:*
-- Lack of recovery under high severity fire in S.Rockies, also under ANY fire in S.Nevada!
-- Parallel assumption (more or less) holds
-- Delayed mortality primarily in low/moderate severity areas (which is what we would expect)
-  - QUESTION: Is this delayed mortality linked to post-fire drought?
-- There is a notable signature of forest loss even in unburned areas within fire perimeters
-  - QUESTION: Is this linked to other disturbances? Or to fire heterogeneity patterning?
-- We see forest decline in the years just prior to burn in the North Cascades and Sierra Nevada
-  - QUESTION: Is this linked to other disturbances? Does probability of burn / burn severity change depending on prior drought/biotic agents?
+# A function to use sufrep::make_encoder such that the encoded variables are added to the dataframe
+sufrep_encode_append <- function(dats,
+                                 method = 'means',
+                                 X_cols,
+                                 G_col,
+                                 remove_G_col = TRUE,
+                                 ...) {
   
+  #Select variables for encoding
+  x_df <- dats |> 
+    select(all_of(X_cols)) |>
+    as.data.frame()
+  g_df <- dats |>
+    pull(G_col)
+  
+  print(g_df)
+  
+  #Encode
+  encoder <- sufrep::make_encoder(method = method, X = x_df, G = g_df, ...)
+  dats_encoded <- encoder(x_df, G = g_df)
+  
+  #Make interpretable encoding columns
+  encoded_cols <- dats_encoded |> select(starts_with("ENC"))
+  names(encoded_cols) <- paste0(names(encoded_cols), "_", G_col)
+  
+  dats_out <- dats |>
+    cbind(encoded_cols)
+  
+  if(remove_G_col) {
+    dats_out <- dats_out |>
+      select(-all_of(G_col))
+  }
+  
+  return(dats_out)
+}
+
+
+```
+
+# Prep data for causal forest machine learning
+- Normalize continuous covariates to control for covariates with different numerical scales (avoid large-scale variables dominating and stabilize splits)
+- Encode categorical variables as a lower-dimensional real-valued representation for inclusion in causal forest (use sufficient representations instead of one-hot encoding since random forests "may largely ignore high-cardinality one-hot encoded factors" - see Johannemann et al 2021). Low-rank encoding appears to be the most applicable to real-world data.
 
 ```{r}
 
+cont_covar <- c("aet", "def", "srtm", "tpi", "chili", "avg_rap_TRE_6_yr_pre_fire")
+cat_covar <- c("frg_reclass", "mock_burn_year", "ecoregion")
+outcome <- c("post_fire_rap_TRE_difference_n2_3_yr")
+trt <- c("fire")
 
-# Plot density plots grouped by fire_group
-ggplot(dats_long |>
-         filter(fire_timeframe != "year_of_burn"),
-       aes(x = rap_TRE, fill = fire_timeframe)) +
-  geom_density(alpha = 0.5) +
-  labs(
-    title = "Density Plot of rap_TRE by Fire severity and pre/post burn",
-    x = "Tree cover % (RAP)",
-    fill = "Years Since Fire",
-    caption = "NOTE: 'unburned_mock' represents the control sample \n'burned' in random years and given CBI values of 0"
-  ) +
-  theme_minimal() +
-  facet_grid(ecoregion ~ burn_sev_tagged)
+all_cols <- c(cont_covar, cat_covar, outcome, trt)
 
-ggsave(filename = here(dir_figs, "density_p_pre_post_fire_by_sev.png"),
-       plot = last_plot(),
-       bg = "white")
-
-
-# Examine trajectories by ecoregion
-
-# BOXPLOTS
-
-ggplot(data = dats_long) +
-  geom_boxplot(
-    aes(
-      x = as.factor(year_from_fire_index),
-      y = rap_TRE,
-      fill = year_from_fire_index == 0  # TRUE for 0, FALSE otherwise
+# Scale all continuous covariates
+# filter out anything with NAs
+# ensure categorical covariates are factors
+# encode categorical as one-hot dummies or sufficient representations
+dats_ml <- dats |>
+  select(all_of(all_cols)) |>
+  filter(dplyr::if_all(everything(), ~ !is.na(.x))) |>
+  mutate(
+    across(
+      all_of(cont_covar),
+      \(x) as.numeric(scale(x))
     )
-  ) +
-  scale_fill_manual(
-    values = c("TRUE" = "red", "FALSE" = "gray70"),
-    guide = "none"  # hide legend
-  ) +
-  labs(
-    title = "Tree cover by years from fire",
-    y = "Tree cover %",
-    x = "Years from fire",
-    caption = "NOTE: 'unburned_mock' represents the control sample \n'burned' in random years and given CBI values of 0"
-  ) +
-  theme_minimal() +
-  facet_grid(ecoregion ~ burn_sev_tagged)
-ggsave(filename = here(dir_figs, "boxplot_time_series.png"),
-       plot = last_plot(),
-       bg = "white",
-       units = "px",
-       width = 5000,
-       height = 3000)
-
-
-
-# LINE TRAJECTORIES
-# Step 1: Summarize the data
-summary_data <- dats_long %>%
-  group_by(ecoregion, burn_sev_tagged, year_from_fire_index) %>%
-  summarise(
-    q25 = quantile(rap_TRE, 0.25, na.rm = TRUE),
-    median = median(rap_TRE, na.rm = TRUE),
-    q75 = quantile(rap_TRE, 0.75, na.rm = TRUE),
-    .groups = "drop"
-  )
-
-# Step 2: Extract 'unburned-mock' data
-unburned_mock <- summary_data %>%
-  filter(burn_sev_tagged == "unburned-mock") %>%
-  select(ecoregion, year_from_fire_index, median)
-
-# Step 3: Plot
-ggplot(summary_data, aes(x = year_from_fire_index, y = median)) +
-  # IQR ribbon
-  geom_ribbon(aes(ymin = q25, ymax = q75), fill = "gray80", alpha = 0.5) +
-  
-  # Main median line for each facet
-  geom_line(color = "black", size = 1) +
-
-  # Dotted blue overlay from unburned-mock
-  geom_line(
-    data = unburned_mock,
-    aes(y = median),
-    color = "blue",
-    linetype = "dotted",
-    inherit.aes = TRUE
-  ) +
-
-  # Solid blue line only in unburned-mock facet
-  geom_line(
-    data = summary_data %>% filter(burn_sev_tagged == "unburned-mock"),
-    aes(y = median),
-    color = "blue",
-    size = 1,
-    linetype = "solid"
-  ) +
-
-  geom_vline(xintercept = 0, linetype = "dotted", color = "red", size = 1) +
-  
-  facet_grid(ecoregion ~ burn_sev_tagged) +
-
-  labs(
-    title = "Tree Cover by Years from Fire (IQR shaded)",
-    x = "Years from fire",
-    y = "Tree cover %",
-    caption = "NOTE: 'unburned_mock' represents the control sample \n'burned' in random years and given CBI values of 0"
-  ) +
-  theme_minimal()
-ggsave(filename = here(dir_figs, "iqr_line_time_series.png"),
-       plot = last_plot(),
-       bg = "white",
-       units = "px",
-       width = 5000,
-       height = 3000)
+  ) |>
+  mutate(
+    across(
+      all_of(cat_covar),
+      \(x) as.factor(x)
+    )
+  ) |>
+  # fastDummies::dummy_cols(select_columns = c("frg_reclass"),
+  #                         remove_first_dummy = FALSE, #Keep full one-hot encoding for tree-based methods
+  #                         remove_selected_columns = TRUE) |> 
+  sufrep_encode_append(method = 'low_rank', # Use low-rank sufficient representation encoding to reduce to 2 dimensions
+                       X_cols = cont_covar,
+                       G_col = "mock_burn_year",
+                       num_components = 2) |> 
+  sufrep_encode_append(method = 'low_rank', # Use low-rank sufficient representation encoding to reduce to 2 dimensions
+                       X_cols = cont_covar,
+                       G_col = "frg_reclass",
+                       num_components = 2)
 
 ```
 
 
-# Load and explore data
-- Correlation matrix
-- Covariate balance: love & density plots
+# Test model tuning time bumps
 
-*FINDINGS:*
-- High correlation among post-event tree cover (expected)
-- Burn severity and heterogeneity are most highly correlated with post-fire cover in the S.Rockies. Minimal correlation in S.Nevada & ID.Batholith, only with immediate post-fire in N.Cascades
-- There's some correlation between long-term average AET/DEF and the HD/PDSI, but not as much as there might be
-- The S.Rockies and S.Nevada have the best covariate balance out of the box, while the N.Cascades has extremely poor covariate balance, and IDBatholith isn't great. Both IDB & NC have imbalances in the biotic disturbance before and after fire, which is interesting
-- We probably want to conduct pre-DiD matching
+GRF package tuning parameters:
 
+tune.parameters	
+A vector of parameter names to tune. If "all": all tunable parameters are tuned by cross-validation. The following parameters are tunable: ("sample.fraction", "mtry", "min.node.size", "honesty.fraction", "honesty.prune.leaves", "alpha", "imbalance.penalty"). If honesty is FALSE the honesty.* parameters are not tuned. Default is "none" (no parameters are tuned).
 
+tune.num.trees	
+The number of trees in each 'mini forest' used to fit the tuning model. Default is 200.
+
+tune.num.reps	
+The number of forests used to fit the tuning model. Default is 50.
+
+tune.num.draws	
+The number of random parameter values considered when using the model to select the optimal parameters. Default is 1000.
 
 ```{r}
 
+df_test <- dats_ml |> filter(ecoregion == "Idaho Batholith")
 
 
-
-# Function to assess correlation with corrplot and covariate balance with cobalt, output results
-assess_covariate_balance <- function(d, nm) {
-  
-  # Correlation matrix
-  correlations <- d |>
-    select(where(is.numeric)) |>
-    cor(use = "pairwise.complete.obs")
-  png(here(dir_figs, glue('corr_plot_{nm}.png')), width = 2000, height = 2000)
-  corrplot(correlations, method = 'circle', type = "lower", diag = FALSE, use = 'pairwise.complete.obs') 
-  dev.off()
-  
-      
-    
-  cobalt::bal.tab(x = fire ~ aet + def + frg_reclass + srtm + tpi + chili + biotic_5_yrs_prior_sum + biotic_5_yrs_after_sum + pdsi_annual_5_yrs_prior_sum + pdsi_annual_5_yrs_after_sum + avg_forest_2_yr_pre_fire, 
-                  data = d)
-  
-  png(here(dir_figs, glue("love_plot_fire_{nm}.png")))
-  cobalt::love.plot(x = fire ~ aet + def + frg_reclass + srtm + tpi + chili + biotic_5_yrs_prior_sum + biotic_5_yrs_after_sum + pdsi_annual_5_yrs_prior_sum + pdsi_annual_5_yrs_after_sum + avg_forest_2_yr_pre_fire, 
-                  data = d,
-                  stats = c("mean.diffs", "ks.statistics"),
-                  stars = "raw",
-                  position = "bottom",
-                  threshold = c(m = .1, ks = .05),
-                  limits = list(c(-1, 1), c(0, 0.6)),
-                  title = glue("Covariate balance love plot for FIRE treatment: {nm}"))
-  dev.off()
-
-  
-    
-  fire_covars <- c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
-              "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
-              "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum", "avg_forest_2_yr_pre_fire")
-  
-  # Make a working copy of your data
-  dats_trans <- d
-  
-  # Transform biotic variables using log1p (handles 0s safely)
-  for (v in fire_covars) {
-    if (startsWith(v, "biotic")) {
-      new_name <- paste0(v, "_log")
-      dats_trans[[new_name]] <- log1p(dats_trans[[v]])
-    }
-  }
-  
-  # Plot all variables, using log-transformed versions when appropriate
-  plot_list <- lapply(fire_covars, function(v) {
-    # If biotic, use transformed version
-    if (startsWith(v, "biotic")) {
-      v_use <- paste0(v, "_log")
-      label <- paste0(v, " (log)")
-    } else {
-      v_use <- v
-      label <- v
-    }
-  
-    # Construct formula and plot
-    f <- reformulate(v_use, response = "fire")
-    cobalt::bal.plot(
-      x = f,
-      data = dats_trans,
-      var.name = v_use,
-      which = "both"
-    ) + ggtitle(label)
-  })
-  
-  # Arrange in grid and save
-  # Create a title grob
-  title_grob <- textGrob(glue("Covariate Balance by FIRE Treatment Group: {nm}"),
-                         gp = gpar(fontsize = 20, fontface = "bold"))
-  
-  # Add title and plots to a single grid
-  grid_plot <- grid.arrange(
-    title_grob,
-    do.call(arrangeGrob, c(plot_list, ncol = 2)),
-    nrow = 2,
-    heights = c(0.05, 0.95)
-  )
-  # Save
-  ggsave(here(dir_figs, glue("covariate_balance_grid_fire_{nm}.png")), grid_plot, units = "px", width = 3000, height = 3000, dpi = 300)
-  
-  
-  
-  
-  
-  
-  # FOR CBI TREATMENT
-  
-  cobalt::bal.tab(x = burn_cbi ~ aet + def + frg_reclass + srtm + tpi + chili + biotic_5_yrs_prior_sum + biotic_5_yrs_after_sum + pdsi_annual_5_yrs_prior_sum + pdsi_annual_5_yrs_after_sum + avg_forest_2_yr_pre_fire + burn_cbi_1kmmwmedian + burn_cbi_1kmmwstd + mock_burn_year, 
-                  data = d)
-  
-  
-  burn_cbi_covars <- c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
-              "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
-              "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum", "avg_forest_2_yr_pre_fire", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year")
-  
-  # Make a working copy of data
-  dats_trans <- d
-  
-  # Transform biotic variables using log1p (handles 0s safely)
-  for (v in burn_cbi_covars) {
-    if (startsWith(v, "biotic")) {
-      new_name <- paste0(v, "_log")
-      dats_trans[[new_name]] <- log1p(dats_trans[[v]])
-    }
-  }
-  
-  # Plot all variables, using log-transformed versions when appropriate
-  plot_list <- lapply(burn_cbi_covars, function(v) {
-    # If biotic, use transformed version
-    if (startsWith(v, "biotic")) {
-      v_use <- paste0(v, "_log")
-      label <- paste0(v, " (log)")
-    } else {
-      v_use <- v
-      label <- v
-    }
-  
-    # Construct formula and plot
-    f <- reformulate(v_use, response = "burn_cbi")
-    cobalt::bal.plot(
-      x = f,
-      data = dats_trans,
-      var.name = v_use,
-      which = "both"
-    ) + ggtitle(label)
-  })
-  
-  # Arrange in grid and save
-  # Create a title grob
-  title_grob <- textGrob("Covariate Balance by CBI Treatment Group",
-                         gp = gpar(fontsize = 20, fontface = "bold"))
-  
-  # Add title and plots to a single grid
-  grid_plot <- grid.arrange(
-    title_grob,
-    do.call(arrangeGrob, c(plot_list, ncol = 2)),
-    nrow = 2,
-    heights = c(0.05, 0.95)
-  )
-  # Save
-  ggsave(here(dir_figs, glue("covariate_balance_grid_cbi{nm}.png")), grid_plot, units = "px", width = 3000, height = 6000, dpi = 300)
-  
-}
-
-
-# USE FUNCTION FOR ECOREGIONS AND FULL DATSET
-for(eco in ecoregions) {
-  d <- dats |> filter(ecoregion == eco)
-  assess_covariate_balance(d = d,
-                           nm = eco)
-}
-assess_covariate_balance(d = dats,
-                         nm = "ALL")
-
-
-
-
-
-
+tic()
+cf <-causal_forest(
+  X=df_test |> select(-fire, -post_fire_rap_TRE_difference_n2_3_yr, -ecoregion),
+  Y=df_test$post_fire_rap_TRE_difference_n2_3_yr,
+  W=df_test$fire,
+  tune.parameters = c("min.node.size","sample.fraction", "mtry"),
+  tune.num.trees = 1000,
+  num.trees=2000,
+  seed=seed
+)
+toc()
 
 ```
+
 
 
 ```{r}

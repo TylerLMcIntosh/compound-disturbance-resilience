@@ -1,5 +1,5 @@
 ---
-title: "04_causal_forest"
+title: "05_dydid"
 author: Tyler L. McIntosh
 date: last-modified
 format:
@@ -54,7 +54,14 @@ install_load_packages(c(
   "doParallel",
   "HonestDid",
   "HonestDidFEct",
-  "DIDmultiplegtDYN"))
+  "DIDmultiplegtDYN",
+  "sf",
+  "spdep",
+  "purrr",
+  "gstat",
+  "scales",
+  "broom",
+  "ggfixest"))
 
 # # install packages from CRAN
 # packages <- c("fixest", "did", "didimputation", 
@@ -91,13 +98,9 @@ set.seed(seed)
 #
 
 ```{r}
-
-run_nm <- paste0("did_conley_", timestamp('for_file'))
-dir_figs <- here(dir_figs, run_nm)
-dir_ensure(dir_figs)
   
 dats_long <- read_csv(here(dir_derived, "test_dats_long.csv"))
-dats_short <- read_csv(here(dir_derived, "test_dats.csv"))
+dats_short <- read_csv(here(dir_derived, "test_dats_short.csv"))
 
 
 ```
@@ -267,35 +270,65 @@ df.use <- dats_long_did |>
 #                   model_labels = "test2 - no biotic before")
 
 
+```
 
+# Functions
+```{r}
 
 # Multi-model functions ----
 
-iw_estimator_subg <- function(subgrp_col, grps, df) {
+
+# This function runs a sun-abraham dynamic difference-in-difference analysis on dataframe df using ref_period.
+# It will compute the model using all 0 values in trt_col (treatment column) as the control and all 1 values in trt_col with grp in subgrp_col as the estimating group 
+iw_estimator_subg <- function(subgrp_col,
+                              grp,
+                              trt_col = "fire",
+                              ref_period = -1,
+                              df) {
   # Convert string to symbol
   col_sym <- sym(subgrp_col)
+  trt_col_sym <- sym(trt_col)
   
-  if(subgrp_col == "burn_sev_tagged") {
-    df_sub <- df %>%
-      filter((!!col_sym) == grps | burn_sev_tagged == "unburned-mock")
-  } else {
-    df_sub <- df %>%
-      filter((!!col_sym) == grps)    
-  }
+  df_never_trt <- df |>
+    filter(!!trt_col_sym == 0)
+  
+  df_subset <- df |>
+    filter(!!trt_col_sym == 1 & !!col_sym == grp)
+  
+  df_use <- bind_rows(df_never_trt, df_subset)
 
   model <- feols(
-    rap_TRE ~ sunab(FirstTreat, year) | uniqueID + year,
-    data = df_sub,
+    rap_TRE ~ sunab(FirstTreat, year, ref.p = ref_period) | uniqueID + year,
+    data = df_use,
     mem.clean = TRUE,
-    lean = TRUE
+    lean = FALSE,
+    vcov = fixest::vcov_conley(lat = "lat",
+                               lon = "long",
+                               cutoff = 125,
+                               pixel = 20,
+                               distance = "triangular"
+                               )
   )
+  
+  n_treated_subgroup_units <- length(unique(df_subset$uniqueID))
+  n_never_treated_units <- length(unique(df_never_trt$uniqueID))
+  attr(model, "n_treated_subgroup_units") <- n_treated_subgroup_units
+  attr(model, "n_never_treated_units") <- n_never_treated_units
+  
   return(model)
 }
 
 
 
+# Model list and model_labels should be the same length!
+# If item in model_list contains attribute "n_treated_subgroup_units", the attribute will be appended to the model name in the legend
 
-plot_sunab_models <- function(model_list, model_labels = NULL, title = "Dynamic-DiD Event-Study Estimates from Multiple Models") {
+plot_sunab_models <- function(model_list,
+                              model_labels = NULL,
+                              title = "Dynamic-DiD Event-Study Estimates from Multiple Models",
+                              ribbon_type = "ribbon", #either "ribbon" or "dashed",
+                              caption = "95% confidence intervals shown;\nInteraction-weighted (Sun-Abraham) estimates used;\nConley standard errors with 125km cutoff, 20km pixel"
+                              ) {
   
   # If no labels provided, auto-label as Model 1, Model 2, etc.
   if (is.null(model_labels)) {
@@ -306,6 +339,14 @@ plot_sunab_models <- function(model_list, model_labels = NULL, title = "Dynamic-
   plot_data <- map2_dfr(model_list, model_labels, function(model, label) {
     df <- as.data.frame(as.matrix(model$coeftable))
     df$term <- rownames(model$coeftable)
+    
+    has_attr <- function(x, attr_name) {
+      !is.null(attr(x, attr_name))
+    }
+    
+    if (has_attr(model, "n_treated_subgroup_units")) {
+      label <- glue("{label} (N = {attr(model, 'n_treated_subgroup_units')})")
+    }
     
     df %>%
       filter(str_detect(term, "^year::")) %>%
@@ -318,35 +359,62 @@ plot_sunab_models <- function(model_list, model_labels = NULL, title = "Dynamic-
   })
 
   # Plot
-  ggplot(plot_data, aes(x = Time, y = Estimate, color = Model, fill = Model)) +
-    geom_line(linewidth = 1) +
-    geom_point(size = 2) +
-    geom_ribbon(aes(ymin = CI_lower, ymax = CI_upper), alpha = 0.2, color = NA) +
-    geom_vline(xintercept = -1, linetype = "dashed", color = "gray40") +
-    geom_hline(yintercept = 0, color = "black") +
-    labs(
-      x = "Event Time",
-      y = "Treatment Effect of fire on forest cover",
-      title = title,
-      caption = "95% confidence intervals shown; Interaction-weighted (Sun-Abraham) estimates used"
-    ) +
-    theme_minimal(base_size = 13) +
-    theme(legend.position = "bottom")
+  if(ribbon_type == "ribbon") {
+    ggplot(plot_data, aes(x = Time, y = Estimate, color = Model, fill = Model)) +
+      geom_line(linewidth = 1) +
+      geom_point(size = 2) +
+      geom_ribbon(aes(ymin = CI_lower, ymax = CI_upper), alpha = 0.2, color = NA) +
+      geom_vline(xintercept = -1, linetype = "dashed", color = "gray40") +
+      geom_hline(yintercept = 0, color = "black") +
+      labs(
+        x = "Event Time",
+        y = "Treatment Effect of fire on forest cover",
+        title = title,
+        caption = caption
+      ) +
+      theme_minimal(base_size = 13) +
+      theme(legend.position = "bottom")    
+  } else {
+    ggplot(plot_data, aes(x = Time, y = Estimate, color = Model)) +
+      geom_line(linewidth = 1) +
+      geom_point(size = 2) +
+      
+      # CI as dotted lines instead of ribbon
+      geom_line(aes(y = CI_upper), linetype = "dotted", linewidth = 0.8) +
+      geom_line(aes(y = CI_lower), linetype = "dotted", linewidth = 0.8) +
+      
+      geom_vline(xintercept = -1, linetype = "dashed", color = "gray40") +
+      geom_hline(yintercept = 0, color = "black") +
+      labs(
+        x = "Event Time",
+        y = "Treatment Effect of fire on forest cover",
+        title = title,
+        caption = caption
+      ) +
+      theme_minimal(base_size = 13) +
+      theme(legend.position = "bottom") +
+      xlim(c(-10, 20))
+  }
+
 }
 
 
-plot_all_together_did <- function(subg_col, df, title = "Interaction-Weighted Estimates for all Ecoregions") {
+plot_all_together_did <- function(subg_col, df, title = NULL) {
   
-  if(subg_col == "burn_sev_tagged") {
-    subgs <- c("low-moderate-sev", "unburned", "high-sev")
-  } else {
-    subgs <- unique(df |> pull(subg_col))
-  }  
+  if(is.null(title)) {
+    title = glue("Effect estimates by subgroup in column {subg_col}")
+  }
+  
+  subgs <- unique(df |>
+                    pull(subg_col))
+  
+  subgs <- subgs[!is.na(subgs)]
+
   
     # Fit models for each subgroup level
   iw_results <- subgs %>%
     set_names() %>%
-    map(~ iw_estimator_subg(grps = .x,
+    map(~ iw_estimator_subg(grp = .x,
                             subgrp_col = subg_col,
                             df = df))
   
@@ -372,7 +440,7 @@ plot_ecoregion_did <- function(ecoregion_name, subg_col, df) {
   # Fit models for each subgroup level
   iw_results <- subgs %>%
     set_names() %>%
-    map(~ iw_estimator_subg(grps = .x,
+    map(~ iw_estimator_subg(grp = .x,
                             subgrp_col = subg_col,
                             df = df_ecoregion))
   
@@ -401,19 +469,342 @@ plot_all_ecoregions_did <- function(subg_col, df, title = "Interaction-Weighted 
   return(final_plot)
   
 }
+```
 
+
+
+# Test for spatial autocorrelation in residuals
+- We find that there is significant autocorrelation in the residuals of all test ecoregions, in all years
+- Semivariograms for each year/ecoregion finds different patterns
+- Conley error sensitivity analyses show different peaks for each ecoregion; might be worth using a different cutoff for each. If we were to choose a single universal cutoff, ~125km looks good (?)
+- We find that the Conley standard errors don't change very much by altering pixel (i.e. grid aggregation of residuals), so we may as well use 20km (more computationally efficient)
+
+```{r}
+
+dir_sptests <- here(dir_figs, "spatial_dependence_tests")
+dir_ensure(dir_sptests)
+
+ecoregions <- unique(df.use$ecoregion)
+
+#Function to apply moran's I tests to each year and compute semivariograms
+test_spdep_ecoregion <- function(ecor, dats, dir_results) {
+  testset <- dats |>
+    filter(ecoregion == ecor)
+  model <- feols(
+    rap_TRE ~ sunab(FirstTreat, year) | uniqueID + year,
+    data = testset,
+    cluster = "uniqueID")
+  
+  # Test for spatial autocorrelation in residuals - attach residuals to data
+  res <- resid(model)
+  testset$residuals <- res
+  
+  # Make sf data
+  sf_dat <- st_as_sf(testset, coords = c("long", "lat"), crs = 4326) |>
+    st_transform(5070)
+  
+  # Compute moran results
+  moran_results <- sf_dat |>
+    group_by(year) |>
+    group_modify(~ {
+      nb <- knearneigh(st_coordinates(.x), k = 5) |>
+        knn2nb()
+      lw <- nb2listw(nb, style = "W")
+  
+      m <- moran.test(.x$residuals, lw)
+      tibble(statistic = m$statistic, p.value = m$p.value)
+    })
+  
+  write_csv(moran_results, here(dir_results, glue("moran_results_{ecor}.csv")))
+  
+  # 2) Compute empirical variogram per year
+  #    We pick a year-specific cutoff = half the spatial diagonal,
+  #    and ~15 bins
+  vg_emp <- sf_dat |>
+    group_by(year) |>
+    group_modify(~{
+      d <- .x |> filter(!is.na(residuals))
+      n <- nrow(d)
+      if (n < 10) return(tibble(dist = numeric(), gamma = numeric(), np = integer()))
+      
+      bb <- st_bbox(d)
+      diag_len <- sqrt((bb["xmax"] - bb["xmin"])^2 + (bb["ymax"] - bb["ymin"])^2)
+      cutoff <- 0.5 * diag_len
+      width  <- cutoff / 15
+  
+      v <- gstat::variogram(residuals ~ 1, data = d, cutoff = cutoff, width = width)
+      as_tibble(v)  # columns: dist, gamma, dir.hor, dir.ver, np, ...
+    }) |>
+    ungroup()
+  
+  ggplot(vg_emp, aes(dist, gamma)) +
+    geom_point(aes(size = np), alpha = 0.8) +
+    geom_line() +
+    facet_wrap(~ year, scales = "free") +
+    scale_x_continuous(labels = label_comma()) +   # ← HERE
+    labs(
+      x = "Distance (m)",
+      y = "Semivariance γ(h)",
+      size = "Pairs (np)"
+    ) +
+    theme_bw()
+  
+  ggsave(filename = here(dir_results, glue("variograms_{ecor}.png")), units = "px", width = 6000, height = 6000)
+    
+}
+
+
+
+
+test_conley <- function(dats,
+                        ecor,
+                        cutoffs,
+                        pixel,
+                        distance,
+                        dir_results,
+                        flnm = "conley_test",
+                        event_years = c(5, 10, 15),
+                        vcov_fix = TRUE) {
+  # deps guard (optional)
+  if (!requireNamespace("fixest", quietly = TRUE)) stop("fixest required.")
+  if (!dir.exists(dir_results)) dir.create(dir_results, recursive = TRUE)
+
+  # 0) data subset
+  testset <- dats |>
+    dplyr::filter(ecoregion == ecor)
+
+  # 1) fit DiD ONCE (ID-cluster baseline), keep object light
+  base_model <- fixest::feols(
+    rap_TRE ~ sunab(FirstTreat, year) | uniqueID + year,
+    data = testset,
+    cluster = "uniqueID",
+    lean = FALSE
+  )
+
+  # Helper to extract Sun–Abraham rows from a coeftable -> slim tibble
+  extract_sa_rows <- function(ct, model_label, term_pattern = "^year::", ci_z = 1.96) {
+    rn <- rownames(ct)
+    keep <- grepl(term_pattern, rn, perl = TRUE)
+    if (!any(keep)) return(tibble::tibble())
+
+    se_col <- if ("Std. Error" %in% colnames(ct)) "Std. Error" else colnames(ct)[2]
+
+    tibble::tibble(
+      term   = rn[keep],
+      Time   = as.numeric(sub(".*year::(-?\\d+).*", "\\1", rn[keep])),
+      Estimate = ct[keep, "Estimate", drop = TRUE],
+      SE       = ct[keep, se_col,    drop = TRUE],
+      CI_lower = ct[keep, "Estimate", drop = TRUE] - ci_z * ct[keep, se_col, drop = TRUE],
+      CI_upper = ct[keep, "Estimate", drop = TRUE] + ci_z * ct[keep, se_col, drop = TRUE],
+      Model    = model_label
+    )
+  }
+
+  # 2a) Baseline (clustered-by-ID) plot-data (no Conley)
+  base_ct <- fixest::coeftable(base_model)  # uses clustered SEs from fit
+  plot_rows <- list(
+    extract_sa_rows(base_ct, model_label = "ID_cluster")
+  )
+  rm(base_ct); gc(verbose = FALSE)
+
+  # 2b) Stream through Conley cutoffs:
+  #     for each cutoff: build vcov -> get coeftable -> append slim rows -> drop vcov immediately
+  se_rows <- vector("list", length(cutoffs))   # for SE-vs-cutoff of event_years
+  for (i in seq_along(cutoffs)) {
+    c0 <- cutoffs[i]
+
+    # Heavy step
+    vc <- fixest::vcov_conley(
+      base_model,
+      lat = "lat", lon = "long",
+      cutoff = c0, pixel = pixel, distance = distance, vcov_fix = vcov_fix
+    )
+
+    # Lightweight table from that vcov
+    ct <- fixest::coeftable(base_model, vcov = vc)
+
+    # Immediately free the big vcov
+    rm(vc); gc(verbose = FALSE)
+
+    # Append slim rows for the comparison plot
+    plot_rows[[length(plot_rows) + 1L]] <- extract_sa_rows(ct, model_label = paste0("Conley_", c0))
+
+    # Extract SEs for requested event_years and stash tiny tibble
+    rn   <- rownames(ct)
+    pat  <- paste0("^year::(", paste(event_years, collapse = "|"), ")\\b")
+    keep <- grepl(pat, rn, perl = TRUE)
+    if (any(keep)) {
+      se_col <- if ("Std. Error" %in% colnames(ct)) "Std. Error" else colnames(ct)[2]
+      se_rows[[i]] <- tibble::tibble(
+        coef   = rn[keep],
+        event  = as.integer(sub("^year::(-?\\d+).*", "\\1", rn[keep])),
+        se     = ct[keep, se_col, drop = TRUE],
+        cutoff = c0
+      )
+    } else {
+      se_rows[[i]] <- tibble::tibble(coef = character(), event = integer(), se = numeric(), cutoff = numeric())
+    }
+
+    # Drop the coeftable too (small, but keep peak low)
+    rm(ct); gc(verbose = FALSE)
+  }
+
+  # Bind the small tibbles
+  plot_data <- dplyr::bind_rows(plot_rows)
+  se_df     <- dplyr::bind_rows(se_rows)
+
+  # 3) Comparison plot (baseline + all Conley), built from slim plot_data (no model objects kept)
+  p_models <- ggplot2::ggplot(
+    plot_data,
+    ggplot2::aes(x = Time, y = Estimate, color = Model)
+  ) +
+    ggplot2::geom_line(linewidth = 1) +
+    ggplot2::geom_point(size = 2) +
+    # CI as dotted bounds (lighter than ribbons)
+    ggplot2::geom_line(ggplot2::aes(y = CI_upper), linetype = "dotted", linewidth = 0.7) +
+    ggplot2::geom_line(ggplot2::aes(y = CI_lower), linetype = "dotted", linewidth = 0.7) +
+    ggplot2::geom_vline(xintercept = -1, linetype = "dashed", color = "gray40") +
+    ggplot2::geom_hline(yintercept = 0, color = "black") +
+    ggplot2::labs(
+      x = "Event Time",
+      y = "Treatment Effect of fire on forest cover",
+      title = "Dynamic-DiD Event-Study Estimates (Baseline vs Conley cutoffs)",
+      caption = "95% CIs; baseline uses clustered-by-unit SEs; Conley varies by cutoff"
+    ) +
+    ggplot2::theme_minimal(base_size = 13) +
+    ggplot2::theme(legend.position = "bottom")
+
+  ggplot2::ggsave(
+    plot     = p_models,
+    filename = here::here(dir_results, glue::glue("{flnm}_{ecor}.png")),
+    width = 8, height = 5, dpi = 300
+  )
+
+  # 4) SE vs cutoff (event_years)
+  p_se <- NULL
+  if (nrow(se_df) > 0) {
+    p_se <- ggplot2::ggplot(
+      se_df,
+      ggplot2::aes(x = cutoff, y = se, group = factor(event), linetype = factor(event), color = factor(event))
+    ) +
+      ggplot2::geom_line() +
+      ggplot2::geom_point() +
+      ggplot2::labs(
+        x = "Conley cutoff (km)",
+        y = "Standard error",
+        linetype = "Event time (years)",
+        color = "Event time (years)",
+        title = glue::glue("Conley SE vs cutoff — {ecor}"),
+        subtitle = paste0("pixel = ", pixel, " km; distance = ", distance)
+      ) +
+      ggplot2::scale_x_continuous(breaks = cutoffs) +
+      ggplot2::theme_minimal(base_size = 12)
+
+    ggplot2::ggsave(
+      plot     = p_se,
+      filename = here::here(dir_results, glue::glue("{flnm}_{ecor}_se_by_cutoff.png")),
+      width = 7, height = 5, dpi = 300
+    )
+  }
+
+  # 5) Return only small things
+  list(
+    plot_data    = plot_data,         # slim data behind comparison plot
+    se_by_cutoff = se_df,             # tiny table for requested event years
+    plots        = list(comparison = p_models, se_cutoff = p_se)
+  )
+}
+
+
+
+# Use functions on all ecoregions
+#Moran & variograms
+ecoregions |>
+  walk( ~ test_spdep_ecoregion(.x, df.use, dir_sptests))
+
+#Conley tests
+# 765 seconds for 4 test ecoregions
+tic()
+tcs <- ecoregions |>
+  map( ~ test_conley(dats = df.use,
+                      ecor = .x,
+                      cutoffs = c(seq.int(25, 250, 25)),
+                      pixel = 20, #pool observations into Xkm grids to speed up calculations
+                      distance = "triangular", #use triangular rather than spherical distance to speed up calculations
+                      dir_results = dir_sptests)
+  )
+toc()  
+
+# 790 seconds for 4 test ecoregions
+tic()
+tcs <- ecoregions |>
+  map( ~ test_conley(dats = df.use,
+                      ecor = .x,
+                      cutoffs = c(seq.int(25, 250, 25)),
+                      pixel = 10, #pool observations into Xkm grids to speed up calculations
+                      distance = "triangular", #use triangular rather than spherical distance to speed up calculations
+                     flnm = "conley_test_pixel10", 
+                     dir_results = dir_sptests)
+  )
+toc()  
+
+
+```
+
+
+
+
+# Operational across ecoregions
+
+```{r}
+
+#run_nm <- paste0("did_conley_", timestamp('for_file'))
+run_nm <- paste0("did_conley_125km_20km")
+dir_run <- here(dir_figs, run_nm)
+dir_ensure(dir_run)
 
 # Operate ----
 
+
+x <- df.use |> filter(ecoregion == "SierraNevada")
+p <- plot_all_together_did(subg_col = "burn_sev", df = x, title = NULL)
+p
+
+
+model <- feols(
+  rap_TRE ~ sunab(FirstTreat, year) | uniqueID + year,
+  data = x,
+  cluster = "uniqueID")
+
+model <- feols(
+  rap_TRE ~ sunab(FirstTreat, year) | uniqueID + year,
+  data = x,
+  cluster = "uniqueID")
+
+vc <- fixest::vcov_conley(
+  model,
+  lat = "lat", lon = "long",
+  cutoff = 125, pixel = 20, distance = "triangular", vcov_fix = TRUE
+)
+
+ggcoefplot(model)
+
+
+
+ggiplot(
+  list('TWFE' = est_twfe, 'Sun & Abraham (2020)' = est_sa20),
+  main = 'Staggered treatment', ref.line = -1, pt.join = TRUE
+)
+
 # USE FUNCTIONS TO VIEW SEVERITY BY ECOREGION
 
-all_by_sev_p <- plot_all_ecoregions_did(subg_col = "burn_sev_tagged",
+all_by_sev_p <- plot_all_ecoregions_did(subg_col = "burn_sev",
                                         df = df.use,
                                         title = "Interaction-Weighted Estimates \nby Ecoregion & Burn Severity, conley100km")
 
 
 ggsave(plot = all_by_sev_p,
-       filename = here(dir_figs, "all_did_by_eco_and_sev_plot.png"),
+       filename = here(dir_run, "all_did_by_eco_and_sev_plot.png"),
        bg = 'white',
        units = "px",
        width = 4000,
@@ -427,7 +818,7 @@ all_by_biotic_p <- plot_all_ecoregions_did(subg_col = "biotic_before_10t",
                                         title = "Interaction-Weighted Estimates by \nEcoregion & Pre-Fire Biotic (10%, 5-yr), conley100km")
 
 ggsave(plot = all_by_biotic_p,
-       filename = here(dir_figs, "all_did_by_eco_and_biotic10t_plot.png"),
+       filename = here(dir_run, "all_did_by_eco_and_biotic10t_plot.png"),
        bg = 'white',
        units = "px",
        width = 4000,
@@ -440,7 +831,7 @@ all_by_hd_p <- plot_all_ecoregions_did(subg_col = "hd_after",
                                         title = "Interaction-Weighted Estimates by Ecoregion & Post-fire HD (17, sum, 5-yr)")
 
 ggsave(plot = all_by_hd_p,
-       filename = here(dir_figs, "all_did_by_eco_and_hd_plot.png"),
+       filename = here(dir_run, "all_did_by_eco_and_hd_plot.png"),
        bg = 'white',
        units = "px",
        width = 4000,
@@ -453,7 +844,7 @@ all_by_pdsi_p <- plot_all_ecoregions_did(subg_col = "pdsi_before",
                                         title = "Interaction-Weighted Estimates by Ecoregion & Pre-Fire PDSI (-500, sum, 5-yr)")
 
 ggsave(plot = all_by_pdsi_p,
-       filename = here(dir_figs, "all_did_by_eco_and_pdsi_plot.png"),
+       filename = here(dir_run, "all_did_by_eco_and_pdsi_plot.png"),
        bg = 'white',
        units = "px",
        width = 4000,
@@ -468,7 +859,7 @@ together_by_sev_p <- plot_all_together_did(subg_col = "burn_sev_tagged",
                                            title = "Interaction-Weighted Estimates for all Ecoregions by severity")
 
 ggsave(plot = together_by_sev_p,
-       filename = here(dir_figs, "together_did_plot_sev.png"),
+       filename = here(dir_run, "together_did_plot_sev.png"),
        bg = 'white')
 
 
@@ -479,7 +870,7 @@ together_by_biotic_p <- plot_all_together_did(subg_col = "biotic_before",
                                            title = "Interaction-Weighted Estimates for all Ecoregions by pre-fire biotic (10%, 5-yr)")
 
 ggsave(plot = together_by_biotic_p,
-       filename = here(dir_figs, "together_did_plot_biotic.png"),
+       filename = here(dir_run, "together_did_plot_biotic.png"),
        bg = 'white')
 
 
@@ -490,7 +881,7 @@ together_by_hd_p <- plot_all_together_did(subg_col = "hd_after",
                                            title = "Interaction-Weighted Estimates for all Ecoregions by post-fire hd (17, sum, 5yr)")
 
 ggsave(plot = together_by_hd_p,
-       filename = here(dir_figs, "together_did_plot_hd.png"),
+       filename = here(dir_run, "together_did_plot_hd.png"),
        bg = 'white')
 
 
@@ -502,7 +893,7 @@ together_by_pdsi_p <- plot_all_together_did(subg_col = "pdsi_before",
                                            title = "Interaction-Weighted Estimates for all Ecoregions by pre-fire PDSI (-500, sum, 5yr)")
 
 ggsave(plot = together_by_pdsi_p,
-       filename = here(dir_figs, "together_did_plot_pdsi.png"),
+       filename = here(dir_run, "together_did_plot_pdsi.png"),
        bg = 'white')
 
 
@@ -521,7 +912,7 @@ for(burn_l in c("low-moderate-sev", "unburned", "high-sev")) {
                                           title = paste0(burn_l, ": Interaction-Weighted Estimates by Ecoregion & Pre-Fire Biotic (10%, 5-yr)"))
   
   ggsave(plot = by_biotic_sev_p,
-         filename = here(dir_figs, paste0("did_by_eco_and_biotic_20t_plot_", burn_l, ".png")),
+         filename = here(dir_run, paste0("did_by_eco_and_biotic_20t_plot_", burn_l, ".png")),
          bg = 'white',
          units = "px",
          width = 4000,
