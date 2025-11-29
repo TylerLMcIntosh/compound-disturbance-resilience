@@ -45,6 +45,7 @@ install_load_packages(c(
   "purrr",
   "corrplot",
   "gridExtra",
+  "parquet",
   "tictoc"))
 
 dir_figs <- here::here('figs')
@@ -61,18 +62,52 @@ set.seed(seed)
 
 
 ```
+
+
 # Load dats
 
 ```{r}
 
-dats_long <- read_csv(here(dir_derived, "test_dats_long.csv"))
-
-
 #Short dats
-dats <- read_csv(here(dir_derived, "test_dats.csv"))
+dats <- read_parquet(here(dir_derived, "test_dats_short.parquet"))
 ecoregions <- unique(dats$ecoregion)
 
+dats_long <- read_parquet(here(dir_derived, "test_dats_long.parquet"))
+
+
 ```
+
+# Examine outcomes
+
+
+```{r}
+dats_f <- dats |>
+  filter(fire == 1)
+
+hist(dats_f$post_fire_rap_TRE_slope_2_5_yrs)
+hist(dats_f$post_fire_rap_TRE_slope_2_10_yrs)
+hist(dats_f$post_fire_rap_TRE_slope_2_15_yrs)
+hist(dats_f$post_fire_rap_TRE_slope_2_20_yrs)
+
+dats_flm <- dats |>
+  filter(fire == 1 & burn_sev == "Low/Moderate")
+
+hist(dats_flm$post_fire_rap_TRE_slope_2_5_yrs)
+hist(dats_flm$post_fire_rap_TRE_slope_2_10_yrs)
+hist(dats_flm$post_fire_rap_TRE_slope_2_15_yrs)
+hist(dats_flm$post_fire_rap_TRE_slope_2_20_yrs)
+
+dats_fh <- dats |>
+  filter(fire == 1 & burn_sev == "High")
+
+hist(dats_fh$post_fire_rap_TRE_slope_2_5_yrs)
+hist(dats_fh$post_fire_rap_TRE_slope_2_10_yrs)
+hist(dats_fh$post_fire_rap_TRE_slope_2_15_yrs)
+hist(dats_fh$post_fire_rap_TRE_slope_2_20_yrs)
+
+
+```
+
 
 # Load and explore long data
 
@@ -114,7 +149,7 @@ ggplot(dats_long |>
     caption = "NOTE: 'unburned_mock' represents the control sample \n'burned' in random years and given CBI values of 0"
   ) +
   theme_minimal() +
-  facet_grid(ecoregion ~ burn_sev_tagged)
+  facet_grid(ecoregion ~ burn_sev)
 
 ggsave(filename = here(dir_figs, "density_p_pre_post_fire_by_sev.png"),
        plot = last_plot(),
@@ -144,7 +179,7 @@ ggplot(data = dats_long) +
     caption = "NOTE: 'unburned_mock' represents the control sample \n'burned' in random years and given CBI values of 0"
   ) +
   theme_minimal() +
-  facet_grid(ecoregion ~ burn_sev_tagged)
+  facet_grid(ecoregion ~ burn_sev)
 ggsave(filename = here(dir_figs, "boxplot_time_series.png"),
        plot = last_plot(),
        bg = "white",
@@ -157,7 +192,7 @@ ggsave(filename = here(dir_figs, "boxplot_time_series.png"),
 # LINE TRAJECTORIES
 # Step 1: Summarize the data
 summary_data <- dats_long %>%
-  group_by(ecoregion, burn_sev_tagged, year_from_fire_index) %>%
+  group_by(ecoregion, burn_sev, year_from_fire_index) %>%
   summarise(
     q25 = quantile(rap_TRE, 0.25, na.rm = TRUE),
     median = median(rap_TRE, na.rm = TRUE),
@@ -165,9 +200,9 @@ summary_data <- dats_long %>%
     .groups = "drop"
   )
 
-# Step 2: Extract 'unburned-mock' data
-unburned_mock <- summary_data %>%
-  filter(burn_sev_tagged == "unburned-mock") %>%
+# Step 2: Extract never-burned data
+never_burned <- summary_data %>%
+  filter(burn_sev == "Never") %>%
   select(ecoregion, year_from_fire_index, median)
 
 # Step 3: Plot
@@ -180,16 +215,16 @@ ggplot(summary_data, aes(x = year_from_fire_index, y = median)) +
 
   # Dotted blue overlay from unburned-mock
   geom_line(
-    data = unburned_mock,
+    data = never_burned,
     aes(y = median),
     color = "blue",
     linetype = "dotted",
     inherit.aes = TRUE
   ) +
 
-  # Solid blue line only in unburned-mock facet
+  # Solid blue line only in never-burned facet
   geom_line(
-    data = summary_data %>% filter(burn_sev_tagged == "unburned-mock"),
+    data = summary_data %>% filter(burn_sev == "Never"),
     aes(y = median),
     color = "blue",
     size = 1,
@@ -198,13 +233,13 @@ ggplot(summary_data, aes(x = year_from_fire_index, y = median)) +
 
   geom_vline(xintercept = 0, linetype = "dotted", color = "red", size = 1) +
   
-  facet_grid(ecoregion ~ burn_sev_tagged) +
+  facet_grid(ecoregion ~ burn_sev) +
 
   labs(
     title = "Tree Cover by Years from Fire (IQR shaded)",
     x = "Years from fire",
     y = "Tree cover %",
-    caption = "NOTE: 'unburned_mock' represents the control sample \n'burned' in random years and given CBI values of 0"
+    caption = "NOTE: 'Never' represents the control sample \n'burned' in random years and given CBI values of 0"
   ) +
   theme_minimal()
 ggsave(filename = here(dir_figs, "iqr_line_time_series.png"),
@@ -215,6 +250,58 @@ ggsave(filename = here(dir_figs, "iqr_line_time_series.png"),
        height = 3000)
 
 ```
+# Assess recovery metrics that were calculated
+```{r}
+
+dats_fh_long <- dats_long |>
+  filter(fire == 1 & burn_sev == "High")
+ids <- unique(dats_fh_long$uniqueID)
+
+for(i in 1:10) {
+  
+  d_s <- dats |>
+    filter(uniqueID == ids[i])
+  
+  aRAP_6pre <- d_s |> pull(avg_rap_TRE_6_yr_pre_fire)
+  aRAP_2pre <- d_s |> pull(avg_rap_TRE_2_yr_pre_fire)
+  aRAP_3post <- d_s |> pull(avg_rap_TRE_3_yr_post_fire)
+  aRAP_10post <- d_s |> pull(avg_rap_TRE_10_yr_post_fire)
+  aRAP_15post <- d_s |> pull(avg_rap_TRE_15_yr_post_fire)
+
+  
+  d <- dats_fh_long |>
+    filter(uniqueID == ids[i])
+  
+  x <- d |>
+    select(year, year_from_fire_index, rap_TRE, biotic) |>
+    arrange(year)
+  
+  p <- ggplot(x) +
+    geom_line(aes(x = year_from_fire_index, y = rap_TRE)) +
+    geom_vline(xintercept = 0, linetype = "dotted", color = "red", size = 1) +
+    geom_vline(xintercept = 2, linetype = "dotted", color = "yellow", size = 1) +
+    geom_hline(yintercept = aRAP_6pre, linetype = "dotted", color = "blue", size = 1) +
+    geom_hline(yintercept = aRAP_2pre, linetype = "dotted", color = "blue4", size = 1) +
+    geom_hline(yintercept = aRAP_3post, linetype = "dotted", color = "green", size = 1) +
+    geom_hline(yintercept = aRAP_10post, linetype = "dotted", color = "green4", size = 1) +
+    geom_hline(yintercept = aRAP_15post, linetype = "dotted", color = "purple", size = 1) +
+    labs(caption = glue("Slope2-5: {d_s$post_fire_rap_TRE_slope_2_5_yrs}\nSlope2-10: {d_s$post_fire_rap_TRE_slope_2_10_yrs}\nSlope2-15: {d_s$post_fire_rap_TRE_slope_2_15_yrs}"))
+  
+  print(p)
+}
+
+
+
+
+
+
+
+```
+
+
+
+
+
 
 
 # Load and explore data

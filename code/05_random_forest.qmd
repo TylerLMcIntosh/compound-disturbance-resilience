@@ -1,0 +1,351 @@
+---
+title: "random_forest"
+author: Tyler L. McIntosh
+date: last-modified
+format:
+  html:
+    embed-resources: true
+    html-math-method: katex
+    css: styles.css
+    toc: true
+    toc-depth: 1
+    toc-title: Contents
+    toc-location: right
+    code-fold: true
+    code-summary: "Show the code"
+---
+
+# Setup for analysis
+
+``` {r setupchunk}
+#| echo: true
+#| message: false
+#| warning: false
+#| results: 'hide'
+
+rm(list = ls())
+
+if(!requireNamespace("here", quietly = TRUE)) {
+  install.packages("here")
+}
+library(here)
+
+source(here::here("utils", "functions.R"))
+
+install_load_packages(c(
+  "tidyverse",
+  "tictoc",
+  "ranger",
+  "spmodel",
+  "iml",
+  "fastshap",
+  "patchwork",
+  "purrr",
+  "arrow",
+  "vip",
+  "pdp",
+  "tictoc"))
+
+# devtools::install_github("grf-labs/sufrep")
+# library(sufrep)
+
+dir_figs <- here::here('figs')
+dir_derived <- here::here('data', 'derived')
+dir_raw <- here::here('data', 'raw')
+dir_manual <- here::here('data', 'manual')
+
+dir_rf_figs <- here(dir_figs, "rf")
+
+dir_ensure(c(dir_figs,
+             dir_derived,
+             dir_manual,
+             dir_raw,
+             dir_rf_figs))
+
+seed = 1234
+set.seed(seed)
+
+
+```
+# Load dats
+
+```{r}
+
+#Short dats
+dats <- read_parquet(here(dir_derived, "test_dats_short.parquet"))
+ecoregions <- unique(dats$ecoregion)
+
+```
+
+
+
+
+# Sufrep function
+```{r}
+
+# A function to use sufrep::make_encoder such that the encoded variables are added to the dataframe
+sufrep_encode_append <- function(dats,
+                                 method = 'means',
+                                 X_cols,
+                                 G_col,
+                                 remove_G_col = TRUE,
+                                 ...) {
+  
+  #Select variables for encoding
+  x_df <- dats |> 
+    select(all_of(X_cols)) |>
+    as.data.frame()
+  g_df <- dats |>
+    pull(G_col)
+  
+  #Encode
+  encoder <- sufrep::make_encoder(method = method, X = x_df, G = g_df, ...)
+  dats_encoded <- encoder(x_df, G = g_df)
+  
+  #Make interpretable encoding columns
+  encoded_cols <- dats_encoded |> select(starts_with("ENC"))
+  names(encoded_cols) <- paste0(names(encoded_cols), "_", G_col)
+  
+  dats_out <- dats |>
+    cbind(encoded_cols)
+  
+  if(remove_G_col) {
+    dats_out <- dats_out |>
+      select(-all_of(G_col))
+  }
+  
+  return(dats_out)
+}
+
+
+```
+
+# Prep data for causal forest machine learning
+- Normalize continuous covariates to control for covariates with different numerical scales (avoid large-scale variables dominating and stabilize splits)
+- Encode categorical variables as a lower-dimensional real-valued representation for inclusion in causal forest (use sufficient representations instead of one-hot encoding since random forests "may largely ignore high-cardinality one-hot encoded factors" - see Johannemann et al 2021). Low-rank encoding appears to be the most applicable to real-world data.
+
+```{r}
+
+disturbance_covars <- dats |>
+  select(starts_with("burn_cbi") | starts_with("biotic") | starts_with("hd") | starts_with("pdsi")) |>
+  names()
+
+cont_covars <- c("aet", "def", "srtm", "tpi", "chili", "avg_rap_TRE_6_yr_pre_fire", "lat", "long", disturbance_covars)
+cat_covars <- c("frg_reclass_desc", "mock_burn_year", "ecoregion")
+outcomes <- dats |>
+  select(starts_with("post_fire")) |>
+  names()
+trts <- c("fire", "burn_sev")
+
+
+all_cols <- c(cont_covars, cat_covars, outcomes, trts)
+
+# Scale all continuous covariates
+# filter out anything with NAs
+# ensure categorical covariates are factors
+# encode categorical as one-hot dummies or sufficient representations
+dats_ml <- dats |>
+  select(all_of(all_cols)) |>
+  filter(dplyr::if_all(everything(), ~ !is.na(.x))) |>
+  mutate(
+    across(
+      all_of(cont_covars),
+      \(x) as.numeric(scale(x))
+    )
+  ) |>
+  mutate(
+    across(
+      all_of(cat_covars),
+      \(x) as.factor(x)
+    )
+  ) |>
+  # fastDummies::dummy_cols(select_columns = c("frg_reclass"),
+  #                         remove_first_dummy = FALSE, #Keep full one-hot encoding for tree-based methods
+  #                         remove_selected_columns = TRUE) |> 
+  sufrep_encode_append(method = 'low_rank', # Use low-rank sufficient representation encoding to reduce to 2 dimensions
+                       X_cols = cont_covars,
+                       G_col = "mock_burn_year",
+                       num_components = 2) |> 
+  sufrep_encode_append(method = 'low_rank', # Use low-rank sufficient representation encoding to reduce to 2 dimensions
+                       X_cols = cont_covars,
+                       G_col = "frg_reclass_desc",
+                       num_components = 2)
+
+enc_xvars <- dats_ml |>
+  select(starts_with("ENC")) |>
+  names()
+
+all_covars <- c(cont_covars, enc_xvars)
+
+
+```
+
+
+# Test model tuning time bumps
+
+Tuning all parameters as opposed to a select few increases training time by ~50%.
+
+GRF package tuning parameters:
+
+tune.parameters	
+A vector of parameter names to tune. If "all": all tunable parameters are tuned by cross-validation. The following parameters are tunable: ("sample.fraction", "mtry", "min.node.size", "honesty.fraction", "honesty.prune.leaves", "alpha", "imbalance.penalty"). If honesty is FALSE the honesty.* parameters are not tuned. Default is "none" (no parameters are tuned).
+
+tune.num.trees	
+The number of trees in each 'mini forest' used to fit the tuning model. Default is 200.
+
+tune.num.reps	
+The number of forests used to fit the tuning model. Default is 50.
+
+tune.num.draws	
+The number of random parameter values considered when using the model to select the optimal parameters. Default is 1000.
+
+```{r}
+
+df_test <- dats_ml |>
+  filter(ecoregion == "Idaho Batholith" & fire == 1)
+
+
+
+```
+
+
+
+# Variable interpretation
+- TPI: low = valleys, high = ridges
+- CHILI: low = cold, high = hot
+- SRTM: low = low elevation, high = high elevation
+- AET: low = wet, high = dry
+- DEF: low = wet, high = dry
+- PDSI: 
+
+```{r}
+df_test <- df_test |>
+  st_as_sf(coords = c("long", "lat"), remove = FALSE)
+
+form_str <- paste(
+  "post_fire_rap_TRE_slope_2_10_yrs ~ burn_sev + ",
+  paste(all_covars, collapse = " + ")
+)
+
+form <- as.formula(form_str)
+
+tic()
+test_spmlmRF <- splmRF(form,
+                  data = df_test,
+                  spcov_type = "exponential",
+                  importance = 'permutation',
+                  scale.permutation.importance = TRUE,
+                  num.threads = 0,
+                  mtry = floor(sqrt(ncol(dats) - 1)),
+                  num.trees = 1000,
+                  seed = seed)
+toc()
+summary(test_spmlmRF)
+print(test_spmlmRF$ranger)
+#500 trees mtry 3, MSE 213, R2 0.49
+#1000 trees mtry 8, basically same
+#1000t, mtry8, include disturbance MSE 2.17, R^2 0.14
+
+
+vip(test_spmlmRF$ranger,
+    num_features = 40)
+pdp(test_spmlmRF$ranger)
+
+
+
+
+```
+
+#################
+# From run with all PDSI data, the cumulative drought sums appear to be more important than the means, which are more important than the thresholds
+
+```{r}
+
+narrower_covars <- all_covars[!str_ends(all_covars, "mean") &
+                                !str_ends(all_covars, "threshold") &
+                                !str_starts(all_covars, "pdsi_summer")]
+
+
+form_str <- paste(
+  "post_fire_rap_TRE_slope_2_10_yrs ~ burn_sev + ",
+  paste(narrower_covars, collapse = " + ")
+)
+
+form <- as.formula(form_str)
+
+tic()
+test_spmlmRF <- splmRF(form,
+                  data = df_test,
+                  spcov_type = "exponential",
+                  importance = 'permutation',
+                  scale.permutation.importance = TRUE,
+                  num.threads = 0,
+                  mtry = floor(sqrt(ncol(dats) - 1)),
+                  num.trees = 1000,
+                  seed = seed)
+toc()
+summary(test_spmlmRF)
+print(test_spmlmRF$ranger)
+print(test_spmlmRF$call)
+
+#500 trees mtry 3, MSE 213, R2 0.49
+#1000 trees mtry 8, basically same
+#1000t, mtry8, include disturbance MSE 2.17, R^2 0.14
+
+
+vip <- vip(test_spmlmRF$ranger,
+    num_features = 25)
+vip_tbl <- vip(test_spmlmRF$ranger, num_features = 25)$data |>
+  as_tibble() |>
+  arrange(desc(Importance)) |>   # highest first
+  mutate(variable = factor(Variable, levels = Variable))
+
+ggsave(plot = vip, filename = here(dir_rf_figs, "vip_idbath_v1.png"), units = "px", width = 3000, height = 4000, )
+
+
+pdp_cont <- c(narrower_covars) |>
+  set_names() |>
+  map_dfr(\(v) {
+    # run PDP
+    pd <- partial(
+      object   = test_spmlmRF$ranger,
+      pred.var = v,
+      train    = df_test |> st_drop_geometry()
+    )
+
+    # rename predictor column to a common name 'x'
+    pd |>
+      rename(x = !!sym(v)) |>
+      mutate(variable = v, .before = x)
+  })
+
+pdp_sorted <- pdp_cont |>
+  inner_join(
+    vip_tbl |> select(variable = Variable),
+    by = "variable"
+  ) |>
+  mutate(variable = factor(variable, levels = vip_tbl$Variable))
+
+plot <- pdp_sorted |>
+  ggplot(aes(x = x, y = yhat)) +
+  geom_line() +
+  facet_wrap(~ variable, scales = "free_x") +
+  labs(
+    x = "Predictor value",
+    y = "Partial dependence (yhat)",
+    title = "Partial dependence for continuous covariates"
+  )
+
+ggsave(plot = plot, filename = here(dir_rf_figs, "pdp_idbath_v1.png"), units = "px", width = 3000, height = 4000, )
+
+
+```
+
+
+
+
+<button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne" >Click to see Session Information</button><div id="collapseOne" class="accordion-collapse collapse"><div>
+
+```{r sessionInfo}
+sessionInfo()
+```

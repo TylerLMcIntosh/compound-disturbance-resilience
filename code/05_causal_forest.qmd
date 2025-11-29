@@ -93,8 +93,6 @@ sufrep_encode_append <- function(dats,
   g_df <- dats |>
     pull(G_col)
   
-  print(g_df)
-  
   #Encode
   encoder <- sufrep::make_encoder(method = method, X = x_df, G = g_df, ...)
   dats_encoded <- encoder(x_df, G = g_df)
@@ -123,12 +121,16 @@ sufrep_encode_append <- function(dats,
 
 ```{r}
 
-cont_covar <- c("aet", "def", "srtm", "tpi", "chili", "avg_rap_TRE_6_yr_pre_fire")
-cat_covar <- c("frg_reclass", "mock_burn_year", "ecoregion")
-outcome <- c("post_fire_rap_TRE_difference_n2_3_yr")
-trt <- c("fire")
+cont_covars <- c("aet", "def", "srtm", "tpi", "chili", "avg_rap_TRE_6_yr_pre_fire")
+cat_covars <- c("frg_reclass", "mock_burn_year", "ecoregion")
+outcomes <- dats |>
+  select(starts_with("post_fire")) |>
+  names()
+trts <- c("fire", "burn_sev")
 
-all_cols <- c(cont_covar, cat_covar, outcome, trt)
+
+
+all_cols <- c(cont_covars, cat_covars, outcomes, trts)
 
 # Scale all continuous covariates
 # filter out anything with NAs
@@ -153,18 +155,24 @@ dats_ml <- dats |>
   #                         remove_first_dummy = FALSE, #Keep full one-hot encoding for tree-based methods
   #                         remove_selected_columns = TRUE) |> 
   sufrep_encode_append(method = 'low_rank', # Use low-rank sufficient representation encoding to reduce to 2 dimensions
-                       X_cols = cont_covar,
+                       X_cols = cont_covars,
                        G_col = "mock_burn_year",
                        num_components = 2) |> 
   sufrep_encode_append(method = 'low_rank', # Use low-rank sufficient representation encoding to reduce to 2 dimensions
-                       X_cols = cont_covar,
+                       X_cols = cont_covars,
                        G_col = "frg_reclass",
                        num_components = 2)
+
+enc_xvars <- dats_ml |>
+  select(starts_with("ENC")) |>
+  names()
 
 ```
 
 
 # Test model tuning time bumps
+
+Tuning all parameters as opposed to a select few increases training time by ~50%.
 
 GRF package tuning parameters:
 
@@ -185,26 +193,83 @@ The number of random parameter values considered when using the model to select 
 df_test <- dats_ml |> filter(ecoregion == "Idaho Batholith")
 
 
-tic()
-cf <-causal_forest(
+tic() # 253 seconds
+cf <- causal_forest(
   X=df_test |> select(-fire, -post_fire_rap_TRE_difference_n2_3_yr, -ecoregion),
   Y=df_test$post_fire_rap_TRE_difference_n2_3_yr,
   W=df_test$fire,
   tune.parameters = c("min.node.size","sample.fraction", "mtry"),
   tune.num.trees = 1000,
+  tune.num.reps = 50,
+  tune.num.draws = 1000,
   num.trees=2000,
   seed=seed
 )
 toc()
 
+
+tic() # 390 seconds
+cf <-causal_forest(
+  X=df_test |> select(-fire, -post_fire_rap_TRE_difference_n2_3_yr, -ecoregion),
+  Y=df_test$post_fire_rap_TRE_difference_n2_3_yr,
+  W=df_test$fire,
+  tune.parameters = c("all"),
+  tune.num.trees = 1000,
+  tune.num.reps = 50,
+  tune.num.draws = 1000,
+  num.trees=2000,
+  seed=seed
+)
+toc()
+
+
+imp_raw <- sort(setNames(variable_importance(cf), names(df_test |> select(-fire, -post_fire_rap_TRE_difference_n2_3_yr, -ecoregion))))
+imp_normalized <- imp_raw / sum(imp_raw)
+
+imp_df <- tibble(
+  variable = names(imp_normalized),
+  importance = as.numeric(imp_normalized)
+) %>%
+  arrange(importance)  # So the smallest is at the bottom of the horizontal bar plot
+
+imp_p <- ggplot(imp_df, aes(x = importance, y = reorder(variable, importance))) +
+  geom_col(fill = "orange") +
+  labs(
+    x = "Variable Importance (Normalized)",
+    y = NULL,
+    title = "Causal Forest Variable Importance"#,
+    #subtitle = "test",
+    #caption = glue("Total sample size: {n_total}\nBurned sample size: {n_burned}")
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.y = element_text(hjust = 1),
+    plot.margin = margin(10, 20, 5, 5)
+  )
+
+imp_p
 ```
 
 
 
+# Variable interpretation
+- TPI: low = valleys, high = ridges
+- CHILI: low = cold, high = hot
+- SRTM: low = low elevation, high = high elevation
+- AET: low = wet, high = dry
+- DEF: low = wet, high = dry
+
 ```{r}
 
 
-cf_analysis <- function(dats, yvar, xvars, trt, data_nm, seed = 1234) {
+cf_analysis <- function(dats,
+                        yvar,
+                        xvars,
+                        trt,
+                        data_nm,
+                        seed = 1234,
+                        dir_out,
+                        ...) {
   # Filter out rows with NA in the outcome variable
   dats_filt <- dats %>%
     filter(!is.na(.data[[yvar]]))
@@ -224,7 +289,8 @@ cf_analysis <- function(dats, yvar, xvars, trt, data_nm, seed = 1234) {
     X = covariates,
     Y = outcome,
     W = treatment,
-    seed = seed
+    seed = seed,
+    ...
   )
 
   # Variable importance - ensure normalized
@@ -242,7 +308,7 @@ cf_analysis <- function(dats, yvar, xvars, trt, data_nm, seed = 1234) {
     labs(
       x = "Variable Importance (Normalized)",
       y = NULL,
-      title = "Causal Forest Variable Importance",
+      title = glue("Causal Forest Variable Importance, trt = {yvar}"),
       subtitle = data_nm,
       caption = glue("Total sample size: {n_total}\nBurned sample size: {n_burned}")
     ) +
@@ -252,7 +318,7 @@ cf_analysis <- function(dats, yvar, xvars, trt, data_nm, seed = 1234) {
       plot.margin = margin(10, 20, 5, 5)
     )
   ggsave(plot = imp_p,
-         filename = here(dir_figs, paste0("var_importance_", data_nm, ".png")),
+         filename = here(dir_out, glue("var_importance_{data_nm}_{yvar}.png")),
          bg = "white")
 
   pred_fun <- function(object, newdata, ...) {
@@ -279,11 +345,11 @@ cf_analysis <- function(dats, yvar, xvars, trt, data_nm, seed = 1234) {
   pdps_p <- ylab_plot + pdps_p +
     plot_layout(widths = c(0.05, 1)) +
     plot_annotation(
-      title = "Partial Dependence Plots",
+      title = glue("Partial Dependence Plots: trt = {yvar}"),
       subtitle = data_nm,
       caption = glue("NOTES:\nNegative values mean a stronger (positive) treatment effect (i.e. fire is causing a greater difference in forest cover change)\nPDPs are in order of variable importance\nTotal sample size: {n_total}\nBurned sample size: {n_burned}"))
 
-  ggsave(filename = here(dir_figs, paste0("partial_dependence_", data_nm, ".png")),
+  ggsave(filename = here(dir_out, glue("partial_dependence_{data_nm}_{yvar}.png")),
          plot = pdps_p,
          units = 'px',
          width = 2000,
@@ -293,18 +359,100 @@ cf_analysis <- function(dats, yvar, xvars, trt, data_nm, seed = 1234) {
               imp_p = imp_p,
               pdps = pdps))
 }
+
+
+
+dir_test <- here(dir_figs, "dir_test_causal_multi")
+dir_ensure(dir_test)
+
 # 
-# tic() #takes about 1.5 minutes to run
-# test <- cf_analysis(dats = dats |> filter(ecoregion = "IDBatholith"),
-#             yvar = "post_fire_forest_difference_10_yr",
-#             xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
-#            "burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
-#            "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
-#            "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum", "avg_forest_2_yr_pre_fire"),
-#             trt = "fire",
-#             data_nm = "idBatholith_post_fire_forest_difference_10_yr",
-#             seed = seed)
-# toc()
+tic() #takes about 4.25 minutes to run for ID Batholith
+test <- cf_analysis(dats = df_test,
+            yvar = "post_fire_rap_TRE_difference_n2_3_yr",
+            xvars = c("aet", "def", "srtm", "tpi", "chili", "avg_rap_TRE_6_yr_pre_fire",
+                      enc_xvars),
+            trt = "fire",
+            data_nm = "idBatholith",
+            seed = seed,
+            dir_out = dir_test,
+            tune.parameters = c("all"),
+            tune.num.trees = 1000,
+            tune.num.reps = 50,
+            tune.num.draws = 1000,
+            num.trees = 2000
+           )
+toc()
+
+
+tic() #takes about 4.25 minutes to run for ID Batholith
+test <- cf_analysis(dats = df_test,
+            yvar = "post_fire_rap_TRE_difference_n2_3_yr",
+            xvars = c("aet", "def", "srtm", "tpi", "chili", "avg_rap_TRE_6_yr_pre_fire",
+                      enc_xvars),
+            trt = "fire",
+            data_nm = "idBatholith",
+            seed = seed,
+            dir_out = dir_test,
+            tune.parameters = c("all"),
+            tune.num.trees = 1000,
+            tune.num.reps = 50,
+            tune.num.draws = 1000,
+            num.trees = 2000
+           )
+toc()
+
+tic() #takes about 4.25 minutes to run for ID Batholith
+test <- cf_analysis(dats = df_test,
+            yvar = "post_fire_rap_TRE_difference_n2_5_yr",
+            xvars = c("aet", "def", "srtm", "tpi", "chili", "avg_rap_TRE_6_yr_pre_fire",
+                      enc_xvars),
+            trt = "fire",
+            data_nm = "idBatholith",
+            seed = seed,
+            dir_out = dir_test,
+            tune.parameters = c("all"),
+            tune.num.trees = 1000,
+            tune.num.reps = 50,
+            tune.num.draws = 1000,
+            num.trees = 2000
+           )
+toc()
+
+tic() #takes about 4.25 minutes to run for ID Batholith
+test <- cf_analysis(dats = df_test,
+            yvar = "post_fire_rap_TRE_difference_n2_10_yr",
+            xvars = c("aet", "def", "srtm", "tpi", "chili", "avg_rap_TRE_6_yr_pre_fire",
+                      enc_xvars),
+            trt = "fire",
+            data_nm = "idBatholith",
+            seed = seed,
+            dir_out = dir_test,
+            tune.parameters = c("all"),
+            tune.num.trees = 1000,
+            tune.num.reps = 50,
+            tune.num.draws = 1000,
+            num.trees = 2000
+           )
+toc()
+
+tic() #takes about 4.25 minutes to run for ID Batholith
+test <- cf_analysis(dats = df_test,
+            yvar = "post_fire_rap_TRE_difference_n2_15_yr",
+            xvars = c("aet", "def", "srtm", "tpi", "chili", "avg_rap_TRE_6_yr_pre_fire",
+                      enc_xvars),
+            trt = "fire",
+            data_nm = "idBatholith",
+            seed = seed,
+            dir_out = dir_test,
+            tune.parameters = c("all"),
+            tune.num.trees = 1000,
+            tune.num.reps = 50,
+            tune.num.draws = 1000,
+            num.trees = 2000
+           )
+toc()
+
+
 # 
 # 
 # 

@@ -45,7 +45,8 @@ install_load_packages(c(
   "mblm",
   "arrow",
   "forcats",
-  "tictoc"))
+  "tictoc",
+  "data.table"))
 
 dir_figs <- here::here('figs')
 dir_derived <- here::here('data', 'derived')
@@ -116,7 +117,7 @@ if(!file.exists(raw_dats_fl)) {
   
   dats <- bind_rows(idb_dats, nc_dats, sn_dats, sr_dats)
   
-  write_csv(dats, file = raw_dats_fl)
+  write_csv(dats, sink = raw_dats_fl)
 }
 
 
@@ -507,113 +508,110 @@ compute_forest_response_offset <- function(dt, offsets, new_col_name, prefix = "
 }
 
 
-######################################
-# DON'T USE SLOPES ANYMORE - CONFUSING TO INTERPRET
-######################################
-# #' Compute Post-Fire Forest Trend Slope from forest cover Time Series
-# #'
-# #' This function calculates the slope and R-squared value of a thiel-sen regression 
-# #' fitted to post-fire remote sensing time series data (e.g., RAP TRE) over 
-# #' specified year offsets. The output includes the computed slope and R² for each 
-# #' observation where sufficient data is available.
-# #'
-# #' @param dt A `data.table` or `data.frame` containing RAP data and a `burn_year` column.
-# #' @param offsets Integer vector indicating year offsets from `burn_year` to include in the slope calculation. Defaults to `2:10`.
-# #' @param req_yrs Integer indicating the minimum number of non-NA observations required to fit a regression. Defaults to `5`.
-# #' @param new_col_name Name of the column to store computed slope values. Defaults to `"post_fire_rap_slope"`.
-# #' @param r2_col_name Name of the column to store R-squared values. Defaults to `"post_fire_rap_r2"`.
-# #' @param prefix Prefix of column names containing yearly RAP values. These should be named like `prefixYYYY` (e.g., `"rap_TRE_2012"`).
-# #'
-# #' @return A `tibble` with the original data and two additional columns containing slope and R-squared values.
-# #'
-# #' @details 
-# #' The function internally melts the RAP time series into long format, filters values 
-# #' by offset from the `mock_burn_year`, and fits a thiel-sen model (`value ~ offset`) for each 
-# #' row. If the number of non-NA years is below `req_yrs`, NA values are returned.
-# #'
-# #' @importFrom data.table as.data.table copy melt setnames
-# #' @importFrom stats lm coef summary
-# #' @importFrom tibble as_tibble
-# #'
-# #' @examples
-# #' \dontrun{
-# #' dt <- data.table(
-# #'   burn_year = c(2010, 2012),
-# #'   rap_TRE_2011 = c(0.5, 0.6),
-# #'   rap_TRE_2012 = c(0.6, 0.65),
-# #'   rap_TRE_2013 = c(0.7, NA),
-# #'   rap_TRE_2014 = c(0.8, 0.75)
-# #' )
-# #' compute_post_fire_forest_slope_dt(dt, offsets = 1:4, req_yrs = 3)
-# #' }
-# #'
-# #' @export
-# compute_post_fire_forest_slope_dt <- function(
-#   dt,
-#   offsets = 2:10,
-#   req_yrs = 5,
-#   new_col_name = "post_fire_rap_slope",
-#   r2_col_name = "post_fire_rap_r2",
-#   prefix = "rap_TRE_"
-# ) {
-#   dt <- as.data.table(copy(dt))
-#   dt[, id__temp := .I]  # Unique ID
-# 
-#   # Melt RAP TRE columns
-#   melt_cols <- grep(paste0("^", prefix, "\\d{4}$"), names(dt), value = TRUE)
-#   
-#   long_dt <- melt(
-#     dt,
-#     id.vars = c("id__temp", "mock_burn_year"),
-#     measure.vars = melt_cols,
-#     variable.name = "year_col",
-#     value.name = "value"
-#   )
-# 
-#   # Extract year
-#   long_dt[, year := as.integer(sub(prefix, "", year_col))]
-# 
-#   # Calculate offset from burn year
-#   long_dt[, offset := year - mock_burn_year]
-# 
-#   # Keep only desired offsets
-#   long_dt <- long_dt[offset %in% offsets]
-# 
-#   # Group and compute slope + R2 if enough data
-#   slope_dt <- long_dt[
-#     !is.na(value),
-#     {
-#       if (.N >= req_yrs) {
-#         # model <- lm(value ~ offset, data = .SD) ####################SWITCH TO USE THEIL-SEN REGRESSION
-#         # list(
-#         #   slope = coef(model)[["offset"]],
-#         #   r2 = summary(model)$r.squared
-#         # )
-#         model <- mblm::mblm(value ~ offset, data = .SD, repeated = FALSE)
-#         preds <- predict(model)
-#         r2 <- 1 - sum((.SD$value - preds)^2, na.rm = TRUE) / sum((.SD$value - mean(.SD$value, na.rm = TRUE))^2, na.rm = TRUE)
-#         
-#         list(
-#           slope = coef(model)[["offset"]],
-#           r2 = r2
-#         )
-#       } else {
-#         list(
-#           slope = NA_real_,
-#           r2 = NA_real_
-#         )
-#       }
-#     },
-#     by = id__temp
-#   ]
-# 
-#   # Merge results back
-#   dt <- merge(dt, slope_dt, by = "id__temp", all.x = TRUE)
-#   setnames(dt, c("slope", "r2"), c(new_col_name, r2_col_name))
-#   dt[, id__temp := NULL]
-# 
-#   return(as_tibble(dt))
-# }
+#' Compute Post-Fire Forest Trend Slope from forest cover Time Series
+#'
+#' This function calculates the slope and R-squared value of a thiel-sen regression
+#' fitted to post-fire remote sensing time series data (e.g., RAP TRE) over
+#' specified year offsets. The output includes the computed slope and R² for each
+#' observation where sufficient data is available.
+#'
+#' @param dt A `data.table` or `data.frame` containing RAP data and a `burn_year` column.
+#' @param offsets Integer vector indicating year offsets from `burn_year` to include in the slope calculation. Defaults to `2:10`.
+#' @param req_yrs Integer indicating the minimum number of non-NA observations required to fit a regression. Defaults to `5`.
+#' @param new_col_name Name of the column to store computed slope values. Defaults to `"post_fire_rap_slope"`.
+#' @param r2_col_name Name of the column to store R-squared values. Defaults to `"post_fire_rap_r2"`.
+#' @param prefix Prefix of column names containing yearly RAP values. These should be named like `prefixYYYY` (e.g., `"rap_TRE_2012"`).
+#'
+#' @return A `tibble` with the original data and two additional columns containing slope and R-squared values.
+#'
+#' @details
+#' The function internally melts the RAP time series into long format, filters values
+#' by offset from the `mock_burn_year`, and fits a thiel-sen model (`value ~ offset`) for each
+#' row. If the number of non-NA years is below `req_yrs`, NA values are returned.
+#'
+#' @importFrom data.table as.data.table copy melt setnames
+#' @importFrom stats lm coef summary
+#' @importFrom tibble as_tibble
+#'
+#' @examples
+#' \dontrun{
+#' dt <- data.table(
+#'   burn_year = c(2010, 2012),
+#'   rap_TRE_2011 = c(0.5, 0.6),
+#'   rap_TRE_2012 = c(0.6, 0.65),
+#'   rap_TRE_2013 = c(0.7, NA),
+#'   rap_TRE_2014 = c(0.8, 0.75)
+#' )
+#' compute_post_fire_forest_slope_dt(dt, offsets = 1:4, req_yrs = 3)
+#' }
+#'
+#' @export
+compute_post_fire_forest_slope_dt <- function(
+  dt,
+  offsets = 2:10,
+  req_yrs = 5,
+  new_col_name = "post_fire_rap_slope",
+  r2_col_name = "post_fire_rap_r2",
+  prefix = "rap_TRE_"
+) {
+  dt <- as.data.table(copy(dt))
+  dt[, id__temp := .I]  # Unique ID
+
+  # Melt RAP TRE columns
+  melt_cols <- grep(paste0("^", prefix, "\\d{4}$"), names(dt), value = TRUE)
+
+  long_dt <- melt(
+    dt,
+    id.vars = c("id__temp", "mock_burn_year"),
+    measure.vars = melt_cols,
+    variable.name = "year_col",
+    value.name = "value"
+  )
+
+  # Extract year
+  long_dt[, year := as.integer(sub(prefix, "", year_col))]
+
+  # Calculate offset from burn year
+  long_dt[, offset := year - mock_burn_year]
+
+  # Keep only desired offsets
+  long_dt <- long_dt[offset %in% offsets]
+
+  # Group and compute slope + R2 if enough data
+  slope_dt <- long_dt[
+    !is.na(value),
+    {
+      if (.N >= req_yrs) {
+        # model <- lm(value ~ offset, data = .SD) ####################SWITCH TO USE THEIL-SEN REGRESSION
+        # list(
+        #   slope = coef(model)[["offset"]],
+        #   r2 = summary(model)$r.squared
+        # )
+        model <- mblm::mblm(value ~ offset, data = .SD, repeated = FALSE)
+        preds <- predict(model)
+        r2 <- 1 - sum((.SD$value - preds)^2, na.rm = TRUE) / sum((.SD$value - mean(.SD$value, na.rm = TRUE))^2, na.rm = TRUE)
+
+        list(
+          slope = coef(model)[["offset"]],
+          r2 = r2
+        )
+      } else {
+        list(
+          slope = NA_real_,
+          r2 = NA_real_
+        )
+      }
+    },
+    by = id__temp
+  ]
+
+  # Merge results back
+  dt <- merge(dt, slope_dt, by = "id__temp", all.x = TRUE)
+  setnames(dt, c("slope", "r2"), c(new_col_name, r2_col_name))
+  dt[, id__temp := NULL]
+
+  return(as_tibble(dt))
+}
 
 
 # Use functions
@@ -668,47 +666,55 @@ dats_response <- dats_response |>
                 post_fire_rap_TRE_difference_n6_3_yr = avg_rap_TRE_3_yr_post_fire - avg_rap_TRE_6_yr_pre_fire,
                 post_fire_rap_TRE_difference_n6_5_yr = avg_rap_TRE_5_yr_post_fire - avg_rap_TRE_6_yr_pre_fire,
                 post_fire_rap_TRE_difference_n6_10_yr = avg_rap_TRE_10_yr_post_fire - avg_rap_TRE_6_yr_pre_fire,
-                post_fire_rap_TRE_difference_n6_15_yr = avg_rap_TRE_15_yr_post_fire - avg_rap_TRE_6_yr_pre_fire)
+                post_fire_rap_TRE_difference_n6_15_yr = avg_rap_TRE_15_yr_post_fire - avg_rap_TRE_6_yr_pre_fire,
+                post_fire_rap_TRE_increase_3_10_yr = avg_rap_TRE_10_yr_post_fire - avg_rap_TRE_3_yr_post_fire,
+                post_fire_rap_TRE_increase_3_15_yr = avg_rap_TRE_15_yr_post_fire - avg_rap_TRE_3_yr_post_fire,
+                post_fire_rap_TRE_perc_recovery_n6_3_15_yr = post_fire_rap_TRE_increase_3_15_yr / (-1 * post_fire_rap_TRE_difference_n6_3_yr),
+                post_fire_rap_TRE_perc_recovery_n6_3_10_yr = post_fire_rap_TRE_increase_3_10_yr / (-1 * post_fire_rap_TRE_difference_n6_3_yr))
 
 
-# dats_response <- dats_response |>
-#   compute_post_fire_forest_slope_dt(
-#     offsets = 5:10,
-#     req_yrs = 5,
-#     new_col_name = "post_fire_forest_slope_5_10_yrs",
-#     r2_col_name = "post_fire_forest_5_10_yrs_r2",
-#     prefix = "rap_TRE_") |>
-#   compute_post_fire_forest_slope_dt(
-#     offsets = 10:15,
-#     req_yrs = 5,
-#     new_col_name = "post_fire_forest_slope_10_15_yrs",
-#     r2_col_name = "post_fire_forest_10_15_yrs_r2",
-#     prefix = "rap_TRE_") |>
-#   compute_post_fire_forest_slope_dt(
-#     offsets = 2:10,
-#     req_yrs = 8,
-#     new_col_name = "post_fire_forest_slope_2_10_yrs",
-#     r2_col_name = "post_fire_forest_2_10_yrs_r2",
-#     prefix = "rap_TRE_") |>
-#   compute_post_fire_forest_slope_dt(
-#     offsets = 5:15,
-#     req_yrs = 10,
-#     new_col_name = "post_fire_forest_slope_5_15_yrs",
-#     r2_col_name = "post_fire_forest_5_15_yrs_r2",
-#     prefix = "rap_TRE_") |>
-#   compute_post_fire_forest_slope_dt(
-#     offsets = 5:20,
-#     req_yrs = 15,
-#     new_col_name = "post_fire_forest_slope_5_20_yrs",
-#     r2_col_name = "post_fire_forest_5_20_yrs_r2",
-#     prefix = "rap_TRE_")
-
+dats_response <- dats_response |>
+  # compute_post_fire_forest_slope_dt(
+  #   offsets = 5:10,
+  #   req_yrs = 5,
+  #   new_col_name = "post_fire_rap_TRE_slope_5_10_yrs",
+  #   r2_col_name = "post_fire_rap_TRE_5_10_yrs_r2",
+  #   prefix = "rap_TRE_") |>
+  # compute_post_fire_forest_slope_dt(
+  #   offsets = 10:15,
+  #   req_yrs = 5,
+  #   new_col_name = "post_fire_rap_TRE_slope_10_15_yrs",
+  #   r2_col_name = "post_fire_rap_TRE_10_15_yrs_r2",
+  #   prefix = "rap_TRE_") |>
+  compute_post_fire_forest_slope_dt(
+    offsets = 2:5,
+    req_yrs = 3,
+    new_col_name = "post_fire_rap_TRE_slope_2_5_yrs",
+    r2_col_name = "post_fire_rap_TRE_2_5_yrs_r2",
+    prefix = "rap_TRE_") |>
+  compute_post_fire_forest_slope_dt(
+    offsets = 2:10,
+    req_yrs = 8,
+    new_col_name = "post_fire_rap_TRE_slope_2_10_yrs",
+    r2_col_name = "post_fire_rap_TRE_2_10_yrs_r2",
+    prefix = "rap_TRE_") |>
+  compute_post_fire_forest_slope_dt(
+    offsets = 2:15,
+    req_yrs = 13,
+    new_col_name = "post_fire_rap_TRE_slope_2_15_yrs",
+    r2_col_name = "post_fire_rap_TRE_2_15_yrs_r2",
+    prefix = "rap_TRE_") |>
+  compute_post_fire_forest_slope_dt(
+    offsets = 2:20,
+    req_yrs = 17,
+    new_col_name = "post_fire_rap_TRE_slope_2_20_yrs",
+    r2_col_name = "post_fire_rap_TRE_2_20_yrs_r2",
+    prefix = "rap_TRE_")
 
 
 
 
 ```
-
 
 
 
@@ -721,12 +727,12 @@ dats_clean <- dats_response |>
 
 #Clean up factors 
 dats_clean <- dats_clean |>
-  mutate(frg_reclass = case_when(frg_reclass == 1 ~ "<35 return, low/mixed",
+  mutate(frg_reclass_desc = case_when(frg_reclass == 1 ~ "<35 return, low/mixed",
                                  frg_reclass == 2 ~ "<35 return, replacement",
                                  frg_reclass == 3 ~ "35-200 return, low/mixed",
                                  frg_reclass == 4 ~ "35-200 return replacement",
                                  frg_reclass == 5 ~ ">200 return any"),
-         frg_reclass = as.factor(frg_reclass),
+         frg_reclass_desc = as.factor(frg_reclass_desc),
          lf_bps = as.factor(lf_bps),
          burn_sev = fct_relevel(as.factor(burn_sev), c("Never", "Negligible", "Low/Moderate", "High")),
          burn_year = as.integer(burn_year),
