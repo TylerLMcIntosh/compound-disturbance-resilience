@@ -15,6 +15,14 @@ format:
     code-summary: "Show the code"
 ---
 
+# Variable interpretation reminders
+- TPI: low = valleys, high = ridges
+- CHILI: low = cold/wet, high = hot/dry
+- SRTM: low = low elevation, high = high elevation
+- AET: low = wet, high = dry
+- DEF: low = wet, high = dry
+- PDSI: low = dry, high = wet **************
+
 
 # Setup and read in data
 
@@ -58,27 +66,30 @@ dir_ensure(c(dir_figs,
              dir_raw))
 
 set.seed(1234)
+gdrive_folder <- "GEE_Exports_resilience_20251129"
 
 ```
 
 # Load data from GDrive
 
 ```{r}
-##### Run to authenticate gdrive access
-# drive_auth()
-# ####
-# 
-# idb <- read_matching_csvs_from_gdrive("GEE_Exports", "fc_tile_IDBatholith")
-# write_csv(idb, file = here(dir_derived, "all_IDBatholith.csv"))
-# 
-# nc <- read_matching_csvs_from_gdrive("GEE_Exports", "fc_tile_NCascades")
+#### Run to authenticate gdrive access - if receive scope permissions issues, de-authenticate (drive_deauth()) and try again
+drive_auth(
+  scopes = "https://www.googleapis.com/auth/drive.readonly"
+)
+####
+
+idb <- read_matching_csvs_from_gdrive(gdrive_folder, "fc_tile_IDBatholith")
+write_csv(idb, file = here(dir_derived, "all_IDBatholith.csv"))
+
+# nc <- read_matching_csvs_from_gdrive(gdrive_folder, "fc_tile_NCascades")
 # write_csv(nc, file = here(dir_derived, "all_NCascades.csv"))
 # 
-# sn <- read_matching_csvs_from_gdrive("GEE_Exports", "fc_tile_SierraNevada")
+# sn <- read_matching_csvs_from_gdrive(gdrive_folder, "fc_tile_SierraNevada")
 # write_csv(sn, file = here(dir_derived, "all_SierraNevada.csv"))
 # 
-# sr <- read_matching_csvs_from_gdrive("GEE_Exports", "fc_tile_SRockies")
-# write_csv(sr, file = here(dir_derived, "all_SRockies.csv"))
+sr <- read_matching_csvs_from_gdrive(gdrive_folder, "fc_tile_SRockies")
+write_csv(sr, file = here(dir_derived, "all_SRockies.csv"))
 
 
 #There is a problem where some instances of '1's with NAs in the CBI columns can end up being treated as logical; ensure doesn't happen
@@ -108,20 +119,23 @@ if(!file.exists(raw_dats_fl)) {
   #Use safe read function
   idb_dats <- read_csv_ensure_cbi_dbl(here(dir_derived, "all_IDBatholith.csv")) |>
     mutate(ecoregion = "Idaho Batholith")
-  nc_dats <- read_csv_ensure_cbi_dbl(here(dir_derived, "all_NCascades.csv")) |>
-    mutate(ecoregion = "North Cascades")
-  sn_dats <- read_csv_ensure_cbi_dbl(here(dir_derived, "all_SierraNevada.csv")) |>
-    mutate(ecoregion = "Sierra Nevada")
+  # nc_dats <- read_csv_ensure_cbi_dbl(here(dir_derived, "all_NCascades.csv")) |>
+  #   mutate(ecoregion = "North Cascades")
+  # sn_dats <- read_csv_ensure_cbi_dbl(here(dir_derived, "all_SierraNevada.csv")) |>
+  #   mutate(ecoregion = "Sierra Nevada")
   sr_dats <- read_csv_ensure_cbi_dbl(here(dir_derived, "all_SRockies.csv")) |>
     mutate(ecoregion = "Southern Rockies")
   
-  dats <- bind_rows(idb_dats, nc_dats, sn_dats, sr_dats)
+  dats <- bind_rows(idb_dats,
+                    #nc_dats,
+                    #sn_dats,
+                    sr_dats)
   
-  write_csv(dats, sink = raw_dats_fl)
+  write_parquet(dats, sink = raw_dats_fl)
 }
 
 
-dats <- read_csv_ensure_cbi_dbl(here(dir_derived, "raw_test_dats.csv"))
+dats <- read_parquet(here(dir_derived, "raw_test_dats.csv"))
 
 
 

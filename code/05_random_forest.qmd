@@ -216,7 +216,7 @@ df_test <- dats_ml |>
 - SRTM: low = low elevation, high = high elevation
 - AET: low = wet, high = dry
 - DEF: low = wet, high = dry
-- PDSI: 
+- PDSI: low = dry, high = wet
 
 ```{r}
 df_test <- df_test |>
