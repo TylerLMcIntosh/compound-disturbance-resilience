@@ -54,10 +54,13 @@ install_load_packages(c(
   "arrow",
   "forcats",
   "tictoc",
+  "glue",
+  "rlang",
+  "tibble",
   "data.table"))
 
 dir_figs <- here::here('figs')
-dir_derived <- here::here('data', 'derived')
+dir_derived <- here::here('data', 'derived', 'idb_500_20251130')
 dir_raw <- here::here('data', 'raw')
 dir_manual <- here::here('data', 'manual')
 dir_ensure(c(dir_figs,
@@ -66,7 +69,7 @@ dir_ensure(c(dir_figs,
              dir_raw))
 
 set.seed(1234)
-gdrive_folder <- "GEE_Exports_resilience_20251129"
+gdrive_folder <- "GEE_Exports_resilience_20251130"
 
 ```
 
@@ -81,16 +84,17 @@ drive_auth(
 
 idb <- read_matching_csvs_from_gdrive(gdrive_folder, "fc_tile_IDBatholith")
 write_csv(idb, file = here(dir_derived, "all_IDBatholith.csv"))
-
-# nc <- read_matching_csvs_from_gdrive(gdrive_folder, "fc_tile_NCascades")
-# write_csv(nc, file = here(dir_derived, "all_NCascades.csv"))
+rm(idb)
 # 
-# sn <- read_matching_csvs_from_gdrive(gdrive_folder, "fc_tile_SierraNevada")
-# write_csv(sn, file = here(dir_derived, "all_SierraNevada.csv"))
-# 
-sr <- read_matching_csvs_from_gdrive(gdrive_folder, "fc_tile_SRockies")
-write_csv(sr, file = here(dir_derived, "all_SRockies.csv"))
-
+# # nc <- read_matching_csvs_from_gdrive(gdrive_folder, "fc_tile_NCascades")
+# # write_csv(nc, file = here(dir_derived, "all_NCascades.csv"))
+# # 
+# # sn <- read_matching_csvs_from_gdrive(gdrive_folder, "fc_tile_SierraNevada")
+# # write_csv(sn, file = here(dir_derived, "all_SierraNevada.csv"))
+# # 
+# sr <- read_matching_csvs_from_gdrive(gdrive_folder, "fc_tile_SRockies")
+# write_csv(sr, file = here(dir_derived, "all_SRockies.csv"))
+# rm(sr)
 
 #There is a problem where some instances of '1's with NAs in the CBI columns can end up being treated as logical; ensure doesn't happen
 read_csv_ensure_cbi_dbl <- function(path) {
@@ -113,7 +117,8 @@ read_csv_ensure_cbi_dbl <- function(path) {
 }
 
 
-raw_dats_fl <- here(dir_derived, "raw_test_dats.csv")
+#Create full raw dats file if doesn't exist
+raw_dats_fl <- here(dir_derived, "raw_test_dats.parquet")
 
 if(!file.exists(raw_dats_fl)) {
   #Use safe read function
@@ -123,39 +128,85 @@ if(!file.exists(raw_dats_fl)) {
   #   mutate(ecoregion = "North Cascades")
   # sn_dats <- read_csv_ensure_cbi_dbl(here(dir_derived, "all_SierraNevada.csv")) |>
   #   mutate(ecoregion = "Sierra Nevada")
-  sr_dats <- read_csv_ensure_cbi_dbl(here(dir_derived, "all_SRockies.csv")) |>
-    mutate(ecoregion = "Southern Rockies")
+  # sr_dats <- read_csv_ensure_cbi_dbl(here(dir_derived, "all_SRockies.csv")) |>
+  #   mutate(ecoregion = "Southern Rockies")
   
-  dats <- bind_rows(idb_dats,
+  dats <- bind_rows(idb_dats#,
                     #nc_dats,
                     #sn_dats,
-                    sr_dats)
+                    #sr_dats
+                    )
   
   write_parquet(dats, sink = raw_dats_fl)
 }
 
 
-dats <- read_parquet(here(dir_derived, "raw_test_dats.csv"))
-
+dats <- read_parquet(raw_dats_fl)
 
 
 ```
 
+# Examine GEE data & clean NAs
 
+```{r}
+
+glimpse(dats)
+
+# check NA counts
+colSums(is.na(dats))
+
+# Almost all rows being dropped are those with NFG == NA; could fix most of these by backfilling NFG
+dats <- dats |>
+  select(-rand) |>
+  tidyr::drop_na()
+
+# Check strange CBI negative values
+check_cbi <- dats |>
+  select(starts_with("cbi_year")) |>
+  pivot_longer(
+    cols = everything(),
+    names_to = "variable",
+    values_to = "value"
+  ) |>
+  filter(value != -1)
+
+# Count of negative CBI values that aren't -1: #3678 - WHERE IS THIS COMING FROM?
+check_cbi |>
+  summarise(n_negative = sum(value < 0, na.rm = TRUE))
+
+# check_cbi |>
+#   ggplot(aes(x = value)) +
+#   geom_density() +
+#   labs(
+#     x = "CBI value",
+#     y = "Density",
+#     title = "Density of all CBI-year values (excluding -1)"
+#   )
+
+# for now, remove all rows with values that are - but not -1 in CBI
+dats <- dats |>
+  filter(
+    !if_any(
+      starts_with("cbi_year"),
+      ~ .x < 0 & .x != -1
+    )
+  )
+
+```
 
 # Deal with fire and fire heterogeneity data
 
 ```{r}
+
 # replace -1 signifier in CBI bands with NA
 dats <- dats %>%
   mutate(across(starts_with("cbi_year"), ~ na_if(.x, -1)))
 
-# Remove all instances with re-burns and instances where biotic_sum is NA (i.e. at the very edge of AOI)
+# Remove all instances with re-burns
 dats_no_reburn <- dats %>%
   filter(
     rowSums(!is.na(select(., starts_with("cbi_year")))) <= 1
-  ) |>
-  filter(!is.na(biotic_sum))
+  )
 
 # Get burn year & burn year bcCBI
 # Identify CBI columns and corresponding years
@@ -214,39 +265,122 @@ extract_burn_year_value <- function(df, burn_year, prefix) {
 }
 
 # Apply the function to create the new columns
-dats_no_reburn$burn_cbi_1kmmwmedian <- extract_burn_year_value(
+dats_no_reburn$burn_cbi_500mmwmean <- extract_burn_year_value(
   dats_no_reburn,
   burn_year = dats_no_reburn$burn_year,
-  prefix = "cbi_1kmmwmedian"
+  prefix = "cbi_500mmwmean"
 )
 
-dats_no_reburn$burn_cbi_1kmmwstd <- extract_burn_year_value(
+dats_no_reburn$burn_cbi_500mmwstd <- extract_burn_year_value(
   dats_no_reburn,
   burn_year = dats_no_reburn$burn_year,
-  prefix = "cbi_1kmmwstd"
+  prefix = "cbi_500mmwstd"
 )
 
+dats_no_reburn$burn_distance_forest_after <- extract_burn_year_value(
+  dats_no_reburn,
+  burn_year = dats_no_reburn$burn_year,
+  prefix = "distance_forest_after"
+)
 
 # Generate mock_burn_year
 dats_no_reburn$mock_burn_year <- dats_no_reburn$burn_year
 
 na_idx <- which(is.na(dats_no_reburn$mock_burn_year))
-dats_no_reburn$mock_burn_year[na_idx] <- sample(2000:2020, length(na_idx), replace = TRUE)
+dats_no_reburn$mock_burn_year[na_idx] <- sample(1984:2020, length(na_idx), replace = TRUE)
 
 
-# Replace NAs with 0 in specified columns
-cols_to_fill <- c("burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd")
+# RESOLVED THESE
+# # Replace NAs with 0 in specified columns
+# cols_to_fill <- c("burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd")
+# 
+# for (col in cols_to_fill) {
+#   dats_no_reburn[[col]][is.na(dats_no_reburn[[col]])] <- 0
+# }
 
-for (col in cols_to_fill) {
-  dats_no_reburn[[col]][is.na(dats_no_reburn[[col]])] <- 0
-}
-
-# Remove the few rows that still have the strange fire but no burn year phenomenon
-dats_no_reburn <- dats_no_reburn |>
-  filter(!(fire == 1 & is.na(burn_year)))
+# # Remove the few rows that still have the strange fire but no burn year phenomenon
+# x <- dats_no_reburn |>
+#   filter(!(fire == 1 & is.na(burn_year)))
 
 ```
 
+
+
+# Rescale data and deal with factors etc
+
+```{r}
+
+dats_no_reburn <- dats_no_reburn |>
+  mutate(
+    across(
+      c(starts_with("vcf_tree_SD"), starts_with("pdsi_")),
+      ~ .x * 0.01
+    )
+  )
+
+# NFG metadata: https://data.fs.usda.gov/geodata/rastergateway/forest_type/conus_forest_type_group_metadata.php
+nfg_lookup <- c(
+  "100" = "White/Red/Jack Pine Group",
+  "120" = "Spruce/Fir Group",
+  "140" = "Longleaf/Slash Pine Group",
+  "160" = "Loblolly/Shortleaf Pine Group",
+  "180" = "Pinyon/Juniper Group",
+  "200" = "Douglas-fir Group",
+  "220" = "Ponderosa Pine Group",
+  "240" = "Western White Pine Group",
+  "260" = "Fir/Spruce/Mountain Hemlock Group",
+  "280" = "Lodgepole Pine Group",
+  "300" = "Hemlock/Sitka Spruce Group",
+  "320" = "Western Larch Group",
+  "340" = "Redwood Group",
+  "360" = "Other Western Softwood Group",
+  "370" = "California Mixed Conifer Group",
+  "380" = "Exotic Softwoods Group",
+  "400" = "Oak/Pine Group",
+  "500" = "Oak/Hickory Group",
+  "600" = "Oak/Gum/Cypress Group",
+  "700" = "Elm/Ash/Cottonwood Group",
+  "800" = "Maple/Beech/Birch Group",
+  "900" = "Aspen/Birch Group",
+  "910" = "Alder/Maple Group",
+  "920" = "Western Oak Group",
+  "940" = "Tanoak/Laurel Group",
+  "950" = "Other Western Hardwoods Group",
+  "980" = "Tropical Hardwoods Group",
+  "990" = "Exotic Hardwoods Group"
+)
+
+dats_no_reburn <- dats_no_reburn |>
+  mutate(
+    nfg_factor = factor(nfg_lookup[as.character(nfg)])
+  )
+
+dats_no_reburn <- dats_no_reburn %>%
+  mutate(
+    burn_sev = case_when(
+      fire == 1 & burn_cbi >= 2.25 ~ "High",
+      fire == 1 & burn_cbi < 0.1 ~ "Negligible",
+      fire == 1 & burn_cbi >= 0.1 & burn_cbi < 2.25 ~ "Low/Moderate",
+      TRUE ~ "Never"
+    )
+  )
+
+dats_no_reburn <- dats_no_reburn
+
+
+#Clean up factors & years as integers 
+dats_no_reburn <- dats_no_reburn |>
+  mutate(frg_reclass_desc = case_when(frg_reclass == 1 ~ "<35 return, low/mixed",
+                                 frg_reclass == 2 ~ "<35 return, replacement",
+                                 frg_reclass == 3 ~ "35-200 return, low/mixed",
+                                 frg_reclass == 4 ~ "35-200 return replacement",
+                                 frg_reclass == 5 ~ ">200 return any"),
+         frg_reclass_desc = as.factor(frg_reclass_desc),
+         burn_sev = fct_relevel(as.factor(burn_sev), c("Never", "Negligible", "Low/Moderate", "High")),
+         burn_year = as.integer(burn_year),
+         mock_burn_year = as.integer(mock_burn_year))
+
+```
 
 
 # Get biotic & drought sums and means in time before/after burn
@@ -304,8 +438,9 @@ transform_annual_to_priorafter <- function(df, column_pattern, summary_fn_name, 
   df[[prior_col]] <- prior_vals
   df[[after_col]] <- after_vals
   
-  # Filter out rows where either summary column is NA
-  df <- df[!is.na(df[[prior_col]]) & !is.na(df[[after_col]]), ]
+  # DO NOT DO THIS ANYMORE TO ALLOW FOR NON-CD ANALYSES
+  # # Filter out rows where either summary column is NA
+  # df <- df[!is.na(df[[prior_col]]) & !is.na(df[[after_col]]), ]
   
   return(df)
 }
@@ -430,29 +565,16 @@ dats_simple_added <- n_beyond_threshold_x_yrs(
   df = dats_simple_added,
   column_pattern = "^pdsi_annual_\\d{4}$",
   nyears = 5,
-  threshold = "<=-400"
+  threshold = "<=-4"
 )
 
 dats_simple_added <- n_beyond_threshold_x_yrs(
   df = dats_simple_added,
   column_pattern = "^pdsi_summer_\\d{4}$",
   nyears = 5,
-  threshold = "<=-400"
+  threshold = "<=-4"
 )
 
-dats_simple_added <- n_beyond_threshold_x_yrs(
-  df = dats_simple_added,
-  column_pattern = "^pdsi_annual_\\d{4}$",
-  nyears = 5,
-  threshold = "<=-300"
-)
-
-dats_simple_added <- n_beyond_threshold_x_yrs(
-  df = dats_simple_added,
-  column_pattern = "^pdsi_summer_\\d{4}$",
-  nyears = 5,
-  threshold = "<=-300"
-)
 
 dats_simple_added <- n_beyond_threshold_x_yrs(
   df = dats_simple_added,
@@ -470,11 +592,7 @@ dats_simple_added <- n_beyond_threshold_x_yrs(
 ```
 
 
-# Deal with RAP data
-
-
-- change functions to be named as 'forest_cover_response'
-- fix post-fire slope to ignore the two years post fire
+# Deal with response data (VCF & RAP)
 
 ```{r}
 
@@ -529,17 +647,17 @@ compute_forest_response_offset <- function(dt, offsets, new_col_name, prefix = "
 #' specified year offsets. The output includes the computed slope and R² for each
 #' observation where sufficient data is available.
 #'
-#' @param dt A `data.table` or `data.frame` containing RAP data and a `burn_year` column.
-#' @param offsets Integer vector indicating year offsets from `burn_year` to include in the slope calculation. Defaults to `2:10`.
+#' @param dt A `data.table` or `data.frame` containing RAP data and a `mock_burn_year` column.
+#' @param offsets Integer vector indicating year offsets from `mock_burn_year` to include in the slope calculation. Defaults to `2:10`.
 #' @param req_yrs Integer indicating the minimum number of non-NA observations required to fit a regression. Defaults to `5`.
 #' @param new_col_name Name of the column to store computed slope values. Defaults to `"post_fire_rap_slope"`.
 #' @param r2_col_name Name of the column to store R-squared values. Defaults to `"post_fire_rap_r2"`.
-#' @param prefix Prefix of column names containing yearly RAP values. These should be named like `prefixYYYY` (e.g., `"rap_TRE_2012"`).
+#' @param prefix Prefix of column names containing yearly response values. These should be named like `prefixYYYY` (e.g., `"rap_TRE_2012"`).
 #'
 #' @return A `tibble` with the original data and two additional columns containing slope and R-squared values.
 #'
 #' @details
-#' The function internally melts the RAP time series into long format, filters values
+#' The function internally melts the  time series into long format, filters values
 #' by offset from the `mock_burn_year`, and fits a thiel-sen model (`value ~ offset`) for each
 #' row. If the number of non-NA years is below `req_yrs`, NA values are returned.
 #'
@@ -627,103 +745,106 @@ compute_post_fire_forest_slope_dt <- function(
   return(as_tibble(dt))
 }
 
+compute_avgs <- function(dats, prefix) {
+  dats <- dats |>
+  compute_forest_response_offset(offsets = 9:11,
+                                 new_col_name = glue("avg_{prefix}10_yr_post_fire"),
+                                 prefix = prefix) |>
+  compute_forest_response_offset(offsets = 14:16,
+                                 new_col_name = glue("avg_{prefix}15_yr_post_fire"),
+                                 prefix = prefix) |>
+  compute_forest_response_offset(offsets = 19:21,
+                                 new_col_name = glue("avg_{prefix}20_yr_post_fire"),
+                                 prefix = prefix) |>
+  compute_forest_response_offset(offsets = -7:-5,
+                                 new_col_name = glue("avg_{prefix}6_yr_pre_fire"),
+                                 prefix = prefix) |>
+  compute_forest_response_offset(offsets = 2:4, 
+                                 new_col_name = glue("avg_{prefix}3_yr_post_fire"),  # USE 3 YRS POST FIRE SO THAT WINDOW CAPTURES 2-4, missing most delayed mortality
+                                 prefix = prefix)
+  return(dats)
+}
+
+compute_response_differences_recovery <- function(dats, prefix) {
+  dats <- dats |>
+    mutate(
+      # n6 -> 3 year difference
+      !!sym(glue("post_fire_{prefix}difference_n6_3_yr")) :=
+        !!sym(glue("avg_{prefix}3_yr_post_fire")) -
+        !!sym(glue("avg_{prefix}6_yr_pre_fire")),
+
+      # increase from 3 -> 10 years post-fire
+      !!sym(glue("post_fire_{prefix}increase_3_10_yr")) :=
+        !!sym(glue("avg_{prefix}10_yr_post_fire")) -
+        !!sym(glue("avg_{prefix}3_yr_post_fire")),
+
+      # increase from 3 -> 15 years post-fire
+      !!sym(glue("post_fire_{prefix}increase_3_15_yr")) :=
+        !!sym(glue("avg_{prefix}15_yr_post_fire")) -
+        !!sym(glue("avg_{prefix}3_yr_post_fire")),
+      
+      # increase from 3 -> 20 years post-fire
+      !!sym(glue("post_fire_{prefix}increase_3_20_yr")) :=
+        !!sym(glue("avg_{prefix}20_yr_post_fire")) -
+        !!sym(glue("avg_{prefix}3_yr_post_fire")),
+
+      # percent recovery (3–10yr)
+      !!sym(glue("post_fire_{prefix}perc_recovery_n6_3_10_yr")) :=
+        (!!sym(glue("post_fire_{prefix}increase_3_10_yr")) /
+        (-1 * !!sym(glue("post_fire_{prefix}difference_n6_3_yr")))) * 100,
+
+      # percent recovery (3–15yr)
+      !!sym(glue("post_fire_{prefix}perc_recovery_n6_3_15_yr")) :=
+        (!!sym(glue("post_fire_{prefix}increase_3_15_yr")) /
+        (-1 * !!sym(glue("post_fire_{prefix}difference_n6_3_yr")))) * 100,
+      
+      # percent recovery (3–20yr)
+      !!sym(glue("post_fire_{prefix}perc_recovery_n6_3_20_yr")) :=
+        (!!sym(glue("post_fire_{prefix}increase_3_20_yr")) /
+        (-1 * !!sym(glue("post_fire_{prefix}difference_n6_3_yr")))) * 100
+    )
+  return(dats)
+}  
+
+# Allow for up to 1 missing year for each slope computation
+compute_response_slopes <- function(dats, prefix) {
+  dats <- dats |>
+    compute_post_fire_forest_slope_dt(
+      offsets = 3:10,
+      req_yrs = 7,
+      new_col_name = glue("post_fire_{prefix}slope_3_10_yrs"),
+      r2_col_name = glue("post_fire_{prefix}3_10_yrs_r2"),
+      prefix = prefix) |>
+    compute_post_fire_forest_slope_dt(
+      offsets = 3:15,
+      req_yrs = 12,
+      new_col_name = glue("post_fire_{prefix}slope_3_15_yrs"),
+      r2_col_name = glue("post_fire_{prefix}3_15_yrs_r2"),
+      prefix = prefix) |>
+    compute_post_fire_forest_slope_dt(
+      offsets = 3:20,
+      req_yrs = 17,
+      new_col_name = glue("post_fire_{prefix}slope_3_20_yrs"),
+      r2_col_name = glue("post_fire_{prefix}3_20_yrs_r2"),
+      prefix = prefix)
+  return(dats)
+}
+
 
 # Use functions
-
-dats_simple_added <- dats_simple_added %>%
-  mutate(
-    burn_sev = case_when(
-      fire == 1 & burn_cbi >= 2.25 ~ "High",
-      fire == 1 & burn_cbi < 0.1 ~ "Negligible",
-      fire == 1 & burn_cbi >= 0.1 & burn_cbi < 2.25 ~ "Low/Moderate",
-      TRUE ~ "Never"
-    )
-  )
-
-
-tic()
+tic() #161 seconds for 36k row dataset
 dats_response <- dats_simple_added |>
-  compute_forest_response_offset(offsets = 4:6,
-                                 new_col_name = "avg_rap_TRE_5_yr_post_fire",
-                                 prefix = "rap_TRE_") |>
-  compute_forest_response_offset(offsets = 9:11,
-                                 new_col_name = "avg_rap_TRE_10_yr_post_fire",
-                                 prefix = "rap_TRE_") |>
-  compute_forest_response_offset(offsets = 14:16,
-                                 new_col_name = "avg_rap_TRE_15_yr_post_fire",
-                                 prefix = "rap_TRE_") |>
-  compute_forest_response_offset(offsets = -7:-5,
-                                 new_col_name = "avg_rap_TRE_6_yr_pre_fire",
-                                 prefix = "rap_TRE_") |>
-  compute_forest_response_offset(offsets = -3:-1,
-                                 new_col_name = "avg_rap_TRE_2_yr_pre_fire",
-                                 prefix = "rap_TRE_") |>
-  compute_forest_response_offset(offsets = 2:4, 
-                                 new_col_name = "avg_rap_TRE_3_yr_post_fire",  # USE 3 YRS POST FIRE SO THAT WINDOW CAPTURES 2-4, missing most delayed mortality
-                                 prefix = "rap_TRE_")
+  compute_avgs(prefix = "rap_tree_") |>
+  compute_avgs(prefix = "vcf_tree_") |>
+  compute_response_differences_recovery(prefix = "rap_tree_")  |>
+  compute_response_differences_recovery(prefix = "vcf_tree_") |>
+  compute_response_slopes(prefix = "rap_tree_") |>
+  compute_response_slopes(prefix = "vcf_tree_")
 toc()
 
 
-# dats_response <- dats_response |>
-#   dplyr::mutate(post_fire_forest_difference_3_yr = avg_forest_3_yr_post_fire - avg_forest_2_yr_pre_fire,
-#                 post_fire_forest_difference_5_yr = avg_forest_5_yr_post_fire - avg_forest_2_yr_pre_fire,
-#                 post_fire_forest_difference_10_yr = avg_forest_10_yr_post_fire - avg_forest_2_yr_pre_fire,
-#                 post_fire_forest_difference_15_yr = avg_forest_15_yr_post_fire - avg_forest_2_yr_pre_fire,
-#                 perc_recovery_10yr = (post_fire_forest_difference_3_yr - post_fire_forest_difference_10_yr) / post_fire_forest_difference_3_yr * 100,
-#                 perc_recovery_15yr = (post_fire_forest_difference_3_yr - post_fire_forest_difference_15_yr) / post_fire_forest_difference_3_yr * 100)
-
-dats_response <- dats_response |>
-  dplyr::mutate(post_fire_rap_TRE_difference_n2_3_yr = avg_rap_TRE_3_yr_post_fire - avg_rap_TRE_2_yr_pre_fire,
-                post_fire_rap_TRE_difference_n2_5_yr = avg_rap_TRE_5_yr_post_fire - avg_rap_TRE_2_yr_pre_fire,
-                post_fire_rap_TRE_difference_n2_10_yr = avg_rap_TRE_10_yr_post_fire - avg_rap_TRE_2_yr_pre_fire,
-                post_fire_rap_TRE_difference_n2_15_yr = avg_rap_TRE_15_yr_post_fire - avg_rap_TRE_2_yr_pre_fire,
-                post_fire_rap_TRE_difference_n6_3_yr = avg_rap_TRE_3_yr_post_fire - avg_rap_TRE_6_yr_pre_fire,
-                post_fire_rap_TRE_difference_n6_5_yr = avg_rap_TRE_5_yr_post_fire - avg_rap_TRE_6_yr_pre_fire,
-                post_fire_rap_TRE_difference_n6_10_yr = avg_rap_TRE_10_yr_post_fire - avg_rap_TRE_6_yr_pre_fire,
-                post_fire_rap_TRE_difference_n6_15_yr = avg_rap_TRE_15_yr_post_fire - avg_rap_TRE_6_yr_pre_fire,
-                post_fire_rap_TRE_increase_3_10_yr = avg_rap_TRE_10_yr_post_fire - avg_rap_TRE_3_yr_post_fire,
-                post_fire_rap_TRE_increase_3_15_yr = avg_rap_TRE_15_yr_post_fire - avg_rap_TRE_3_yr_post_fire,
-                post_fire_rap_TRE_perc_recovery_n6_3_15_yr = post_fire_rap_TRE_increase_3_15_yr / (-1 * post_fire_rap_TRE_difference_n6_3_yr),
-                post_fire_rap_TRE_perc_recovery_n6_3_10_yr = post_fire_rap_TRE_increase_3_10_yr / (-1 * post_fire_rap_TRE_difference_n6_3_yr))
 
 
-dats_response <- dats_response |>
-  # compute_post_fire_forest_slope_dt(
-  #   offsets = 5:10,
-  #   req_yrs = 5,
-  #   new_col_name = "post_fire_rap_TRE_slope_5_10_yrs",
-  #   r2_col_name = "post_fire_rap_TRE_5_10_yrs_r2",
-  #   prefix = "rap_TRE_") |>
-  # compute_post_fire_forest_slope_dt(
-  #   offsets = 10:15,
-  #   req_yrs = 5,
-  #   new_col_name = "post_fire_rap_TRE_slope_10_15_yrs",
-  #   r2_col_name = "post_fire_rap_TRE_10_15_yrs_r2",
-  #   prefix = "rap_TRE_") |>
-  compute_post_fire_forest_slope_dt(
-    offsets = 2:5,
-    req_yrs = 3,
-    new_col_name = "post_fire_rap_TRE_slope_2_5_yrs",
-    r2_col_name = "post_fire_rap_TRE_2_5_yrs_r2",
-    prefix = "rap_TRE_") |>
-  compute_post_fire_forest_slope_dt(
-    offsets = 2:10,
-    req_yrs = 8,
-    new_col_name = "post_fire_rap_TRE_slope_2_10_yrs",
-    r2_col_name = "post_fire_rap_TRE_2_10_yrs_r2",
-    prefix = "rap_TRE_") |>
-  compute_post_fire_forest_slope_dt(
-    offsets = 2:15,
-    req_yrs = 13,
-    new_col_name = "post_fire_rap_TRE_slope_2_15_yrs",
-    r2_col_name = "post_fire_rap_TRE_2_15_yrs_r2",
-    prefix = "rap_TRE_") |>
-  compute_post_fire_forest_slope_dt(
-    offsets = 2:20,
-    req_yrs = 17,
-    new_col_name = "post_fire_rap_TRE_slope_2_20_yrs",
-    r2_col_name = "post_fire_rap_TRE_2_20_yrs_r2",
-    prefix = "rap_TRE_")
 
 
 
@@ -737,20 +858,7 @@ dats_response <- dats_response |>
 ```{r}
 dats_clean <- dats_response |>
   mutate(uniqueID = row_number()) |> # apply a unique ID to be sure it has one
-  remove_columns_with_prefix(prefixes = c("cbi", "distance_unburned"))
-
-#Clean up factors 
-dats_clean <- dats_clean |>
-  mutate(frg_reclass_desc = case_when(frg_reclass == 1 ~ "<35 return, low/mixed",
-                                 frg_reclass == 2 ~ "<35 return, replacement",
-                                 frg_reclass == 3 ~ "35-200 return, low/mixed",
-                                 frg_reclass == 4 ~ "35-200 return replacement",
-                                 frg_reclass == 5 ~ ">200 return any"),
-         frg_reclass_desc = as.factor(frg_reclass_desc),
-         lf_bps = as.factor(lf_bps),
-         burn_sev = fct_relevel(as.factor(burn_sev), c("Never", "Negligible", "Low/Moderate", "High")),
-         burn_year = as.integer(burn_year),
-         mock_burn_year = as.integer(mock_burn_year))
+  remove_columns_with_prefix(prefixes = c("cbi", "distance_forest_after"))
 
 
 arrow::write_parquet(x = dats_clean, sink = here(dir_derived, "test_dats_cleaned.parquet"))
@@ -764,7 +872,8 @@ dats_short <- dats_clean |>
                                           "^pdsi_annual_\\d{4}$",
                                           "^hd_fingerprint_\\d{4}$",
                                           "^biotic_\\d{4}$",
-                                          "rap_TRE"))
+                                          "rap_tree",
+                                          "vcf_tree"))
 
 
 arrow::write_parquet(x = dats_short, sink = here(dir_derived, "test_dats_short.parquet"))

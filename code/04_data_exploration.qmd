@@ -45,10 +45,11 @@ install_load_packages(c(
   "purrr",
   "corrplot",
   "gridExtra",
-  "parquet",
+  "rlang",
+  "arrow",
   "tictoc"))
 
-dir_figs <- here::here('figs')
+dir_figs <- here::here('figs', 'exploratory')
 dir_derived <- here::here('data', 'derived')
 dir_raw <- here::here('data', 'raw')
 dir_manual <- here::here('data', 'manual')
@@ -69,42 +70,143 @@ set.seed(seed)
 ```{r}
 
 #Short dats
-dats <- read_parquet(here(dir_derived, "test_dats_short.parquet"))
+dats <- arrow::read_parquet(here(dir_derived, "test_dats_short.parquet"))
 ecoregions <- unique(dats$ecoregion)
 
-dats_long <- read_parquet(here(dir_derived, "test_dats_long.parquet"))
+dats_long <- arrow::read_parquet(here(dir_derived, "test_dats_long.parquet"))
 
+
+x <- dats_long |>
+  select(starts_with("rap_tree"), burn_year, year, starts_with("avg_rap_tree"), starts_with("post_fire_rap_tree_perc"),  
+         uniqueID)
+
+xx <- filter(x, uniqueID == 25220) |> arrange(year)
 
 ```
 
-# Examine outcomes
+# Examine MODIS vs RAP outcomes
 
 
 ```{r}
 dats_f <- dats |>
   filter(fire == 1)
 
-hist(dats_f$post_fire_rap_TRE_slope_2_5_yrs)
-hist(dats_f$post_fire_rap_TRE_slope_2_10_yrs)
-hist(dats_f$post_fire_rap_TRE_slope_2_15_yrs)
-hist(dats_f$post_fire_rap_TRE_slope_2_20_yrs)
+dats_no_f <- dats |>
+  filter(fire != 1)
 
-dats_flm <- dats |>
-  filter(fire == 1 & burn_sev == "Low/Moderate")
+# 6-year pre-fire comparison
+ggplot(
+  dats_f |>
+    filter(
+      !is.na(avg_rap_tree_6_yr_pre_fire),
+      !is.na(avg_vcf_tree_6_yr_pre_fire)
+    )
+) +
+  geom_density(aes(x = avg_rap_tree_6_yr_pre_fire), color = "red") +
+  geom_density(aes(x = avg_vcf_tree_6_yr_pre_fire), color = "blue")
 
-hist(dats_flm$post_fire_rap_TRE_slope_2_5_yrs)
-hist(dats_flm$post_fire_rap_TRE_slope_2_10_yrs)
-hist(dats_flm$post_fire_rap_TRE_slope_2_15_yrs)
-hist(dats_flm$post_fire_rap_TRE_slope_2_20_yrs)
 
-dats_fh <- dats |>
-  filter(fire == 1 & burn_sev == "High")
+# 3-year post-fire comparison
+ggplot(
+  dats_f |>
+    filter(
+      !is.na(avg_rap_tree_3_yr_post_fire),
+      !is.na(avg_vcf_tree_3_yr_post_fire)
+    )
+) +
+  geom_density(aes(x = avg_rap_tree_3_yr_post_fire), color = "red") +
+  geom_density(aes(x = avg_vcf_tree_3_yr_post_fire), color = "blue")
 
-hist(dats_fh$post_fire_rap_TRE_slope_2_5_yrs)
-hist(dats_fh$post_fire_rap_TRE_slope_2_10_yrs)
-hist(dats_fh$post_fire_rap_TRE_slope_2_15_yrs)
-hist(dats_fh$post_fire_rap_TRE_slope_2_20_yrs)
 
+# 10-year post-fire comparison
+ggplot(
+  dats_f |>
+    filter(
+      !is.na(avg_rap_tree_10_yr_post_fire),
+      !is.na(avg_vcf_tree_10_yr_post_fire)
+    )
+) +
+  geom_density(aes(x = avg_rap_tree_10_yr_post_fire), color = "red") +
+  geom_density(aes(x = avg_vcf_tree_10_yr_post_fire), color = "blue")
+
+
+# Percent recovery, 3 to 15 years post-fire
+ggplot(
+  dats_f |>
+    filter(
+      !is.na(post_fire_rap_tree_perc_recovery_n6_3_15_yr),
+      !is.na(post_fire_vcf_tree_perc_recovery_n6_3_15_yr)
+    )
+) +
+  geom_density(aes(x = post_fire_rap_tree_perc_recovery_n6_3_15_yr), color = "red") +
+  geom_density(aes(x = post_fire_vcf_tree_perc_recovery_n6_3_15_yr), color = "blue") +
+  xlim(c(-50, 50))
+
+
+# Percent recovery, 3 to 10 years post-fire
+ggplot(
+  dats_f |>
+    filter(
+      !is.na(post_fire_rap_tree_perc_recovery_n6_3_10_yr),
+      !is.na(post_fire_vcf_tree_perc_recovery_n6_3_10_yr)
+    )
+) +
+  geom_density(aes(x = post_fire_rap_tree_perc_recovery_n6_3_10_yr), color = "red") +
+  geom_density(aes(x = post_fire_vcf_tree_perc_recovery_n6_3_10_yr), color = "blue") +
+  xlim(c(-50, 50))
+
+
+ggplot(
+  dats_f |>
+    filter(
+      !is.na(post_fire_rap_tree_slope_3_15_yrs),
+      !is.na(post_fire_vcf_tree_slope_3_15_yrs)
+    )
+) +
+  geom_density(aes(x = post_fire_rap_tree_slope_3_15_yrs), color = "red") +
+  geom_density(aes(x = post_fire_vcf_tree_slope_3_15_yrs), color = "blue") +
+  xlim(c(-2, 2))
+
+
+ggplot(
+  dats_f |>
+    filter(
+      !is.na(post_fire_rap_tree_slope_3_10_yrs),
+      !is.na(post_fire_vcf_tree_slope_3_10_yrs)
+    )
+) +
+  geom_density(aes(x = post_fire_rap_tree_slope_3_10_yrs), color = "red") +
+  geom_density(aes(x = post_fire_vcf_tree_slope_3_10_yrs), color = "blue") +
+  xlim(c(-2, 2))
+
+# Check correlation between vcf and rap
+# ... not very correlated...
+dats_f_long <- dats_long |>
+  filter(fire == 1)
+
+ggplot(dats_f_long |>
+         filter(fire_timeframe == "before_burn")) +
+  geom_point(aes(x = rap_tree, y = vcf_tree)) +
+  labs(title = "VCF vs RAP mean 250m, pre-burn")
+
+ggplot(dats_f_long |>
+         filter(fire_timeframe == "after_burn")) +
+  geom_point(aes(x = rap_tree, y = vcf_tree)) +
+  geom_smooth(aes(x = rap_tree, y = vcf_tree)) +
+  labs(title = "VCF vs RAP mean 250m, post-burn")
+
+
+
+ggplot(dats |> filter(post_fire_rap_tree_perc_recovery_n6_3_10_yr > -100 & post_fire_rap_tree_perc_recovery_n6_3_10_yr < 100 & post_fire_vcf_tree_perc_recovery_n6_3_10_yr > -100 & post_fire_vcf_tree_perc_recovery_n6_3_10_yr < 100 )) +
+  geom_point(aes(x = post_fire_rap_tree_perc_recovery_n6_3_10_yr, y = post_fire_vcf_tree_perc_recovery_n6_3_10_yr), alpha = 0.1) +
+  geom_smooth(aes(x = post_fire_rap_tree_perc_recovery_n6_3_10_yr, y = post_fire_vcf_tree_perc_recovery_n6_3_10_yr), alpha = 0.1) +
+  labs(title = "VCF vs RAP recovery 250m")
+
+
+ggplot(dats) +
+  geom_point(aes(x = post_fire_rap_tree_slope_3_15_yrs, y = post_fire_vcf_tree_slope_3_15_yrs), alpha = 0.1) +
+  geom_smooth(aes(x = post_fire_rap_tree_slope_3_15_yrs, y = post_fire_vcf_tree_slope_3_15_yrs), alpha = 0.1) +
+  labs(title = "VCF vs RAP slope 250m")
 
 ```
 
@@ -133,166 +235,247 @@ In the North Cascades and Sierra Nevada we see what looks like a signature of fo
 - We see forest decline in the years just prior to burn in the North Cascades and Sierra Nevada
   - QUESTION: Is this linked to other disturbances? Does probability of burn / burn severity change depending on prior drought/biotic agents?
   
+  COMPARISON
+  Observations comparing the two response variables
+  - In general we see that VCF tends to document a lower tree cover percentage for the same pixel. this is consistently true across ecoregions, and relatively stable in never-burned units. We see a similar pattern in the negligibly burned areas.
+  - The trends are closer together for the low/moderate and highly burned areas, both pre- and post-burn (WHY?), while VCF tends to document reduced recovery in later years 
+  
+  - In BOTH trajectories we see patterns that make sense in terms of forest density -> severity, but they vary a bit by ecoregion.
+    - IDB: low/moderate fires are happening in lower-than-average density forests, while high severity fires are happening in ~ average density forests
+    - SR: low/moderate fires are happening in average density forests, while high severity fires are happening in higher-than-average density forests
+  - QUESTION: is this a difference in something ecological, or sampling due to the geography of the region (e.g. more high elevation forests in SR?)
+  
+  - Both show a pattern of delayed mortality in the southern rockies under low/moderate burn conditions
 
 ```{r}
 
 
-# Plot density plots grouped by fire_group
-ggplot(dats_long |>
-         filter(fire_timeframe != "year_of_burn"),
-       aes(x = rap_TRE, fill = fire_timeframe)) +
-  geom_density(alpha = 0.5) +
-  labs(
-    title = "Density Plot of rap_TRE by Fire severity and pre/post burn",
-    x = "Tree cover % (RAP)",
-    fill = "Years Since Fire",
-    caption = "NOTE: 'unburned_mock' represents the control sample \n'burned' in random years and given CBI values of 0"
-  ) +
-  theme_minimal() +
-  facet_grid(ecoregion ~ burn_sev)
-
-ggsave(filename = here(dir_figs, "density_p_pre_post_fire_by_sev.png"),
-       plot = last_plot(),
-       bg = "white")
-
-
-# Examine trajectories by ecoregion
-
-# BOXPLOTS
-
-ggplot(data = dats_long) +
-  geom_boxplot(
-    aes(
-      x = as.factor(year_from_fire_index),
-      y = rap_TRE,
-      fill = year_from_fire_index == 0  # TRUE for 0, FALSE otherwise
+make_tree_iqr_combined <- function(dats_long, dir_figs, suffix) {
+  summary_data <- dats_long |>
+    group_by(ecoregion, burn_sev, year_from_fire_index) |>
+    summarise(
+      q25_rap    = quantile(rap_tree, 0.25, na.rm = TRUE),
+      median_rap = median(rap_tree, na.rm = TRUE),
+      q75_rap    = quantile(rap_tree, 0.75, na.rm = TRUE),
+      q25_vcf    = quantile(vcf_tree, 0.25, na.rm = TRUE),
+      median_vcf = median(vcf_tree, na.rm = TRUE),
+      q75_vcf    = quantile(vcf_tree, 0.75, na.rm = TRUE),
+      .groups = "drop"
     )
-  ) +
-  scale_fill_manual(
-    values = c("TRUE" = "red", "FALSE" = "gray70"),
-    guide = "none"  # hide legend
-  ) +
-  labs(
-    title = "Tree cover by years from fire",
-    y = "Tree cover %",
-    x = "Years from fire",
-    caption = "NOTE: 'unburned_mock' represents the control sample \n'burned' in random years and given CBI values of 0"
-  ) +
-  theme_minimal() +
-  facet_grid(ecoregion ~ burn_sev)
-ggsave(filename = here(dir_figs, "boxplot_time_series.png"),
-       plot = last_plot(),
-       bg = "white",
-       units = "px",
-       width = 5000,
-       height = 3000)
 
+  never_burned <- summary_data |>
+    filter(burn_sev == "Never") |>
+    select(ecoregion, year_from_fire_index, median_rap, median_vcf)
 
+  p_iqr_combined <- ggplot(summary_data, aes(x = year_from_fire_index)) +
+    # RAP IQR ribbon
+    geom_ribbon(
+      aes(ymin = q25_rap, ymax = q75_rap),
+      fill = "red",
+      alpha = 0.15
+    ) +
+    # MODIS IQR ribbon
+    geom_ribbon(
+      aes(ymin = q25_vcf, ymax = q75_vcf),
+      fill = "blue",
+      alpha = 0.15
+    ) +
+    # RAP median
+    geom_line(aes(y = median_rap), color = "red", linewidth = 1) +
+    # MODIS median
+    geom_line(aes(y = median_vcf), color = "blue", linewidth = 1) +
+    # Never baseline for RAP (lighter dashed red)
+    geom_line(
+      data = never_burned,
+      aes(y = median_rap),
+      color = "coral1",
+      linetype = "dashed",
+      linewidth = 0.9,
+      inherit.aes = TRUE
+    ) +
+    # Never baseline for MODIS (lighter dashed blue)
+    geom_line(
+      data = never_burned,
+      aes(y = median_vcf),
+      color = "lightskyblue",
+      linetype = "dashed",
+      linewidth = 0.9,
+      inherit.aes = TRUE
+    ) +
+    # Fire time = 0 line
+    geom_vline(
+      xintercept = 0,
+      linetype = "dotted",
+      color = "black",
+      linewidth = 0.8
+    ) +
+    facet_grid(ecoregion ~ burn_sev) +
+    labs(
+      title = "Tree cover by years from fire (RAP vs MODIS, IQR shaded)",
+      x = "Years from fire",
+      y = "Tree cover %",
+      caption = "RAP: red; MODIS VCF: blue. 'Never' represents control samples burned in random years with CBI = 0."
+    ) +
+    theme_minimal()
 
-# LINE TRAJECTORIES
-# Step 1: Summarize the data
-summary_data <- dats_long %>%
-  group_by(ecoregion, burn_sev, year_from_fire_index) %>%
-  summarise(
-    q25 = quantile(rap_TRE, 0.25, na.rm = TRUE),
-    median = median(rap_TRE, na.rm = TRUE),
-    q75 = quantile(rap_TRE, 0.75, na.rm = TRUE),
-    .groups = "drop"
+  ggsave(
+    filename = here(dir_figs, glue("iqr_line_time_series_combined_rap_vcf_{suffix}.png")),
+    plot = p_iqr_combined,
+    bg = "white",
+    units = "px",
+    width = 5000,
+    height = 3000
   )
 
-# Step 2: Extract never-burned data
-never_burned <- summary_data %>%
-  filter(burn_sev == "Never") %>%
-  select(ecoregion, year_from_fire_index, median)
+  invisible(p_iqr_combined)
+}
 
-# Step 3: Plot
-ggplot(summary_data, aes(x = year_from_fire_index, y = median)) +
-  # IQR ribbon
-  geom_ribbon(aes(ymin = q25, ymax = q75), fill = "gray80", alpha = 0.5) +
-  
-  # Main median line for each facet
-  geom_line(color = "black", size = 1) +
+make_tree_iqr_combined(dats_long |> filter(!is.na(vcf_tree)), dir_figs = dir_figs, suffix = "matchedOnly")
 
-  # Dotted blue overlay from unburned-mock
-  geom_line(
-    data = never_burned,
-    aes(y = median),
-    color = "blue",
-    linetype = "dotted",
-    inherit.aes = TRUE
-  ) +
-
-  # Solid blue line only in never-burned facet
-  geom_line(
-    data = summary_data %>% filter(burn_sev == "Never"),
-    aes(y = median),
-    color = "blue",
-    size = 1,
-    linetype = "solid"
-  ) +
-
-  geom_vline(xintercept = 0, linetype = "dotted", color = "red", size = 1) +
-  
-  facet_grid(ecoregion ~ burn_sev) +
-
-  labs(
-    title = "Tree Cover by Years from Fire (IQR shaded)",
-    x = "Years from fire",
-    y = "Tree cover %",
-    caption = "NOTE: 'Never' represents the control sample \n'burned' in random years and given CBI values of 0"
-  ) +
-  theme_minimal()
-ggsave(filename = here(dir_figs, "iqr_line_time_series.png"),
-       plot = last_plot(),
-       bg = "white",
-       units = "px",
-       width = 5000,
-       height = 3000)
 
 ```
+
+
+
 # Assess recovery metrics that were calculated
+Observations:
+- Some individual trajectories aren't very clean, but others are
+- in general the RAP data is important for getting a long enough timeframe to assess percent recovery 
+tested:
+x <- dats |> filter(!is.na(post_fire_vcf_tree_perc_recovery_n6_3_10_yr))
+y <- dats |> filter(!is.na(post_fire_rap_tree_perc_recovery_n6_3_10_yr))
+RAP provides a sample size of more than 2X the number of points -> USE RAP FOR THE RANDOM FOREST ANALYSIS
+
 ```{r}
 
 dats_fh_long <- dats_long |>
   filter(fire == 1 & burn_sev == "High")
-ids <- unique(dats_fh_long$uniqueID)
 
-for(i in 1:10) {
-  
-  d_s <- dats |>
-    filter(uniqueID == ids[i])
-  
-  aRAP_6pre <- d_s |> pull(avg_rap_TRE_6_yr_pre_fire)
-  aRAP_2pre <- d_s |> pull(avg_rap_TRE_2_yr_pre_fire)
-  aRAP_3post <- d_s |> pull(avg_rap_TRE_3_yr_post_fire)
-  aRAP_10post <- d_s |> pull(avg_rap_TRE_10_yr_post_fire)
-  aRAP_15post <- d_s |> pull(avg_rap_TRE_15_yr_post_fire)
+dats_fh <- dats |>
+  filter(fire == 1 & burn_sev == "High")
 
-  
-  d <- dats_fh_long |>
-    filter(uniqueID == ids[i])
-  
-  x <- d |>
-    select(year, year_from_fire_index, rap_TRE, biotic) |>
-    arrange(year)
-  
-  p <- ggplot(x) +
-    geom_line(aes(x = year_from_fire_index, y = rap_TRE)) +
-    geom_vline(xintercept = 0, linetype = "dotted", color = "red", size = 1) +
-    geom_vline(xintercept = 2, linetype = "dotted", color = "yellow", size = 1) +
-    geom_hline(yintercept = aRAP_6pre, linetype = "dotted", color = "blue", size = 1) +
-    geom_hline(yintercept = aRAP_2pre, linetype = "dotted", color = "blue4", size = 1) +
-    geom_hline(yintercept = aRAP_3post, linetype = "dotted", color = "green", size = 1) +
-    geom_hline(yintercept = aRAP_10post, linetype = "dotted", color = "green4", size = 1) +
-    geom_hline(yintercept = aRAP_15post, linetype = "dotted", color = "purple", size = 1) +
-    labs(caption = glue("Slope2-5: {d_s$post_fire_rap_TRE_slope_2_5_yrs}\nSlope2-10: {d_s$post_fire_rap_TRE_slope_2_10_yrs}\nSlope2-15: {d_s$post_fire_rap_TRE_slope_2_15_yrs}"))
-  
-  print(p)
+
+
+
+plot_dual_tree_trajectories <- function(dats,
+                                        dats_long,
+                                        n = 10,
+                                        dir_figs = NULL) {
+  # high-severity fire pixels only
+  dats_fh_long <- dats_long |>
+    filter(fire == 1, burn_sev == "High", !is.na(post_fire_vcf_tree_perc_recovery_n6_3_15_yr))
+
+  ids <- unique(dats_fh_long$uniqueID)
+  n <- min(n, length(ids))
+
+  plots <- vector("list", n)
+
+  for (i in seq_len(n)) {
+    this_id <- ids[i]
+
+    d_s <- dats |>
+      filter(uniqueID == this_id)
+
+    # Averages for RAP
+    rap_6pre   <- d_s$avg_rap_tree_6_yr_pre_fire[1]
+    rap_3post  <- d_s$avg_rap_tree_3_yr_post_fire[1]
+    rap_10post <- d_s$avg_rap_tree_10_yr_post_fire[1]
+    rap_15post <- d_s$avg_rap_tree_15_yr_post_fire[1]
+
+    # Averages for VCF
+    vcf_6pre   <- d_s$avg_vcf_tree_6_yr_pre_fire[1]
+    vcf_3post  <- d_s$avg_vcf_tree_3_yr_post_fire[1]
+    vcf_10post <- d_s$avg_vcf_tree_10_yr_post_fire[1]
+    vcf_15post <- d_s$avg_vcf_tree_15_yr_post_fire[1]
+
+    # Slopes for caption (RAP)
+    rap_s_3_10 <- d_s$post_fire_rap_tree_slope_3_10_yrs[1]
+    rap_s_3_15 <- d_s$post_fire_rap_tree_slope_3_15_yrs[1]
+
+    # Slopes for caption (VCF)
+    vcf_s_3_10 <- d_s$post_fire_vcf_tree_slope_3_10_yrs[1]
+    vcf_s_3_15 <- d_s$post_fire_vcf_tree_slope_3_15_yrs[1]
+    
+    # Slopes for caption (RAP)
+    rap_p_3_10 <- d_s$post_fire_rap_tree_perc_recovery_n6_3_10_yr[1]
+    rap_p_3_15 <- d_s$post_fire_rap_tree_perc_recovery_n6_3_15_yr[1]
+
+    # Slopes for caption (VCF)
+    vcf_p_3_10 <- d_s$post_fire_vcf_tree_perc_recovery_n6_3_10_yr[1]
+    vcf_p_3_15 <- d_s$post_fire_vcf_tree_perc_recovery_n6_3_15_yr[1]
+
+    d <- dats_fh_long |>
+      filter(uniqueID == this_id)
+
+    x <- d |>
+      select(year, year_from_fire_index, rap_tree, vcf_tree, biotic) |>
+      arrange(year)
+
+    caption_text <- glue(
+      "Dotted = RAP, DotDash = VCF\n",
+      "RAP slopes: 3–10 = {round(rap_s_3_10, 2)}, 3–15 = {round(rap_s_3_15, 2)}\n",
+      "VCF slopes: 3–10 = {round(vcf_s_3_10, 2)}, 3–15 = {round(vcf_s_3_15, 2)}\n",
+      "RAP perc recovery: 3–10 = {round(rap_p_3_10, 2)}, 3–15 = {round(rap_p_3_15, 2)}\n",
+      "VCF perc recovery: 3–10 = {round(vcf_p_3_10, 2)}, 3–15 = {round(vcf_p_3_15, 2)}"
+    )
+
+    p <- ggplot(x, aes(x = year_from_fire_index)) +
+      # Trajectories
+      geom_line(aes(y = rap_tree), color = "grey50", linetype = "dotted") +
+      geom_line(aes(y = vcf_tree), color = "black", linetype = "dotdash") +
+
+      # RAP context lines (grey, dotted)
+      geom_vline(xintercept = -6,  color = "yellow", linetype = "dotted") +
+      geom_vline(xintercept = 3,   color = "green", linetype = "dotted") +
+      geom_vline(xintercept = 10,  color = "purple", linetype = "dotted") +
+      geom_vline(xintercept = 15,  color = "blue", linetype = "dotted") +
+      geom_hline(yintercept = rap_6pre,   color = "yellow", linetype = "dotted") +
+      geom_hline(yintercept = rap_3post,  color = "green", linetype = "dotted") +
+      geom_hline(yintercept = rap_10post, color = "purple", linetype = "dotted") +
+      geom_hline(yintercept = rap_15post, color = "blue", linetype = "dotted") +
+
+      # VCF context lines (black, dotdash)
+      geom_hline(yintercept = vcf_6pre,   color = "yellow", linetype = "dotdash") +
+      geom_hline(yintercept = vcf_3post,  color = "green", linetype = "dotdash") +
+      geom_hline(yintercept = vcf_10post, color = "purple", linetype = "dotdash") +
+      geom_hline(yintercept = vcf_15post, color = "blue", linetype = "dotdash") +
+      
+      geom_vline(xintercept = 0, color = "red") +
+
+      labs(
+        title = glue("RAP vs MODIS VCF tree cover trajectories (ID {this_id})"),
+        x = "Years from fire",
+        y = "Tree cover %",
+        caption = caption_text
+      ) +
+      theme_minimal()
+
+    print(p)
+    plots[[i]] <- p
+
+    if (!is.null(dir_figs)) {
+      ggsave(
+        filename = here(dir_figs, glue("trajectory_rap_vcf_id_{this_id}.png")),
+        plot = p,
+        bg = "white",
+        width = 6,
+        height = 4,
+        units = "in",
+        dpi = 300
+      )
+    }
+  }
+
+  invisible(plots)
 }
 
 
-
-
+plot_dual_tree_trajectories(
+  dats = dats,
+  dats_long = dats_long,
+  n = 25,
+  dir_figs = dir_figs
+)
 
 
 
@@ -303,8 +486,8 @@ for(i in 1:10) {
 
 
 
-
-# Load and explore data
+######FLAG: NOT UPDATED FOR NEW DATA YET
+# CORRELATION & BALANCE
 - Correlation matrix
 - Covariate balance: love & density plots
 
@@ -355,7 +538,7 @@ assess_covariate_balance <- function(d, nm) {
               "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
               "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum", "avg_forest_2_yr_pre_fire")
   
-  # Make a working copy of your data
+  # Make a working copy of data
   dats_trans <- d
   
   # Transform biotic variables using log1p (handles 0s safely)
@@ -415,7 +598,7 @@ assess_covariate_balance <- function(d, nm) {
   
   burn_cbi_covars <- c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
               "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
-              "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum", "avg_forest_2_yr_pre_fire", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year")
+              "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum", "avg_forest_6_yr_pre_fire", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year")
   
   # Make a working copy of data
   dats_trans <- d

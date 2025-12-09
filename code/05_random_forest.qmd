@@ -34,16 +34,22 @@ source(here::here("utils", "functions.R"))
 
 install_load_packages(c(
   "tidyverse",
+  "glue",
+  "patchwork",
   "tictoc",
   "ranger",
   "spmodel",
   "iml",
-  "fastshap",
   "patchwork",
+  "tidymodels",
   "purrr",
   "arrow",
   "vip",
   "pdp",
+  "fastshap",
+  "shapviz",
+  "dials",
+  "sf",
   "tictoc"))
 
 # devtools::install_github("grf-labs/sufrep")
@@ -53,6 +59,7 @@ dir_figs <- here::here('figs')
 dir_derived <- here::here('data', 'derived')
 dir_raw <- here::here('data', 'raw')
 dir_manual <- here::here('data', 'manual')
+dir_models <- here('models/v2')
 
 dir_rf_figs <- here(dir_figs, "rf")
 
@@ -60,7 +67,8 @@ dir_ensure(c(dir_figs,
              dir_derived,
              dir_manual,
              dir_raw,
-             dir_rf_figs))
+             dir_rf_figs,
+             dir_models))
 
 seed = 1234
 set.seed(seed)
@@ -80,10 +88,15 @@ ecoregions <- unique(dats$ecoregion)
 
 
 
-# Sufrep function
+
+# Prep data for random forest machine learning
+- We do not need to normalize data for RF
+- We do want to encode categorical variables as a lower-dimensional real-valued representation for inclusion in random/causal forest (use sufficient representations instead of one-hot encoding since random forests "may largely ignore high-cardinality one-hot encoded factors" - see Johannemann et al 2021). Low-rank encoding appears to be the most applicable to real-world data.
+
 ```{r}
 
 # A function to use sufrep::make_encoder such that the encoded variables are added to the dataframe
+# used in prep_ml_dats
 sufrep_encode_append <- function(dats,
                                  method = 'means',
                                  X_cols,
@@ -95,12 +108,20 @@ sufrep_encode_append <- function(dats,
   x_df <- dats |> 
     select(all_of(X_cols)) |>
     as.data.frame()
-  g_df <- dats |>
-    pull(G_col)
+  
+  # Grouping variable as factor with dropped unused levels
+  # The function breaks if we don't drop unused levels because sufrep assumes that all levels are represented at least once in the data
+  g_raw <- dats[[G_col]]
+
+  if (!is.factor(g_raw)) {
+    g_fac <- factor(g_raw)
+  } else {
+    g_fac <- droplevels(g_raw)
+  }
   
   #Encode
-  encoder <- sufrep::make_encoder(method = method, X = x_df, G = g_df, ...)
-  dats_encoded <- encoder(x_df, G = g_df)
+  encoder <- sufrep::make_encoder(method = method, X = x_df, G = g_fac, ...)
+  dats_encoded <- encoder(x_df, G = g_fac)
   
   #Make interpretable encoding columns
   encoded_cols <- dats_encoded |> select(starts_with("ENC"))
@@ -117,65 +138,83 @@ sufrep_encode_append <- function(dats,
   return(dats_out)
 }
 
+# Select relevant columns, filter out NAs, ensure correct types, and sufrep encode
+prep_ml_dats <- function(dats, target) {
+  disturbance_covars <- dats |>
+    select(starts_with("burn_cbi") | 
+             starts_with("burn_distance") | 
+             #starts_with("biotic") | 
+             starts_with("hd") | 
+             starts_with("pdsi") | 
+             starts_with("pdsi")) |>
+    names()
+  
+  cont_covars <- c("aet", "def", "srtm", "tpi", "chili", "avg_rap_tree_6_yr_pre_fire",
+                   #"lat", "long",
+                   "mock_burn_year",  disturbance_covars, grep("^tt", names(dats), value = TRUE))
+  cat_covars <- c("frg_reclass_desc", "ecoregion", "nfg_factor")
+  trts <- c("fire", "burn_sev")
+  
+  all_cols <- c(cont_covars, cat_covars, target, trts)
 
-```
+  
+  # Scale all continuous covariates
+  # filter out anything with NAs
+  # ensure categorical covariates are factors
+  # encode categorical as one-hot dummies or sufficient representations
+  dats_ml <- dats |>
+    select(all_of(all_cols)) |>
+    filter(dplyr::if_all(everything(), ~ !is.na(.x))) |>
+    filter(!is.infinite(!!sym(target))) |>
+    mutate(
+      across(
+        all_of(cont_covars),
+        \(x) as.numeric(x)
+      )
+    ) |>
+    mutate(
+      across(
+        all_of(cat_covars),
+        \(x) as.factor(x)
+      )
+    ) |>
+    # fastDummies::dummy_cols(select_columns = c("frg_reclass"),
+    #                         remove_first_dummy = FALSE, #Keep full one-hot encoding for tree-based methods
+    #                         remove_selected_columns = TRUE) |> 
+    sufrep_encode_append(method = 'low_rank', # Use low-rank sufficient representation encoding to reduce to 2 dimensions
+                         X_cols = cont_covars,
+                         G_col = "nfg_factor",
+                         num_components = 2) |> 
+    sufrep_encode_append(method = 'low_rank', # Use low-rank sufficient representation encoding to reduce to 2 dimensions
+                         X_cols = cont_covars,
+                         G_col = "frg_reclass_desc",
+                         num_components = 2)
+  
+  enc_xvars <- dats_ml |>
+    select(starts_with("ENC")) |>
+    names()
+  
+  all_covars <- c(cont_covars, enc_xvars)
+  
+  return(list("dats_ml" = dats_ml,
+              "target" = target,
+              "covars" = all_covars))
+}
 
-# Prep data for causal forest machine learning
-- Normalize continuous covariates to control for covariates with different numerical scales (avoid large-scale variables dominating and stabilize splits)
-- Encode categorical variables as a lower-dimensional real-valued representation for inclusion in causal forest (use sufficient representations instead of one-hot encoding since random forests "may largely ignore high-cardinality one-hot encoded factors" - see Johannemann et al 2021). Low-rank encoding appears to be the most applicable to real-world data.
-
-```{r}
-
-disturbance_covars <- dats |>
-  select(starts_with("burn_cbi") | starts_with("biotic") | starts_with("hd") | starts_with("pdsi")) |>
-  names()
-
-cont_covars <- c("aet", "def", "srtm", "tpi", "chili", "avg_rap_TRE_6_yr_pre_fire", "lat", "long", disturbance_covars)
-cat_covars <- c("frg_reclass_desc", "mock_burn_year", "ecoregion")
-outcomes <- dats |>
-  select(starts_with("post_fire")) |>
-  names()
-trts <- c("fire", "burn_sev")
 
 
-all_cols <- c(cont_covars, cat_covars, outcomes, trts)
+#Create operational datasets - we need a separate one for each because the sufrep encodings will be different for each
+perc10d <- dats |>
+  prep_ml_dats(target = "post_fire_rap_tree_perc_recovery_n6_3_10_yr")
 
-# Scale all continuous covariates
-# filter out anything with NAs
-# ensure categorical covariates are factors
-# encode categorical as one-hot dummies or sufficient representations
-dats_ml <- dats |>
-  select(all_of(all_cols)) |>
-  filter(dplyr::if_all(everything(), ~ !is.na(.x))) |>
-  mutate(
-    across(
-      all_of(cont_covars),
-      \(x) as.numeric(scale(x))
-    )
-  ) |>
-  mutate(
-    across(
-      all_of(cat_covars),
-      \(x) as.factor(x)
-    )
-  ) |>
-  # fastDummies::dummy_cols(select_columns = c("frg_reclass"),
-  #                         remove_first_dummy = FALSE, #Keep full one-hot encoding for tree-based methods
-  #                         remove_selected_columns = TRUE) |> 
-  sufrep_encode_append(method = 'low_rank', # Use low-rank sufficient representation encoding to reduce to 2 dimensions
-                       X_cols = cont_covars,
-                       G_col = "mock_burn_year",
-                       num_components = 2) |> 
-  sufrep_encode_append(method = 'low_rank', # Use low-rank sufficient representation encoding to reduce to 2 dimensions
-                       X_cols = cont_covars,
-                       G_col = "frg_reclass_desc",
-                       num_components = 2)
+perc15d <- dats |>
+  prep_ml_dats(target = "post_fire_rap_tree_perc_recovery_n6_3_15_yr")
 
-enc_xvars <- dats_ml |>
-  select(starts_with("ENC")) |>
-  names()
+perc20d <- dats |>
+  prep_ml_dats(target = "post_fire_rap_tree_perc_recovery_n6_3_20_yr")
 
-all_covars <- c(cont_covars, enc_xvars)
+slope15d <- dats |>
+  prep_ml_dats(target = "post_fire_rap_tree_slope_3_15_yrs")
 
 
 ```
@@ -201,12 +240,579 @@ The number of random parameter values considered when using the model to select 
 
 ```{r}
 
-df_test <- dats_ml |>
-  filter(ecoregion == "Idaho Batholith" & fire == 1)
+ml_ready_data <- slope15d
+
+target <- ml_ready_data$target
+
+covars <- ml_ready_data$covars
+
+df_use <- ml_ready_data$dats_ml #|>
+  # #filter(ecoregion == "Idaho Batholith") |>
+  # filter(!!sym(target) > -100 & !!sym(target) < 100) |>
+  # filter(burn_sev == "High")
+
+
+ggplot(df_use) +
+  geom_histogram(aes(x = !!sym(target))) +
+  xlim(c(-100, 100))
+
+nrow(df_use)
+
+
+```
+
+
+
+```{r}
+
+form <- reformulate(termlabels = covars, response = target)
+form
+
+lm_fit <- lm(form,
+             data = df_use)
+               # data = df_use |> filter(post_fire_rap_tree_perc_recovery_n6_3_15_yr < 100 & post_fire_rap_tree_perc_recovery_n6_3_15_yr > -100))
+summary(lm_fit)
+
+
+```
+
+# Build and tune a ranger model
+
+
+```{r}
+
+form <- reformulate(termlabels = covars, response = target)
+
+tic("Random forest train test")
+data_split <- rsample::initial_split(df_use, prop = 0.8, strata = ecoregion) #stratify by ecoregion
+train_data <- rsample::training(data_split)
+test_data  <- rsample::testing(data_split)
+
+rf_recipe <- recipes::recipe(form, data = train_data) |>
+  step_zv(all_predictors()) #remove any zero-variance predictors
+
+#Build our random forest specification
+rf_spec <- parsnip::rand_forest(
+  mtry  = tune(),
+  trees = 1000,
+  min_n = tune()) |>
+  parsnip::set_engine(
+    "ranger",
+    importance = "permutation") |>
+  parsnip::set_mode("regression")
+
+rf_wf <- workflows::workflow() |>
+  workflows::add_model(rf_spec) |>
+  workflows::add_recipe(rf_recipe)
+
+folds <- rsample::vfold_cv(train_data, v = 5)
+
+mtry_default <- floor(sqrt(length(covars)))
+rf_grid <- dials::grid_regular(
+  dials::mtry(c(mtry_default - 2, mtry_default + 2)),
+  dials::min_n(),
+  levels = 5)
+
+rf_metrics <- yardstick::metric_set(yardstick::rmse, yardstick::rsq)
+
+rf_tuned <- rf_wf |>
+  tune::tune_grid(
+    resamples = folds,
+    grid = rf_grid,
+    metrics = rf_metrics)
+
+rf_tuned |>
+  tune::collect_metrics()
+
+autoplot(rf_tuned)
+
+show_best(rf_tuned)
+
+best_params <- rf_tuned |>
+  select_best(metric = "rmse")
+
+best_params
+
+
+rf_final_wf <- rf_wf |>
+  finalize_workflow(best_params)
+
+rf_final_fit <- rf_final_wf |>
+  last_fit(split = data_split)
+
+rf_final_fit |>
+  collect_metrics()
+
+rf_test_preds <- rf_final_fit |>
+  collect_predictions()
+
+rf_fit <- rf_final_fit$.workflow[[1]] |>
+  workflows::extract_fit_parsnip()
+
+saveRDS(rf_fit, here(dir_models, "rf_small.rds"))
+
+toc()
+
+# show permutation-based variable importance (included in model specification)
+vip_rf <- vip::vip(rf_fit,
+         num_features = 40)
+
+vip_rf
+
+
+#?
+X_train <- train_data
+
+# PDPs
+rf_aet <- pdp::partial(
+  object   = rf_fit,
+  pred.var = "aet",
+  train    = X_train,
+  grid.resolution = 30
+)
+
+autoplot(rf_aet)
+
+rf_cbi <- pdp::partial(
+  object   = rf_fit,
+  pred.var = "burn_cbi",
+  train    = X_train,
+  grid.resolution = 30
+)
+
+autoplot(rf_cbi)
+
+# ICE plots
+p_aet_ice <- partial(
+  object   = rf_fit$fit,
+  pred.var = "aet",
+  train    = X_train,
+  ice      = TRUE
+)
+
+autoplot(p_aet_ice, alpha = 0.1) 
+
+
+# Examine interaction importance using IML package
+
+
+
+# Predictor object with correct prediction wrapper
+pred_fun <- function(object, newdata) {
+  preds <- predict(object, new_data = newdata)
+  preds$.pred
+}
+
+predictor <- Predictor$new(
+  model = rf_fit,          # parsnip model_fit
+  data = X_train, 
+  predict.fun = pred_fun
+)
+
+# # Measure interaction strength for all features
+# interaction_strength <- Interaction$new(predictor)
+# interaction_strength$results
+# 
+# plot(interaction_strength)
+
+
+
+
+
+
+# 
+# # NOT WORKING YET
+# tic()
+# # Compute SHAP values using fastshap
+# pfun <- function(object, newdata) {
+#   predict(object, data = newdata)$predictions
+# }
+# 
+# shap_vals <- fastshap::explain(
+#   object = rf_fit$fit,
+#   X = X_train,
+#   pred_wrapper = pfun,
+#   nsim = 10
+# )
+# 
+# # Wrap for visualization
+# sv <- shapviz::shapviz(
+#   S = shap_vals,
+#   X = X_train
+# )
+# 
+# 
+# # Global: beeswarm summary (like SHAP summary plot)
+# sv_importance <- shapviz::sv_importance(sv)   # optional
+# plot(sv)                             # beeswarm by default
+# 
+# # Dependence plot for one variable
+# shapviz::sv_dependence(sv, "aet")
+# 
+# # Grouped by feature groups (e.g. "climate", "topography", etc.)
+# groups <- c(
+#   aet = "climate",
+#   def = "climate",
+#   srtm = "topography",
+#   tpi  = "topography",
+#   chili = "topography",
+#   avg_rap_TRE_6_yr_pre_fire = "veg"
+# )
+# sv_groups <- add_groups(sv, groups)
+# shapviz::sv_importance(sv_groups, kind = "group")
+# 
+# toc()
+
+
+
+
 
 
 
 ```
+
+# Build and train a boosted gradient model
+
+```{r}
+
+
+tic("Gradient boost train test")
+
+# ------------------------------------------------------------
+# 1. Formula and data split
+# ------------------------------------------------------------
+
+form <- reformulate(termlabels = covars, response = target)
+
+data_split <- rsample::initial_split(df_use, prop = 0.8, strata = ecoregion)
+train_data <- rsample::training(data_split)
+test_data  <- rsample::testing(data_split)
+
+# ------------------------------------------------------------
+# 2. Recipe (xgboost wants numeric predictors)
+# ------------------------------------------------------------
+
+xgb_recipe <- recipes::recipe(form, data = train_data) |>
+  recipes::step_zv(all_predictors()) |>
+  recipes::step_dummy(all_nominal_predictors(), one_hot = TRUE)
+
+# ------------------------------------------------------------
+# 3. XGBoost model specification
+# ------------------------------------------------------------
+
+xgb_spec <- parsnip::boost_tree(
+  trees          = 1000,
+  tree_depth     = tune(),
+  learn_rate     = tune(),
+  loss_reduction = tune(),  # gamma
+  mtry           = tune(),  # number of predictors sampled at each split
+  min_n          = tune()   # min observations per node
+) |>
+  parsnip::set_engine("xgboost") |>
+  parsnip::set_mode("regression")
+
+xgb_wf <- workflows::workflow() |>
+  workflows::add_model(xgb_spec) |>
+  workflows::add_recipe(xgb_recipe)
+
+# ------------------------------------------------------------
+# 4. Resampling
+# ------------------------------------------------------------
+
+folds <- rsample::vfold_cv(train_data, v = 5)
+
+# ------------------------------------------------------------
+# 5. Hyperparameter ranges and grid
+# ------------------------------------------------------------
+
+# Prep recipe to see predictor space after dummy encoding
+xgb_prep <- xgb_recipe |>
+  recipes::prep(training = train_data)
+
+xgb_train_baked <- recipes::bake(xgb_prep, new_data = NULL)
+
+# Drop outcome column to count predictors
+n_pred <- ncol(xgb_train_baked) - 1L
+mtry_default <- floor(sqrt(n_pred))
+
+xgb_params <- dials::parameters(
+  dials::mtry(range = c(max(1L, mtry_default - 2L), mtry_default + 2L)),
+  dials::tree_depth(),
+  dials::learn_rate(),
+  dials::loss_reduction(),
+  dials::min_n()
+)
+
+set.seed(123)
+xgb_grid <- dials::grid_latin_hypercube(
+  xgb_params,
+  size = 30
+)
+
+# ------------------------------------------------------------
+# 6. Tuning
+# ------------------------------------------------------------
+
+xgb_metrics <- yardstick::metric_set(yardstick::rmse, yardstick::rsq)
+
+xgb_tuned <- xgb_wf |>
+  tune::tune_grid(
+    resamples = folds,
+    grid      = xgb_grid,
+    metrics   = xgb_metrics
+  )
+
+xgb_tuned |>
+  tune::collect_metrics()
+
+autoplot(xgb_tuned)
+
+tune::show_best(xgb_tuned, metric = "rmse")
+
+best_params_xgb <- xgb_tuned |>
+  tune::select_best(metric = "rmse")
+
+best_params_xgb
+
+# ------------------------------------------------------------
+# 7. Finalize workflow and fit on full training data
+# ------------------------------------------------------------
+
+xgb_final_wf <- xgb_wf |>
+  tune::finalize_workflow(best_params_xgb)
+
+xgb_final_fit <- xgb_final_wf |>
+  tune::last_fit(split = data_split)
+
+xgb_final_fit |>
+  tune::collect_metrics()
+
+xgb_test_preds <- xgb_final_fit |>
+  tune::collect_predictions()
+
+xgb_test_preds
+
+# ------------------------------------------------------------
+# 8. Extract fitted xgboost model and run VIP
+# ------------------------------------------------------------
+
+xgb_fit <- xgb_final_fit$.workflow[[1]] |>
+  workflows::extract_fit_parsnip()
+
+saveRDS(xgb_fit, here(dir_models, "xgb_small.rds"))
+
+toc()
+
+
+vip_xgb <- vip::vip(
+  xgb_fit,
+  num_features = 40
+)
+
+vip_xgb
+
+
+xgb_aet <- pdp::partial(
+  object   = xgb_fit,
+  pred.var = "aet",
+  train    = X_train,
+  grid.resolution = 30
+)
+
+autoplot(rf_aet)
+
+
+
+```
+
+# Set up for robust post-hoc analysis
+
+```{r}
+
+plot_pdp_ice_ale <- function(fit, train, pred_var, fig_dir,
+                             grid_resolution = 30,
+                             ice_alpha = 0.1,
+                             width = 6, height = 9, dpi = 300) {
+  # ---------------------------------------------------------------------------
+  # 0. Basic checks & setup
+  # ---------------------------------------------------------------------------
+  if (!inherits(fit, "model_fit")) {
+    stop("`fit` should be a parsnip model_fit (e.g., from extract_fit_parsnip()).")
+  }
+  
+  if (!pred_var %in% names(train)) {
+    stop("pred_var '", pred_var, "' not found in 'train'.")
+  }
+  
+  if (!dir.exists(fig_dir)) {
+    dir.create(fig_dir, recursive = TRUE)
+  }
+  
+  train_df <- as.data.frame(train)
+  
+  # ---------------------------------------------------------------------------
+  # 1. PDP and ICE via pdp using model_fit directly
+  #    (this is exactly what you did manually)
+  # ---------------------------------------------------------------------------
+  pd_pdp <- pdp::partial(
+    object   = fit,
+    pred.var = pred_var,
+    train    = train_df,
+    grid.resolution = grid_resolution,
+  )
+  
+  pd_ice <- pdp::partial(
+    object   = fit,
+    pred.var = pred_var,
+    train    = train_df,
+    grid.resolution = grid_resolution,
+    ice      = TRUE,
+  )
+  
+  # Figure out PDP column names
+  # Typically: pred_var + "yhat"
+  if (!all(c(pred_var, "yhat") %in% names(pd_pdp))) {
+    stop("PDP object does not contain expected columns '", pred_var, "' and 'yhat'.")
+  }
+  
+  # ICE: need pred_var, yhat, and an ID column
+  if (!all(c(pred_var, "yhat") %in% names(pd_ice))) {
+    stop("ICE object does not contain expected columns '", pred_var, "' and 'yhat'.")
+  }
+  
+  id_col <- NULL
+  if (".id" %in% names(pd_ice)) {
+    id_col <- ".id"
+  } else if ("yhat.id" %in% names(pd_ice)) {
+    id_col <- "yhat.id"
+  } else {
+    pd_ice$.ice_id <- seq_len(nrow(pd_ice))
+    id_col <- ".ice_id"
+  }
+  
+  # ---------------------------------------------------------------------------
+  # 2. ALE via iml with a parsnip-friendly predict.fun
+  # ---------------------------------------------------------------------------
+  pred_fun_iml <- function(object, newdata) {
+    preds <- predict(object, new_data = newdata)
+    if (".pred" %in% names(preds)) {
+      preds$.pred
+    } else {
+      # fallback: first numeric column
+      num_cols <- vapply(preds, is.numeric, logical(1))
+      if (!any(num_cols)) stop("predict() output has no numeric columns.")
+      preds[[which(num_cols)[1]]]
+    }
+  }
+  
+  predictor_iml <- iml::Predictor$new(
+    model = fit,
+    data  = train_df,
+    predict.fun = pred_fun_iml
+  )
+  
+  eff_ale <- iml::FeatureEffect$new(
+    predictor = predictor_iml,
+    feature   = pred_var,
+    method    = "ale"
+  )
+  
+  ale_df <- eff_ale$results
+  
+  if (!pred_var %in% names(ale_df)) {
+    x_col <- names(ale_df)[1]
+  } else {
+    x_col <- pred_var
+  }
+  y_cols <- setdiff(names(ale_df), x_col)
+  if (length(y_cols) < 1) {
+    stop("ALE results do not contain an effect column.")
+  }
+  y_col <- y_cols[1]
+  
+  names(ale_df)[names(ale_df) == x_col] <- "x"
+  names(ale_df)[names(ale_df) == y_col] <- "ale"
+  
+  # ---------------------------------------------------------------------------
+  # 3. Build the three ggplots: PDP, ICE, ALE
+  # ---------------------------------------------------------------------------
+  library(ggplot2)
+  library(patchwork)
+  
+  p_pdp <- ggplot(pd_pdp, aes_string(x = pred_var, y = "yhat")) +
+    geom_line() +
+    labs(
+      title = paste0("Partial Dependence (PDP): ", pred_var),
+      x = pred_var,
+      y = "Predicted outcome (average)"
+    ) +
+    theme_minimal()
+  
+  p_ice <- ggplot(
+    pd_ice,
+    aes_string(x = pred_var, y = "yhat", group = id_col)
+  ) +
+    geom_line(alpha = ice_alpha) +
+    labs(
+      title = paste0("Individual Conditional Expectation (ICE): ", pred_var),
+      x = pred_var,
+      y = "Predicted outcome"
+    ) +
+    theme_minimal()
+  
+  vals <- round(range(ale_df$.value), 2)
+  p_ale <- ggplot(ale_df, aes(x = x, y = .value)) +
+    geom_line() +
+    labs(
+      title = paste0("Accumulated Local Effects (ALE): ", pred_var),
+      x = pred_var,
+      y = "ALE",
+      caption = glue("ALE Range: {vals[1]}, {vals[2]}")
+    ) +
+    theme_minimal()
+  
+  combined_plot <- p_pdp / p_ice / p_ale
+  
+  # ---------------------------------------------------------------------------
+  # 4. Save PNG
+  # ---------------------------------------------------------------------------
+  fit_label <- class(fit)[1]
+  fit_label <- gsub("[^A-Za-z0-9_]+", "_", fit_label)
+  pred_label <- gsub("[^A-Za-z0-9_]+", "_", pred_var)
+  
+  file_name <- paste0("pdp_ice_ale_", fit_label, "_", pred_label, ".png")
+  out_path  <- file.path(fig_dir, file_name)
+  
+  ggsave(
+    filename = out_path,
+    plot     = combined_plot,
+    width    = width,
+    height   = height,
+    dpi      = dpi
+  )
+  
+  message("Saved: ", out_path)
+  return(list("ale_df" = ale_df))
+}
+
+plot_pdp_ice_ale(
+  fit      = rf_fit, 
+  train    = X_train,
+  pred_var = "srtm",
+  fig_dir  = dir_figs
+)
+
+plot_pdp_ice_ale(
+  fit      = rf_fit, 
+  train    = X_train,
+  pred_var = "pdsi_annual_5_yrs_after_mean",
+  fig_dir  = dir_figs
+)
+
+
+
+```
+
 
 
 
@@ -219,19 +825,55 @@ df_test <- dats_ml |>
 - PDSI: low = dry, high = wet
 
 ```{r}
-df_test <- df_test |>
-  st_as_sf(coords = c("long", "lat"), remove = FALSE)
 
-form_str <- paste(
-  "post_fire_rap_TRE_slope_2_10_yrs ~ burn_sev + ",
-  paste(all_covars, collapse = " + ")
+
+rf_fit <- ranger(
+  formula   = form,
+  data      = df_use,
+  num.trees = 1000,
+  mtry      = 30,
+  importance = "permutation",
+  min.node.size = 5,
+  num.threads   = parallel::detectCores(),
+  seed = 42
+)
+print(rf_fit)
+oob_mse  <- rf_fit$prediction.error
+oob_rmse <- sqrt(oob_mse)
+oob_rmse
+
+
+# True and OOB-predicted values
+y_true <- df_use[[target]]
+y_pred <- predict(rf_fit, df_use)$predictions
+
+# RMSE
+rmse <- sqrt(mean((y_true - y_pred)^2))
+
+# %RMSE (range-based)
+perc_rmse <- (rmse / (max(y_true) - min(y_true))) * 100
+
+# %RMSE (mean-based)
+perc_rmse_mean <- (rmse / mean(y_true)) * 100
+
+# Percent Variance Explained
+sse <- sum((y_true - y_pred)^2)
+sst <- sum((y_true - mean(y_true))^2)
+
+perc_var_explained <- (1 - sse/sst) * 100
+
+list(
+  RMSE = rmse,
+  percent_RMSE_range = perc_rmse,
+  percent_RMSE_mean = perc_rmse_mean,
+  percent_variance_explained = perc_var_explained
 )
 
-form <- as.formula(form_str)
+
 
 tic()
-test_spmlmRF <- splmRF(form,
-                  data = df_test,
+spmlmRF <- splmRF(form,
+                  data = df_use ,
                   spcov_type = "exponential",
                   importance = 'permutation',
                   scale.permutation.importance = TRUE,
@@ -240,8 +882,8 @@ test_spmlmRF <- splmRF(form,
                   num.trees = 1000,
                   seed = seed)
 toc()
-summary(test_spmlmRF)
-print(test_spmlmRF$ranger)
+summary(spmlmRF)
+print(spmlmRF$ranger)
 #500 trees mtry 3, MSE 213, R2 0.49
 #1000 trees mtry 8, basically same
 #1000t, mtry8, include disturbance MSE 2.17, R^2 0.14
@@ -255,6 +897,258 @@ pdp(test_spmlmRF$ranger)
 
 
 ```
+
+
+# MIR
+```{r}
+compute_mir_groups <- function(
+  model_spec,
+  data_split,
+  outcome,
+  predictors,
+  groups,
+  metrics    = yardstick::metric_set(yardstick::rmse),
+  recipe_fun = NULL
+) {
+  # Split data
+  train_data <- rsample::training(data_split)
+  test_data  <- rsample::testing(data_split)
+  
+  # Basic checks
+  if (!outcome %in% names(train_data)) {
+    stop("Outcome '", outcome, "' not found in training data.")
+  }
+  if (!all(predictors %in% names(train_data))) {
+    missing <- setdiff(predictors, names(train_data))
+    stop(
+      "Some predictors not found in training data: ",
+      paste(missing, collapse = ", ")
+    )
+  }
+  
+  # Helper: build a recipe for a given predictor set
+  build_recipe <- function(preds, data) {
+    form <- reformulate(termlabels = preds, response = outcome)
+    
+    if (is.null(recipe_fun)) {
+      recipes::recipe(form, data = data) |>
+        recipes::step_zv(recipes::all_predictors())
+    } else {
+      recipe_fun(form, data)
+    }
+  }
+  
+  # ------------------------
+  # Baseline model (all predictors)
+  # ------------------------
+  base_recipe <- build_recipe(predictors, train_data)
+  
+  base_wf <- workflows::workflow() |>
+    workflows::add_model(model_spec) |>
+    workflows::add_recipe(base_recipe)
+  
+  base_fit <- base_wf |>
+    fit(data = train_data)
+  
+  base_pred <- predict(base_fit, new_data = test_data) |>
+    dplyr::bind_cols(
+      truth = test_data[[outcome]]
+    )
+  
+  base_metrics <- metrics(
+    data    = base_pred,
+    truth   = truth,
+    estimate = .pred
+  ) |>
+    dplyr::mutate(
+      group              = "baseline",
+      removed_predictors = NA_character_
+    )
+  
+  # ------------------------
+  # Function to evaluate one group
+  # ------------------------
+  # IMPORTANT: first argument = group vars (.x), second = group name (.y)
+  eval_group <- function(g_vars, g_name) {
+    preds_reduced <- setdiff(predictors, g_vars)
+    
+    rec_reduced <- build_recipe(preds_reduced, train_data)
+    
+    wf_reduced <- workflows::workflow() |>
+      workflows::add_model(model_spec) |>
+      workflows::add_recipe(rec_reduced)
+    
+    fit_reduced <- wf_reduced |>
+      fit(data = train_data)
+    
+    pred_reduced <- predict(fit_reduced, new_data = test_data) |>
+      dplyr::bind_cols(
+        truth = test_data[[outcome]]
+      )
+    
+    met_reduced <- metrics(
+      data    = pred_reduced,
+      truth   = truth,
+      estimate = .pred
+    ) |>
+      dplyr::mutate(
+        group              = g_name,
+        removed_predictors = paste(g_vars, collapse = ", ")
+      )
+    
+    met_reduced
+  }
+  
+  # Apply over groups (named list)
+  group_results <- purrr::imap_dfr(groups, eval_group)
+  
+  # ------------------------
+  # Combine + compute MIR
+  # ------------------------
+  combined <- dplyr::bind_rows(base_metrics, group_results)
+  
+  # Infer metric direction from name (no yardstick::direction)
+  combined <- combined |>
+    dplyr::mutate(
+      direction = dplyr::case_when(
+        .metric %in% c("rmse", "mae", "mape", "mse") ~ "minimize",
+        .metric %in% c("rsq", "rsq_trad", "rsq_adj") ~ "maximize",
+        TRUE ~ "minimize"   # default; adjust if you add others
+      )
+    )
+  
+  combined |>
+    dplyr::left_join(
+      combined |>
+        dplyr::filter(group == "baseline") |>
+        dplyr::select(.metric, base = .estimate),
+      by = ".metric"
+    ) |>
+    dplyr::mutate(
+      delta = dplyr::case_when(
+        direction == "minimize" ~ .estimate - base,  # worse = larger value
+        direction == "maximize" ~ base - .estimate,  # worse = smaller value
+        TRUE ~ NA_real_
+      ),
+      mir = dplyr::case_when(
+        base != 0 ~ delta / abs(base),
+        TRUE ~ NA_real_
+      )
+    ) |>
+    dplyr::select(
+      group,
+      removed_predictors,
+      .metric,
+      direction,
+      base,
+      dropped = .estimate,
+      delta,
+      mir
+    ) |>
+    dplyr::arrange(.metric, dplyr::desc(mir))
+}
+
+
+
+
+rf_spec_final <- rf_final_wf |>
+  workflows::extract_spec_parsnip()
+
+# Outcome and predictors based on your existing variables
+outcome    <- target       # e.g. "post_fire_rap_TRE_difference_n2_3_yr"
+predictors <- covars       # character vector of predictor column names
+
+mir_groups <- list(
+  climate_before = c(
+    "pdsi_annual_5_yrs_prior_sum",
+    "pdsi_annual_5_yrs_prior_mean",
+    "pdsi_summer_5_yrs_prior_sum",
+    "pdsi_summer_5_yrs_prior_mean",
+    "pdsi_annual_5_yrs_prior_threshold",
+    "pdsi_summer_5_yrs_prior_threshold"
+  ),
+  
+  climate_after = c(
+    "pdsi_annual_5_yrs_after_sum",
+    "pdsi_annual_5_yrs_after_mean",
+    "pdsi_summer_5_yrs_after_sum",
+    "pdsi_summer_5_yrs_after_mean",
+    "pdsi_annual_5_yrs_after_threshold",
+    "pdsi_summer_5_yrs_after_threshold"
+  ),
+  
+  topo = c(
+    "srtm",
+    "tpi",
+    "chili"
+  ),
+  
+  prefire_tree = c(
+    "avg_rap_tree_6_yr_pre_fire"
+  ),
+  
+  burn_severity = c(
+    "burn_cbi",
+    "burn_cbi_500mmwmean",
+    "burn_cbi_500mmwstd",
+    "burn_distance_forest_after"
+  ),
+  
+  climate_normals = c(
+    "tt_change_aet",
+    "tt_change_def",
+    "tt_early_aet",
+    "tt_early_def",
+    "tt_later_aet",
+    "tt_later_def",
+    "tt_normal_aet",
+    "tt_normal_def",
+    "tt_future_aet",
+    "tt_future_def",
+    "aet",
+    "def"
+  ),
+  
+  forest_group = c(
+    "ENC1_nfg_factor",
+    "ENC2_nfg_factor"
+  ),
+  
+  regime_group = c(
+    "ENC1_frg_reclass_desc",
+    "ENC2_frg_reclass_desc"
+  ),
+  
+  location = c(
+    "lat",
+    "long"
+  ),
+  
+  year = c(
+    "mock_burn_year"
+  )
+)
+
+mir_results <- compute_mir_groups(
+  model_spec  = rf_spec_final,
+  data_split  = data_split,
+  outcome     = outcome,
+  predictors  = predictors,
+  groups      = mir_groups,
+  metrics     = yardstick::metric_set(yardstick::rmse, yardstick::rsq)
+)
+
+mir_results
+
+ggplot(mir_results) +
+  geom_col(aes(x = mir, y = group)) +
+  facet_grid(~.metric)
+
+
+```
+
+
+
 
 #################
 # From run with all PDSI data, the cumulative drought sums appear to be more important than the means, which are more important than the thresholds
