@@ -41,7 +41,9 @@ install_load_packages(c(
   "spmodel",
   "iml",
   "patchwork",
+  "spatialsample",
   "tidymodels",
+  "tidysdm",
   "purrr",
   "arrow",
   "vip",
@@ -50,16 +52,20 @@ install_load_packages(c(
   "shapviz",
   "dials",
   "sf",
+  "ggrepel",
+  "corrplot",
   "tictoc"))
 
 # devtools::install_github("grf-labs/sufrep")
 # library(sufrep)
 
-dir_figs <- here::here('figs')
+run_nm <- 'v3_spatialcv_20251209'
+
+dir_figs <- here::here('figs', run_nm)
 dir_derived <- here::here('data', 'derived')
 dir_raw <- here::here('data', 'raw')
 dir_manual <- here::here('data', 'manual')
-dir_models <- here('models/v2')
+dir_models <- here('models', run_nm)
 
 dir_rf_figs <- here(dir_figs, "rf")
 
@@ -82,6 +88,10 @@ set.seed(seed)
 #Short dats
 dats <- read_parquet(here(dir_derived, "test_dats_short.parquet"))
 ecoregions <- unique(dats$ecoregion)
+
+geo_dats <- st_read(here(dir_derived, "test_dats_sf.gpkg")) |>
+  st_transform('EPSG:5070') |>
+  select(uniqueID)
 
 ```
 
@@ -144,14 +154,14 @@ prep_ml_dats <- function(dats, target) {
     select(starts_with("burn_cbi") | 
              starts_with("burn_distance") | 
              #starts_with("biotic") | 
-             starts_with("hd") | 
-             starts_with("pdsi") | 
-             starts_with("pdsi")) |>
+             #starts_with("hd") | 
+             ends_with("mean")) |>
     names()
   
-  cont_covars <- c("aet", "def", "srtm", "tpi", "chili", "avg_rap_tree_6_yr_pre_fire",
+  cont_covars <- c(#"aet", "def", 
+                   "srtm", "tpi", "chili", "avg_rap_tree_6_yr_pre_fire", "uniqueID",
                    #"lat", "long",
-                   "mock_burn_year",  disturbance_covars, grep("^tt", names(dats), value = TRUE))
+                   "mock_burn_year",  disturbance_covars, grep("^tt_change", names(dats), value = TRUE), grep("^tt_normal", names(dats), value = TRUE))
   cat_covars <- c("frg_reclass_desc", "ecoregion", "nfg_factor")
   trts <- c("fire", "burn_sev")
   
@@ -217,10 +227,32 @@ slope15d <- dats |>
   prep_ml_dats(target = "post_fire_rap_tree_slope_3_15_yrs")
 
 
+ml_ready_data <- slope15d
+
+target <- ml_ready_data$target
+
+covars <- ml_ready_data$covars
+
+df_use <- ml_ready_data$dats_ml |>
+  left_join(geo_dats) |>
+  filter(ecoregion == "Idaho Batholith") |>
+  select(-uniqueID)#>
+  # filter(!!sym(target) > -100 & !!sym(target) < 100) |>
+  # filter(burn_sev == "High")
+
+covars <- covars[covars != "uniqueID"]
+
+
+ggplot(df_use) +
+  geom_histogram(aes(x = !!sym(target))) +
+  xlim(c(-3, 3))
+
+nrow(df_use)
+
 ```
 
 
-# Test model tuning time bumps
+# Tested model tuning time bumps
 
 Tuning all parameters as opposed to a select few increases training time by ~50%.
 
@@ -238,30 +270,55 @@ The number of forests used to fit the tuning model. Default is 50.
 tune.num.draws	
 The number of random parameter values considered when using the model to select the optimal parameters. Default is 1000.
 
+
+
+# Assess correlations
+
 ```{r}
 
-ml_ready_data <- slope15d
 
-target <- ml_ready_data$target
+# Correlation matrix
+correlations <- df_use |>
+  select(-starts_with("ENC"), -fire, -ecoregion, -burn_sev, -geom) |>
+  st_drop_geometry() |>
+  cor(use = "pairwise.complete.obs")
+png(here(dir_figs, glue('corr_plot.png')), width = 2000, height = 2000)
+corrplot(correlations, method = 'circle', type = "lower", diag = FALSE, use = 'pairwise.complete.obs') 
+dev.off()
 
-covars <- ml_ready_data$covars
-
-df_use <- ml_ready_data$dats_ml #|>
-  # #filter(ecoregion == "Idaho Batholith") |>
-  # filter(!!sym(target) > -100 & !!sym(target) < 100) |>
-  # filter(burn_sev == "High")
 
 
-ggplot(df_use) +
-  geom_histogram(aes(x = !!sym(target))) +
-  xlim(c(-100, 100))
+plot_feature_densities_combined <- function(df) {
+  
+  df_long <- df |>
+    select(where(is.numeric)) |>
+    mutate(across(everything(), scale)) |>
+    pivot_longer(
+      cols = everything(),
+      names_to = "feature",
+      values_to = "value"
+    )
+  
+  ggplot(df_long, aes(x = value, color = feature)) +
+    geom_density(linewidth = 1, na.rm = TRUE) +
+    labs(
+      x = "Z-scaled value",
+      y = "Density",
+      color = "Feature"
+    ) +
+    theme_minimal()
+}
 
-nrow(df_use)
+plot_feature_densities_combined(df_use |>
+  select(-starts_with("ENC"), -fire, -ecoregion, -burn_sev, -geom)) +
+  xlim(c(-3, 3))
+
+ggsave(here(dir_figs, "scaled_densities.png"))
 
 
 ```
 
-
+# Simple LM out of curiousity
 
 ```{r}
 
@@ -276,7 +333,134 @@ summary(lm_fit)
 
 ```
 
+
+# Full spatial cross-validation and training on test set
+
+```{r}
+
+form <- reformulate(termlabels = covars, response = target)
+
+df_mini <- df_use |> slice_sample(n = 2000)
+
+
+test_spatial_split <- function(dats, type, cellsize) {
+  
+  if(type == "SPATIAL") {
+    # Spatial train/test split
+    data_split <- tidysdm::spatial_initial_split(
+      data = dats |> sf::st_as_sf(),
+      prop = 0.2, #prop here is for amount in TESTING set
+      strategy = spatial_block_cv,
+      cellsize = cellsize,
+      square = TRUE,
+    )
+    train_data <- training(spatial_split)
+    test_data  <- testing(spatial_split)
+  } else {
+    # Naive data split
+    data_split <- rsample::initial_split(dats, prop = 0.8#, strata = ecoregion
+                                         ) #stratify by ecoregion
+    train_data <- rsample::training(data_split)
+    test_data  <- rsample::testing(data_split)
+    
+  }
+  
+  
+  rf_recipe <- recipes::recipe(form, data = train_data) |>
+    step_zv(all_predictors()) #remove any zero-variance predictors
+  
+  #Build our random forest specification
+  rf_spec <- parsnip::rand_forest(
+    mtry  = tune(),
+    trees = 1000,
+    min_n = tune()) |>
+    parsnip::set_engine(
+      "ranger",
+      importance = "permutation") |>
+    parsnip::set_mode("regression")
+  
+  rf_wf <- workflows::workflow() |>
+    workflows::add_model(rf_spec) |>
+    workflows::add_recipe(rf_recipe)
+  
+
+  
+  if(type == "SPATIAL") {
+    #SPATIAL FOLDS
+    folds <- spatial_block_cv(
+      data = train_data |> sf::st_as_sf(),
+      v = 5,
+      cellsize = cellsize,
+      square = TRUE
+    )
+  } else {
+    # NAIVE FOLDS
+    folds <- rsample::vfold_cv(train_data, v = 5)
+  }
+  
+  
+  mtry_default <- floor(sqrt(length(covars)))
+  rf_grid <- dials::grid_regular(
+    dials::mtry(c(mtry_default - 2, mtry_default + 2)),
+    dials::min_n(),
+    levels = 5)
+  
+  rf_metrics <- yardstick::metric_set(yardstick::rmse, yardstick::rsq)
+  
+  rf_tuned <- rf_wf |>
+    tune::tune_grid(
+      resamples = folds,
+      grid = rf_grid,
+      metrics = rf_metrics)
+  
+  rf_tuned |>
+    tune::collect_metrics()
+  
+  best_params <- rf_tuned |>
+    select_best(metric = "rmse")
+  
+  rf_final_wf <- rf_wf |>
+    finalize_workflow(best_params)
+  
+  rf_final_fit <- rf_final_wf |>
+    last_fit(split = data_split)
+  
+  final_metrics <- rf_final_fit |>
+    collect_metrics() |>
+    mutate(cell_size = cellsize,
+           type = type,
+           name = paste0(type, "_", cellsize))
+  
+  return(final_metrics)
+}
+
+
+cell_sizes <- c(NA, 10000, 25000, 50000)
+types <- c("NON-SPATIAL", "SPATIAL", "SPATIAL", "SPATIAL")
+
+
+spatial_testing <- map2(types, cell_sizes, \(a,b) test_spatial_split(dats = df_mini, type = a, cellsize = b))
+
+all_sp_test <- bind_rows(spatial_testing)
+
+write_csv(all_sp_test, here(dir_figs, "sp_test.csv"))
+
+ggplot(data = all_sp_test) +
+  geom_col(aes(x = name, fill = .metric, y = .estimate), position = 'dodge') +
+  labs(title = "Assessing the impact of spatial blocking on RMSE and R^2",
+       y = "Estimate", x = "Test",
+       caption = "Using minimal test set of 2000 samples") +
+  theme_minimal()
+
+ggsave(here(dir_figs, "sp_test.png"))
+
+```
+
+
+
 # Build and tune a ranger model
+- non-spatial tuning
+- spatial assessment
 
 
 ```{r}
@@ -284,9 +468,25 @@ summary(lm_fit)
 form <- reformulate(termlabels = covars, response = target)
 
 tic("Random forest train test")
-data_split <- rsample::initial_split(df_use, prop = 0.8, strata = ecoregion) #stratify by ecoregion
-train_data <- rsample::training(data_split)
-test_data  <- rsample::testing(data_split)
+
+# Spatial train/test split
+spatial_split <- spatial_initial_split(
+  data = df_use |> sf::st_as_sf(),
+  prop = 0.2,
+  strategy = spatial_block_cv,
+  cellsize = 25000,
+  square = TRUE,
+  method = "random"
+)
+train_data <- training(spatial_split)
+test_data  <- testing(spatial_split)
+
+sp_testtrain_p <- autoplot(spatial_split) +
+  labs(title = "Spatially-blocked test-train split")
+
+ggsave(sp_testtrain_p, filename = here(dir_figs, "sp_testtrain_p.png"))
+
+
 
 rf_recipe <- recipes::recipe(form, data = train_data) |>
   step_zv(all_predictors()) #remove any zero-variance predictors
@@ -305,7 +505,24 @@ rf_wf <- workflows::workflow() |>
   workflows::add_model(rf_spec) |>
   workflows::add_recipe(rf_recipe)
 
+# Actual folds to use to avoid rapidly growing computation costs of spatial cross-validation
 folds <- rsample::vfold_cv(train_data, v = 5)
+
+#EXAMPLE OF SPATIAL FOLDS TO SEE WHAT SPATIAL CROSS-VALIDATION WOULD LOOK LIKE
+sample_spatial_folds <- spatial_block_cv(
+  data = train_data |> sf::st_as_sf(),
+  v = 5,
+  cellsize = 25000,
+  square = TRUE
+)
+
+sp_fold_p <- autoplot(sample_spatial_folds) +
+  labs(title = "Example of spatially-blocked cross-validation folds")
+
+ggsave(sp_fold_p, filename = here(dir_figs, "sp_fold_p.png"))
+
+
+
 
 mtry_default <- floor(sqrt(length(covars)))
 rf_grid <- dials::grid_regular(
@@ -338,7 +555,7 @@ rf_final_wf <- rf_wf |>
   finalize_workflow(best_params)
 
 rf_final_fit <- rf_final_wf |>
-  last_fit(split = data_split)
+  last_fit(split = spatial_split)
 
 rf_final_fit |>
   collect_metrics()
@@ -349,7 +566,7 @@ rf_test_preds <- rf_final_fit |>
 rf_fit <- rf_final_fit$.workflow[[1]] |>
   workflows::extract_fit_parsnip()
 
-saveRDS(rf_fit, here(dir_models, "rf_small.rds"))
+saveRDS(rf_fit, here(dir_models, "rf_idb_500m_25kmtesttrain.rds"))
 
 toc()
 
@@ -360,62 +577,46 @@ vip_rf <- vip::vip(rf_fit,
 vip_rf
 
 
-#?
-X_train <- train_data
-
-# PDPs
-rf_aet <- pdp::partial(
-  object   = rf_fit,
-  pred.var = "aet",
-  train    = X_train,
-  grid.resolution = 30
-)
-
-autoplot(rf_aet)
-
-rf_cbi <- pdp::partial(
-  object   = rf_fit,
-  pred.var = "burn_cbi",
-  train    = X_train,
-  grid.resolution = 30
-)
-
-autoplot(rf_cbi)
-
-# ICE plots
-p_aet_ice <- partial(
-  object   = rf_fit$fit,
-  pred.var = "aet",
-  train    = X_train,
-  ice      = TRUE
-)
-
-autoplot(p_aet_ice, alpha = 0.1) 
 
 
-# Examine interaction importance using IML package
-
-
-
-# Predictor object with correct prediction wrapper
-pred_fun <- function(object, newdata) {
-  preds <- predict(object, new_data = newdata)
-  preds$.pred
-}
-
-predictor <- Predictor$new(
-  model = rf_fit,          # parsnip model_fit
-  data = X_train, 
-  predict.fun = pred_fun
-)
-
-# # Measure interaction strength for all features
-# interaction_strength <- Interaction$new(predictor)
-# interaction_strength$results
+# # Examine interaction importance using IML package
+# # Tell future to ignore big R6 reference objects
+# options(future.globals.onReference = "ignore")
 # 
+# # Sequential plan (still uses future, but no workers)
+# old_plan <- future::plan()
+# future::plan("sequential")
+# 
+# # Lean ranger engine from parsnip model
+# rf_engine <- rf_fit$fit
+# 
+# # Small, self-contained prediction wrapper using predict.ranger
+# pred_fun <- local({
+#   predict_ranger <- getFromNamespace("predict.ranger", "ranger")
+#   
+#   function(object, newdata) {
+#     predict_ranger(object, data = newdata)$predictions
+#   }
+# })
+# 
+# # Build iml Predictor
+# predictor <- iml::Predictor$new(
+#   model       = rf_engine,
+#   data        = X_train,
+#   predict.fun = pred_fun
+# )
+# 
+# # Global interaction strength for all features
+# interaction_strength <- iml::Interaction$new(predictor)
+# 
+# interaction_results <- interaction_strength$results |>
+#   arrange(desc(.interaction))
+# 
+# interaction_results
 # plot(interaction_strength)
-
-
+# 
+# # Restore previous future plan
+# future::plan(old_plan)
 
 
 
@@ -478,23 +679,15 @@ predictor <- Predictor$new(
 
 tic("Gradient boost train test")
 
-# ------------------------------------------------------------
-# 1. Formula and data split
-# ------------------------------------------------------------
-
-form <- reformulate(termlabels = covars, response = target)
-
-data_split <- rsample::initial_split(df_use, prop = 0.8, strata = ecoregion)
-train_data <- rsample::training(data_split)
-test_data  <- rsample::testing(data_split)
+# USE THE SAME FORMULA AND TEST/TRAIN SPLIT AS BEFORE
 
 # ------------------------------------------------------------
 # 2. Recipe (xgboost wants numeric predictors)
 # ------------------------------------------------------------
 
 xgb_recipe <- recipes::recipe(form, data = train_data) |>
-  recipes::step_zv(all_predictors()) |>
-  recipes::step_dummy(all_nominal_predictors(), one_hot = TRUE)
+  recipes::step_zv(all_predictors()) #|>
+  #recipes::step_dummy(all_nominal_predictors(), one_hot = TRUE)
 
 # ------------------------------------------------------------
 # 3. XGBoost model specification
@@ -504,9 +697,9 @@ xgb_spec <- parsnip::boost_tree(
   trees          = 1000,
   tree_depth     = tune(),
   learn_rate     = tune(),
-  loss_reduction = tune(),  # gamma
-  mtry           = tune(),  # number of predictors sampled at each split
-  min_n          = tune()   # min observations per node
+  loss_reduction = tune(),
+  mtry           = tune(),
+  min_n          = tune()
 ) |>
   parsnip::set_engine("xgboost") |>
   parsnip::set_mode("regression")
@@ -558,8 +751,8 @@ xgb_metrics <- yardstick::metric_set(yardstick::rmse, yardstick::rsq)
 xgb_tuned <- xgb_wf |>
   tune::tune_grid(
     resamples = folds,
-    grid      = xgb_grid,
-    metrics   = xgb_metrics
+    grid = xgb_grid,
+    metrics = xgb_metrics
   )
 
 xgb_tuned |>
@@ -582,7 +775,7 @@ xgb_final_wf <- xgb_wf |>
   tune::finalize_workflow(best_params_xgb)
 
 xgb_final_fit <- xgb_final_wf |>
-  tune::last_fit(split = data_split)
+  tune::last_fit(split = spatial_split)
 
 xgb_final_fit |>
   tune::collect_metrics()
@@ -611,19 +804,154 @@ vip_xgb <- vip::vip(
 
 vip_xgb
 
-
-xgb_aet <- pdp::partial(
-  object   = xgb_fit,
-  pred.var = "aet",
-  train    = X_train,
-  grid.resolution = 30
-)
-
-autoplot(rf_aet)
+# 
+# xgb_aet <- pdp::partial(
+#   object   = xgb_fit,
+#   pred.var = "aet",
+#   train    = X_train,
+#   grid.resolution = 30
+# )
+# 
+# autoplot(rf_aet)
 
 
 
 ```
+
+# Compare rf and xgboost
+```{r}
+
+xgb_m <- xgb_final_fit |>
+  tune::collect_metrics() |>
+  mutate(model = "xgb")
+
+rf_m <- rf_final_fit |>
+  tune::collect_metrics() |>
+  mutate(model = "rf")
+
+all_m <- bind_rows(xgb_m, rf_m)
+
+write_csv(all_m, here(dir_figs, "all_metrics.csv"))
+
+ggplot(data = all_m) +
+  geom_col(aes(x = model, fill = .metric, y = .estimate), position = 'dodge') +
+  labs(title = "XGB and RF performance on spatially-blocked test: RMSE and R^2",
+       y = "Estimate", x = "Test",
+       caption = "Full dataset") +
+  theme_minimal()
+
+ggsave(here(dir_figs, "full_model_performance.png"))
+
+# tuned hyperparameters
+
+best_params_xgb
+best_params
+
+
+# model predictions
+all_preds <- bind_rows(xgb_test_preds |> mutate(model = "xgb"),
+                       rf_test_preds |> mutate(model = "rf")) |>
+  mutate(residual = post_fire_rap_tree_slope_3_15_yrs - .pred)
+
+ggplot(data = all_preds, aes(x = post_fire_rap_tree_slope_3_15_yrs, y = .pred)) +
+  geom_point(aes(color = model), alpha = 0.2) +
+  geom_smooth(aes(color = model)) +
+  geom_abline(intercept = 0, slope = 1) +
+  theme_minimal()
+
+ggsave(here(dir_figs, "preds_vs_obs.png"))
+
+ggplot(data = all_preds, aes(x = post_fire_rap_tree_slope_3_15_yrs, y = residual)) +
+  geom_point(aes(color = model), alpha = 0.2) +
+  geom_smooth(aes(color = model)) +
+  geom_abline(intercept = 0, slope = 1) +
+  theme_minimal()
+
+ggplot(data = all_preds, aes(x = residual)) +
+  geom_density(aes(color = model)) +
+  theme_minimal()
+
+
+# Diagnose what we are seeing in the residuals
+diag_summary <- all_preds |>
+  group_by(model) |>
+  summarize(
+    n          = n(),
+    mean_obs   = mean(post_fire_rap_tree_slope_3_15_yrs, na.rm = TRUE),
+    sd_obs     = sd(post_fire_rap_tree_slope_3_15_yrs, na.rm = TRUE),
+    mean_pred  = mean(.pred, na.rm = TRUE),
+    sd_pred    = sd(.pred, na.rm = TRUE),
+    mean_resid = mean(residual, na.rm = TRUE),
+    sd_resid   = sd(residual, na.rm = TRUE),
+    cor_y_pred = cor(post_fire_rap_tree_slope_3_15_yrs, .pred,
+                     use = "complete.obs"),
+    cor_y_resid = cor(post_fire_rap_tree_slope_3_15_yrs, residual,
+                      use = "complete.obs"),
+    cor_pred_resid = cor(.pred, residual,
+                         use = "complete.obs"),
+    .groups = "drop"
+  )
+
+diag_summary
+
+
+# compare variable importance
+vip_rf +
+  labs(title = "RF") +
+vip_xgb +
+  labs(title = "XGB")
+
+
+# plot using rank-vs-rank scatterplot
+
+# Extract importance data from vip objects
+rf_vi <- vip_rf$data |>
+  as_tibble() |>
+  transmute(
+    variable   = Variable,
+    importance = Importance,
+    model      = "rf"
+  )
+
+xgb_vi <- vip_xgb$data |>
+  as_tibble() |>
+  transmute(
+    variable   = Variable,
+    importance = Importance,
+    model      = "xgb"
+  )
+
+# Combine and compute ranks within each model (1 = most important)
+vi_long <- bind_rows(rf_vi, xgb_vi) |>
+  group_by(model) |>
+  mutate(rank = min_rank(desc(importance))) |>
+  ungroup()
+
+# Wide format: one row per variable, ranks from both models
+vi_wide <- vi_long |>
+  select(variable, model, rank) |>
+  pivot_wider(names_from = model, values_from = rank)
+
+
+# Rank-vs-rank comparison plot
+ggplot(vi_wide_plot, aes(x = rf, y = xgb, label = variable)) +
+  geom_point() +
+  ggrepel::geom_text_repel(size = 3) +
+  scale_x_reverse() +
+  scale_y_reverse() +
+  labs(
+    x = "RF importance rank (1 = most important)",
+    y = "XGB importance rank (1 = most important)",
+    title = "Comparison of variable importance ranks: RF vs XGBoost"
+  ) +
+  theme_minimal() +
+  geom_abline(intersect = 0, slope = 1, color = "gray")
+
+ggsave(here(dir_figs, "pfi_rank_rank.png"))
+
+```
+
+
 
 # Set up for robust post-hoc analysis
 
@@ -736,8 +1064,6 @@ plot_pdp_ice_ale <- function(fit, train, pred_var, fig_dir,
   # ---------------------------------------------------------------------------
   # 3. Build the three ggplots: PDP, ICE, ALE
   # ---------------------------------------------------------------------------
-  library(ggplot2)
-  library(patchwork)
   
   p_pdp <- ggplot(pd_pdp, aes_string(x = pred_var, y = "yhat")) +
     geom_line() +
@@ -795,28 +1121,83 @@ plot_pdp_ice_ale <- function(fit, train, pred_var, fig_dir,
   return(list("ale_df" = ale_df))
 }
 
+
+# Top 3 VI
+
 plot_pdp_ice_ale(
   fit      = rf_fit, 
-  train    = X_train,
+  train    = train_data |> st_drop_geometry(),
   pred_var = "srtm",
   fig_dir  = dir_figs
 )
 
 plot_pdp_ice_ale(
   fit      = rf_fit, 
-  train    = X_train,
-  pred_var = "pdsi_annual_5_yrs_after_mean",
+  train    = train_data |> st_drop_geometry(),
+  pred_var = "pdsi_annual_5_yrs_prior_mean",
   fig_dir  = dir_figs
 )
 
+plot_pdp_ice_ale(
+  fit      = rf_fit, 
+  train    = train_data |> st_drop_geometry(),
+  pred_var = "burn_cbi",
+  fig_dir  = dir_figs
+)
 
+# 2D PDPs
+train_df <- as.data.frame(train_data |> st_drop_geometry())
+
+pdp_2d <- pdp::partial(
+  object          = rf_fit,
+  pred.var        = c("srtm", "burn_cbi"),
+  train           = train_df,
+  grid.resolution = 20
+)
+
+
+autoplot(pdp_2d) +
+  labs(title = "2D PDP for burn severity and elevation")
+ggsave(here(dir_figs, "pdp2d_cbi_srtm.png"))
 
 ```
 
+<!-- # Global interactions (NOT INCLUDED IN PROJECT) -->
+
+<!-- ```{r} -->
+
+<!-- set.seed(1) -->
+<!-- train_iml <- train_data |> -->
+<!--   as.data.frame() |> -->
+<!--   sample_n(2000) |> -->
+<!--   st_drop_geometry() -->
+
+<!-- # pull out the bare ranger model -->
+<!-- rf_engine <- rf_fit$fit -->
+
+<!-- # prediction function for ranger -->
+<!-- pred_fun_rf <- function(object, newdata) { -->
+<!--   predict(object, data = newdata)$predictions -->
+<!-- } -->
+
+<!-- # iml Predictor -->
+<!-- predictor_rf <- Predictor$new( -->
+<!--   model       = rf_engine, -->
+<!--   data        = train_iml |> select(-post_fire_rap_tree_slope_3_15_yrs), -->
+<!--   y           = train_iml$post_fire_rap_tree_slope_3_15_yrs, -->
+<!--   predict.fun = pred_fun_rf -->
+<!-- ) -->
+
+<!-- # global interaction strengths (Friedman's H for each feature) -->
+<!-- rf_interactions <- Interaction$new(predictor_rf) -->
+
+<!-- rf_i_r <- rf_interactions$results -->
+<!-- write_csv(rf_i_r, here(dir_figs, "rf_global_interactions.csv")) -->
+
+<!-- ``` -->
 
 
-
-# Variable interpretation
+# Variable interpretation reminder
 - TPI: low = valleys, high = ridges
 - CHILI: low = cold, high = hot
 - SRTM: low = low elevation, high = high elevation
@@ -824,79 +1205,6 @@ plot_pdp_ice_ale(
 - DEF: low = wet, high = dry
 - PDSI: low = dry, high = wet
 
-```{r}
-
-
-rf_fit <- ranger(
-  formula   = form,
-  data      = df_use,
-  num.trees = 1000,
-  mtry      = 30,
-  importance = "permutation",
-  min.node.size = 5,
-  num.threads   = parallel::detectCores(),
-  seed = 42
-)
-print(rf_fit)
-oob_mse  <- rf_fit$prediction.error
-oob_rmse <- sqrt(oob_mse)
-oob_rmse
-
-
-# True and OOB-predicted values
-y_true <- df_use[[target]]
-y_pred <- predict(rf_fit, df_use)$predictions
-
-# RMSE
-rmse <- sqrt(mean((y_true - y_pred)^2))
-
-# %RMSE (range-based)
-perc_rmse <- (rmse / (max(y_true) - min(y_true))) * 100
-
-# %RMSE (mean-based)
-perc_rmse_mean <- (rmse / mean(y_true)) * 100
-
-# Percent Variance Explained
-sse <- sum((y_true - y_pred)^2)
-sst <- sum((y_true - mean(y_true))^2)
-
-perc_var_explained <- (1 - sse/sst) * 100
-
-list(
-  RMSE = rmse,
-  percent_RMSE_range = perc_rmse,
-  percent_RMSE_mean = perc_rmse_mean,
-  percent_variance_explained = perc_var_explained
-)
-
-
-
-tic()
-spmlmRF <- splmRF(form,
-                  data = df_use ,
-                  spcov_type = "exponential",
-                  importance = 'permutation',
-                  scale.permutation.importance = TRUE,
-                  num.threads = 0,
-                  mtry = floor(sqrt(ncol(dats) - 1)),
-                  num.trees = 1000,
-                  seed = seed)
-toc()
-summary(spmlmRF)
-print(spmlmRF$ranger)
-#500 trees mtry 3, MSE 213, R2 0.49
-#1000 trees mtry 8, basically same
-#1000t, mtry8, include disturbance MSE 2.17, R^2 0.14
-
-
-vip(test_spmlmRF$ranger,
-    num_features = 40)
-pdp(test_spmlmRF$ranger)
-
-
-
-
-```
 
 
 # MIR
@@ -1060,21 +1368,13 @@ predictors <- covars       # character vector of predictor column names
 
 mir_groups <- list(
   climate_before = c(
-    "pdsi_annual_5_yrs_prior_sum",
     "pdsi_annual_5_yrs_prior_mean",
-    "pdsi_summer_5_yrs_prior_sum",
-    "pdsi_summer_5_yrs_prior_mean",
-    "pdsi_annual_5_yrs_prior_threshold",
-    "pdsi_summer_5_yrs_prior_threshold"
+    "pdsi_summer_5_yrs_prior_mean"
   ),
   
   climate_after = c(
-    "pdsi_annual_5_yrs_after_sum",
     "pdsi_annual_5_yrs_after_mean",
-    "pdsi_summer_5_yrs_after_sum",
-    "pdsi_summer_5_yrs_after_mean",
-    "pdsi_annual_5_yrs_after_threshold",
-    "pdsi_summer_5_yrs_after_threshold"
+    "pdsi_summer_5_yrs_after_mean"
   ),
   
   topo = c(
@@ -1097,16 +1397,8 @@ mir_groups <- list(
   climate_normals = c(
     "tt_change_aet",
     "tt_change_def",
-    "tt_early_aet",
-    "tt_early_def",
-    "tt_later_aet",
-    "tt_later_def",
     "tt_normal_aet",
-    "tt_normal_def",
-    "tt_future_aet",
-    "tt_future_def",
-    "aet",
-    "def"
+    "tt_normal_def"
   ),
   
   forest_group = c(
@@ -1119,11 +1411,6 @@ mir_groups <- list(
     "ENC2_frg_reclass_desc"
   ),
   
-  location = c(
-    "lat",
-    "long"
-  ),
-  
   year = c(
     "mock_burn_year"
   )
@@ -1131,7 +1418,7 @@ mir_groups <- list(
 
 mir_results <- compute_mir_groups(
   model_spec  = rf_spec_final,
-  data_split  = data_split,
+  data_split  = spatial_split,
   outcome     = outcome,
   predictors  = predictors,
   groups      = mir_groups,
@@ -1139,10 +1426,14 @@ mir_results <- compute_mir_groups(
 )
 
 mir_results
+write_csv(mir_results, here(dir_figs, "mir_results.csv"))
 
 ggplot(mir_results) +
-  geom_col(aes(x = mir, y = group)) +
-  facet_grid(~.metric)
+  geom_col(aes(x = mir, y = reorder(group, mir))) +
+  facet_grid(~.metric) +
+  labs(title = "Leave-one-feature (group)-out-importance")
+
+ggsave(here(dir_figs, "mir_results.png"))
 
 
 ```

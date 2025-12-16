@@ -197,9 +197,9 @@ ggplot(dats_f_long |>
 
 
 
-ggplot(dats |> filter(post_fire_rap_tree_perc_recovery_n6_3_10_yr > -100 & post_fire_rap_tree_perc_recovery_n6_3_10_yr < 100 & post_fire_vcf_tree_perc_recovery_n6_3_10_yr > -100 & post_fire_vcf_tree_perc_recovery_n6_3_10_yr < 100 )) +
-  geom_point(aes(x = post_fire_rap_tree_perc_recovery_n6_3_10_yr, y = post_fire_vcf_tree_perc_recovery_n6_3_10_yr), alpha = 0.1) +
-  geom_smooth(aes(x = post_fire_rap_tree_perc_recovery_n6_3_10_yr, y = post_fire_vcf_tree_perc_recovery_n6_3_10_yr), alpha = 0.1) +
+ggplot(dats |> filter(post_fire_rap_tree_perc_recovery_n6_3_15_yr > -100 & post_fire_rap_tree_perc_recovery_n6_3_15_yr < 100 & post_fire_vcf_tree_perc_recovery_n6_3_15_yr > -100 & post_fire_vcf_tree_perc_recovery_n6_3_15_yr < 100 )) +
+  geom_point(aes(x = post_fire_rap_tree_perc_recovery_n6_3_15_yr, y = post_fire_vcf_tree_perc_recovery_n6_3_15_yr), alpha = 0.1) +
+  geom_smooth(aes(x = post_fire_rap_tree_perc_recovery_n6_3_15_yr, y = post_fire_vcf_tree_perc_recovery_n6_3_15_yr), alpha = 0.1) +
   labs(title = "VCF vs RAP recovery 250m")
 
 
