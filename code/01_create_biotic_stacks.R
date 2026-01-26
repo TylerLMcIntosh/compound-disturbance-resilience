@@ -4,6 +4,10 @@
 # rasters of a) total severities, and b) binary presence based on a given severity threshold.
 # The script should run in 5 minutes or less on a local machine.
 
+
+# NEW DATA PORTAL: https://verso.uidaho.edu/esploro/outputs/dataset/996794512701851
+
+
 # Tyler L. McIntosh, CU Boulder
 
 # Threshold
