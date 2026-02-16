@@ -1,0 +1,170 @@
+---
+title: "06_dydid"
+author: Tyler L. McIntosh
+date: last-modified
+format:
+  html:
+    embed-resources: true
+    html-math-method: katex
+    css: styles.css
+    toc: true
+    toc-depth: 1
+    toc-title: Contents
+    toc-location: right
+    code-fold: true
+    code-summary: "Show the code"
+---
+
+
+# Setup for analysis
+
+``` {r setupchunk}
+#| echo: true
+#| message: false
+#| warning: false
+#| results: 'hide'
+
+rm(list = ls())
+
+if(!requireNamespace("here", quietly = TRUE)) {
+  install.packages("here")
+}
+library(here)
+
+source(here::here("utils", "functions.R"))
+
+install_load_packages(c(
+  "tidyverse",
+  "tictoc",
+  "hstats",
+  "glue",
+  "shapviz",
+  "patchwork",
+  "cobalt",
+  "purrr",
+  "corrplot",
+  "gridExtra",
+  "tictoc",
+  "fect",
+  "fixest",
+  "did",
+  "arrow",
+  "panelView",
+  "PanelMatch",
+  "bacondecomp",
+  "didimputation",
+  "doParallel",
+  "HonestDid",
+  "HonestDidFEct",
+  "DIDmultiplegtDYN",
+  "sf",
+  "spdep",
+  "purrr",
+  "gstat",
+  "scales",
+  "broom",
+  "ggfixest"))
+
+dir_figs <- here::here('figs')
+dir_derived <- here::here('data', 'derived')
+dir_raw <- here::here('data', 'raw')
+dir_manual <- here::here('data', 'manual')
+dir_ensure(c(dir_figs,
+             dir_derived,
+             dir_manual,
+             dir_raw))
+
+seed = 1234
+set.seed(seed)
+
+
+```
+
+#
+
+```{r}
+  
+dats_long <- arrow::read_parquet(here(dir_derived, "test_dats_long.parquet"))
+
+dats_long <- dats_long |>
+  select(uniqueID, year, rap_tree, vcf_tree, lat, long, ecoregion, )
+
+
+```
+
+# Functions to set treatment cohorts for different treatments
+```{r}
+
+# We don't have any always-treated units, so we don't need to worry about the Goodman-Bacon decomposition
+
+
+x <- dats_long |> filter(biotic_)
+
+
+dmini <- dats_long |>
+  slice_sample(n = 20000) |>
+  select(uniqueID, year, rap_tree, vcf_tree, lat, long, ecoregion, biotic_5_yrs_prior_sum, pdsi_annual_5_yrs_prior_sum)
+
+dmini <- dmini |>
+  mutate(biotic_before_10t = case_when(biotic_5_yrs_prior_sum >= 10 ~ 1,
+                                  biotic_5_yrs_prior_sum <= 10 ~ 0),
+         pdsi_before_n1000t = case_when(pdsi_annual_5_yrs_prior_sum <= -1000 ~ 1,
+                                 pdsi_annual_5_yrs_prior_sum > -1000 ~ 0))  
+
+
+# A wrapper for fect::get.cohort for use when dealing with multiple treatments
+set_cohorts_for_trt <- function(df,
+                                treatment_col, #string
+                                prefix,
+                                out_of_bounds_value = 1000,
+                                remove_nas = TRUE,
+                                index = c("uniqueID", "year"),
+                                start0 = TRUE,
+                                drop.always.treat = FALSE) {
+  
+  if(remove_nas) {
+    df <- df |>
+      filter(!is.na(.data[[treatment_col]]))
+  }
+  
+  
+  df_new <- fect::get.cohort(df,
+                       D = treatment_col,
+                       index = index,
+                       start0 = start0,
+                       drop.always.treat = drop.always.treat
+                       )
+  
+  df_new[which(is.na(df_new$FirstTreat)),"FirstTreat"] <- out_of_bounds_value # Fill NAs with out of bounds value
+  
+  df_new <- df_new |>
+    rename_with(
+      ~ paste0(prefix, "_", .x),
+      c(FirstTreat, Cohort, Time_to_Treatment)
+    )
+  
+  return(df_new)
+}
+
+
+test <- set_cohorts_for_trt(df = dmini,
+                            treatment_col = "biotic_before_10t",
+                            prefix = "BF",
+                            remove_nas = TRUE,
+                            drop.always.treat = TRUE)
+
+
+
+
+
+
+
+```
+
+
+<button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne" >Click to see Session Information</button><div id="collapseOne" class="accordion-collapse collapse"><div>
+
+```{r sessionInfo}
+sessionInfo()
+```
+

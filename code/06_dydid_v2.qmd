@@ -15,6 +15,11 @@ format:
     code-summary: "Show the code"
 ---
 
+
+# THIS VERSION OF THE CODE EXPLORES USING THE INTERNAL PLOTTING FUNCTIONS
+# THEY ARE USEFUL FOR ECOREGION SPLITS, BUT NOT FOR DIFFERENT TREATMENT TYPES
+
+
 # Setup for analysis
 
 ``` {r setupchunk}
@@ -47,6 +52,7 @@ install_load_packages(c(
   "fect",
   "fixest",
   "did",
+  "arrow",
   "panelView",
   "PanelMatch",
   "bacondecomp",
@@ -99,8 +105,7 @@ set.seed(seed)
 
 ```{r}
   
-dats_long <- read_csv(here(dir_derived, "test_dats_long.csv"))
-#dats_short <- read_csv(here(dir_derived, "test_dats_short.csv"))
+dats_long <- arrow::read_parquet(here(dir_derived, "test_dats_long.parquet"))
 
 
 ```
@@ -132,6 +137,12 @@ df.use <- dats_long_did |>
          pdsi_before_n1000t = case_when(pdsi_annual_5_yrs_prior_sum <= -1000 ~ "pdsi_before_n1000t",
                                  pdsi_annual_5_yrs_prior_sum > -1000 ~ "no_pdsi_before_n1000t"))
 
+
+test <- get.cohort(dats_long |> slice_sample(n = 10000), D = "treated",
+                                 index = c("uniqueID", "year"),
+                                 start0 = TRUE,
+                   drop.always.treat = FALSE,
+                   varname = c("FCohort", "F_TtT", "help", "eek"))
 
 
 # 
@@ -252,10 +263,12 @@ The internal functions work well for splitting on things like ecoregion, but I w
 ```{r}
 
 xx <- df.use |>
-  filter(ecoregion == "SierraNevada" | ecoregion == "IDBatholith")
+  filter(ecoregion == "Idaho Batholith" | ecoregion == "Southern Rockies") |>
+  slice_sample(prop = 0.25)
 
+tic()
 est_sunab_eco_test <- feols(
-  rap_TRE ~ sunab(FirstTreat, year, ref.p = -1) | uniqueID + year,
+  rap_tree ~ sunab(FirstTreat, year, ref.p = -1) | uniqueID + year,
   data = xx,
   mem.clean = TRUE,
   lean = FALSE,
@@ -267,8 +280,9 @@ est_sunab_eco_test <- feols(
                              distance = "triangular"
                              )
 )
+toc()
 
-ggiplot(
+p1 <- ggiplot(
   est_sunab_eco_test,
   ref.line = -1,
   main = 'Staggered treatment: Split multi-sample',
@@ -279,7 +293,7 @@ ggiplot(
   theme = theme_minimal()) +
   xlim(-10, 20)
 
-
+p1
 
 
 
@@ -443,11 +457,105 @@ ggplot(df_all_c, aes(x = estimate_names, y = estimate,
   
 
 ```
+# Functions for treatment split
+
+```{r}
+
+
+
+```
 
 
 # Test pre-fire disturbance with -5 as baseline
 
 ```{r}
+
+
+xx_f <- df.use |>
+  filter(ecoregion == "Idaho Batholith" | ecoregion == "Southern Rockies") |>
+  filter(is.na(burn_sev) | burn_sev == "low-moderate-sev")
+
+xx_bf <- df.use |>
+  filter(ecoregion == "SierraNevada" | ecoregion == "IDBatholith") |>
+  filter(is.na(burn_sev) | burn_sev == "high-sev")
+
+# 76.83 sec to run
+tic()
+est_sunab_eco_test_ls <- feols(
+  rap_TRE ~ sunab(FirstTreat, year, ref.p = -1) | uniqueID + year,
+  data = xx_ls,
+  mem.clean = TRUE,
+  lean = FALSE,
+  split = ~ ecoregion,
+  vcov = fixest::vcov_conley(lat = "lat",
+                             lon = "long",
+                             cutoff = 125,
+                             pixel = 20,
+                             distance = "triangular"
+                             )
+)
+toc()
+
+# 63.05 sec
+tic()
+est_sunab_eco_test_hs <- feols(
+  rap_TRE ~ sunab(FirstTreat, year, ref.p = -1) | uniqueID + year,
+  data = xx_hs,
+  mem.clean = TRUE,
+  lean = FALSE,
+  split = ~ ecoregion,
+  vcov = fixest::vcov_conley(lat = "lat",
+                             lon = "long",
+                             cutoff = 125,
+                             pixel = 20,
+                             distance = "triangular"
+                             )
+)
+toc()
+
+ggiplot(
+  list('LS' = est_sunab_eco_test_ls, 'HS' = est_sunab_eco_test_hs),
+  ref.line = -1,
+  main = 'Staggered treatment: Split multi-sample',
+  xlab = 'Time to treatment',
+  #multi_style = 'facet',
+  geom_style = 'ribbon',
+  facet_args = list(labeller = labeller(id = function(x) gsub(".*: ", "", x))),
+  theme = theme_minimal()) +
+  xlim(-10, 20)
+
+
+
+
+# 1) Extract data for each split set
+df_ls <- iplot_data(est_sunab_eco_test_ls) |> mutate(Severity = "Low/Moderate")
+df_hs <- iplot_data(est_sunab_eco_test_hs) |> mutate(Severity = "High")
+
+# 2) Bind and clean facet labels
+df_all <- bind_rows(df_ls, df_hs) |>
+  mutate(
+    # 'sample' contains strings like "ecoregion: SierraNevada"
+    ecoregion = sub(".*: ", "", sample)
+  )
+
+# 3) Plot: one facet per ecoregion; both severities overlaid
+ggplot(df_all, aes(x = estimate_names, y = estimate,
+                   #ymin = ci_low, ymax = ci_high,
+                   color = Severity, fill = Severity, linetype = Severity)) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_ribbon(aes(ymin = ci_low, ymax = ci_high, fill = Severity),
+              alpha = 0.3, color = NA) +
+  geom_line() +
+  facet_wrap(~ ecoregion) +
+  coord_cartesian(xlim = c(-10, 20)) +
+  labs(x = "Time to treatment", y = "Forest cover effect estimate",
+       title = "Staggered treatment: LS vs HS overlaid by ecoregion",
+      caption = "95% CIs, Conley standard errors with 125km cutoff and 20km pixel") +
+  theme_minimal() +
+  guides(fill = guide_legend(title = "Severity"),
+         color = guide_legend(title = "Severity"),
+         linetype = guide_legend(title = "Severity"))
+  
 
 
 
