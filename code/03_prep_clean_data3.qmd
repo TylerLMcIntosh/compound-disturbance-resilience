@@ -1,0 +1,1952 @@
+---
+title: "03_prep_data"
+author: Tyler L. McIntosh
+date: last-modified
+format:
+  html:
+    embed-resources: true
+    html-math-method: katex
+    css: styles.css
+    toc: true
+    toc-depth: 1
+    toc-title: Contents
+    toc-location: right
+    code-fold: true
+    code-summary: "Show the code"
+---
+
+# Variable interpretation reminders
+- TPI: low = valleys, high = ridges
+- CHILI: low = cold/wet, high = hot/dry
+- SRTM: low = low elevation, high = high elevation
+- AET: low = wet, high = dry
+- DEF: low = wet, high = dry
+- PDSI: low = dry, high = wet **************
+
+
+# Setup and read in data
+
+``` {r setupchunk}
+#| echo: true
+#| message: false
+#| warning: false
+#| results: 'hide'
+
+rm(list = ls())
+
+if(!requireNamespace("here", quietly = TRUE)) {
+  install.packages("here")
+}
+library(here)
+
+source(here::here("utils", "functions.R"))
+
+install_load_packages(c(
+  "tidyverse",
+  "terra",
+  "mapview",
+  "jsonlite",
+  "sf",
+  "janitor",
+  "data.table",
+  "googledrive",
+  "mblm",
+  "arrow",
+  "forcats",
+  "tictoc",
+  "glue",
+  "rlang",
+  "tibble",
+  "future",
+  "furrr",
+  "readr",
+  "vroom",
+  "fs",
+  "data.table"))
+
+set.seed(1234)
+gdrive_folder <- "GEE_Exports_resilience_20260218"
+service_account_file <- here('config', 'secrets', 'tymc5571-utils-project-692f27c034dd.json')
+
+dir_figs <- here::here('figs')
+dir_derived <- here::here('data', 'derived', gdrive_folder)
+dir_raw <- here::here('data', 'raw')
+dir_manual <- here::here('data', 'manual')
+dir_ensure(c(dir_figs,
+             dir_derived,
+             dir_manual,
+             dir_raw))
+
+```
+
+# Regions
+
+```{r}
+
+forested_ecoregions <- tibble(
+  na_l3name = c(
+    "Blue Mountains",
+    "Cascades",
+    "Coast Range",
+    "Eastern Cascades Slopes and Foothills",
+    "Klamath Mountains",
+    "North Cascades",
+    "Straight of Georgia/Puget Lowland",
+    "Willamette Valley",
+    "California Coastal Sage, Chaparral, and Oak Woodlands",
+    "Sierra Nevada",
+    "Southern and Baja California Pine-Oak Mountains",
+    "Canadian Rockies",
+    "Idaho Batholith",
+    "Middle Rockies",
+    "Columbia Mountains/Northern Rockies",
+    "Southern Rockies",
+    "Wasatch and Uinta Mountains",
+    "Arizona/New Mexico Mountains",
+    "Colorado Plateaus"
+  ),
+  na_l3code = c(
+    "6.2.9", "6.2.7", "7.1.8", "6.2.8", "6.2.11", "6.2.5", "7.1.7",
+    "7.1.9", "11.1.1", "6.2.12", "11.1.3", "6.2.4", "6.2.15",
+    "6.2.10", "6.2.3", "6.2.14", "6.2.13", "13.1.1", "10.1.6"
+  ),
+  short_name = c(
+    "Blue Mtns", "Cascades", "Coast Range", "Eastern Cascades",
+    "Klamath Mtns", "North Cascades", "Puget Lowland",
+    "Willamette Valley", "Central California Mtns", "Sierra Nevada",
+    "Southern California Mtns", "Canadian Rockies", "Idaho Batholith",
+    "Middle Rockies", "Northern Rockies", "Southern Rockies",
+    "Wasatch Uinta Mtns", "AZ/NM Mtns", "Colorado Plateaus"
+  ),
+  region = c(
+    "Pacific Northwest", "Pacific Northwest", "Pacific Northwest",
+    "Pacific Northwest", "Pacific Northwest", "Pacific Northwest",
+    "Pacific Northwest", "Pacific Northwest",
+    "California", "California", "California",
+    "Upper Rockies", "Upper Rockies", "Upper Rockies", "Upper Rockies",
+    "Lower Rockies", "Lower Rockies",
+    "Southwest", "Southwest"
+  ),
+  code_name = c(
+    "bluemtns", "cascades", "coastrange", "eastcascades",
+    "klamathmtns", "northcascades", "pugetlowland",
+    "willamettevalley", "centralcaliforniamtns", "sierranevada",
+    "southerncaliforniamtns", "canadianrockies", "idahobatholith",
+    "middlerockies", "northernrockies", "southernrockies",
+    "wasatchuintamtns", "aznmmtns", "coloradoplateaus"
+  ),
+  us_l3code = c(
+    "11", "4", "1", "9", "78", "77", "2", "3", "6", "5", "8",
+    "41", "16", "17", "15", "21", "19", "23", "20"
+  )
+)
+
+
+
+```
+
+
+# Load data from GDrive
+
+```{r}
+# #### Run to authenticate gdrive access - if receive scope permissions issues, de-authenticate (drive_deauth()) and try again
+# drive_auth(
+#   scopes = "https://www.googleapis.com/auth/drive.readonly"
+# )
+# ####
+# 
+# 
+# for(er in forested_ecoregions$code_name) {
+#   print(er)
+#   er_dats <- read_matching_csvs_from_gdrive(drive_folder = gdrive_folder,
+#                                             pattern = paste0("fc_tile_", er),
+#                                             force_cols = c("us_l4code"),
+#                                             force_types = c("character"))
+#   write_csv(er_dats, file = here(dir_derived, paste0("all_", er, ".csv")))
+# }
+# 
+# all_er_csvs <- list.files(path = dir_derived, full.names = TRUE)
+# 
+# 
+# #There is a problem where some instances of '1's with NAs in the CBI columns can end up being treated as logical; ensure doesn't happen
+# read_csv_ensure_cbi_dbl <- function(path) {
+#   # Preview column names without reading all data
+#   col_names <- names(read_csv(path, n_max = 0))
+#   
+#   # Find columns that start with "CBI"
+#   cbi_cols <- grep("^cbi", col_names, value = TRUE)
+#   
+#   # Create a list of column specs: all CBI columns as double
+#   col_spec <- do.call(cols, c(
+#     setNames(rep(list(col_double()), length(cbi_cols)), cbi_cols),
+#     .default = col_guess()
+#   ))
+#   
+#   # Read the CSV with specified col_types
+#   dats <- read_csv(path, col_types = col_spec)
+#   
+#   return(dats)
+# }
+# 
+# 
+# #Create full raw dats file
+# all_dats_fl <- here(dir_derived, "all_dats.parquet")
+# files <- list.files(path = dir_derived, full.names = TRUE)
+# 
+# dats <- list()
+# for(erf in files) {
+#   erf_dats <- read_csv_ensure_cbi_dbl(erf)
+#   dats$erf <- erf_dats
+# }
+# dats <- bind_rows(dats)
+# write_parquet(dats, sink = all_dats_fl)
+# 
+# 
+# 
+# 
+# 
+# # Use local download
+# all_files <- list.files(dir_derived, full.names = TRUE)
+# files_with_data <- all_files[fs::file_size(all_files) > 2] 
+# all_dats <- lapply(files_with_data, fread) |>
+#   bind_rows()
+# 
+# arrow::write_parquet(x = all_dats, sink = here(dir_derived, "merged_dats.parquet"))
+```
+
+# Examine GEE data & clean NAs
+
+```{r}
+
+dats <- arrow::read_parquet(here(dir_derived, "merged_dats.parquet"))
+glimpse(dats)
+
+# check NA counts
+#colSums(is.na(dats))
+
+# Almost all rows being dropped are those with NFG == NA; could fix most of these by backfilling NFG
+dats <- dats |>
+  #select(-rand) |>
+  tidyr::drop_na()
+
+# Check strange CBI negative values
+check_cbi <- dats |>
+  select(starts_with("cbi_")) |>
+  pivot_longer(
+    cols = everything(),
+    names_to = "variable",
+    values_to = "value"
+  ) |>
+  filter(value != -1)
+
+# Count of negative CBI values that aren't -1: #3678 - WHERE IS THIS COMING FROM?
+check_cbi |>
+  summarise(n_negative = sum(value < 0, na.rm = TRUE))
+
+# check_cbi |>
+#   ggplot(aes(x = value)) +
+#   geom_density() +
+#   labs(
+#     x = "CBI value",
+#     y = "Density",
+#     title = "Density of all CBI-year values (excluding -1)"
+#   )
+
+# for now, remove all rows with values that are - but not -1 in CBI
+dats <- dats |>
+  filter(
+    !if_any(
+      starts_with("cbi_year"),
+      ~ .x < 0 & .x != -1
+    )
+  )
+
+```
+
+# Deal with fire and fire heterogeneity data
+
+```{r}
+
+# replace -1 signifier in CBI bands with NA
+dats <- dats %>%
+  mutate(across(starts_with("cbi_"), ~ na_if(.x, -1)))
+
+# Remove all instances with re-burns
+dats_no_reburn <- dats %>%
+  filter(
+    rowSums(!is.na(select(., starts_with("cbi_")))) <= 1
+  )
+
+# Get burn year & burn year bcCBI
+# Identify CBI columns and corresponding years
+cbi_cols <- grep("^cbi_\\d{4}$", names(dats_no_reburn), value = TRUE)
+years <- as.integer(sub(".*_(\\d{4})$", "\\1", cbi_cols))
+
+# Extract the relevant subset (data.table-safe)
+cbi_matrix <- as.data.frame(dats_no_reburn[, ..cbi_cols], stringsAsFactors = FALSE)
+
+# Count non-NA values per row
+non_na_counts <- rowSums(!is.na(cbi_matrix))
+
+# Rows with exactly one non-NA value
+valid_idx <- which(non_na_counts == 1)
+
+# Get the column index (position) of the non-NA value
+non_na_col_index <- max.col(!is.na(cbi_matrix[valid_idx, , drop = FALSE]), ties.method = "first")
+
+# Initialize result columns
+dats_no_reburn$burn_year <- NA_integer_
+dats_no_reburn$burn_year_cbi <- NA_real_
+
+# Assign values for valid rows only
+dats_no_reburn$burn_year[valid_idx] <- years[non_na_col_index]
+dats_no_reburn$burn_year_cbi[valid_idx] <- cbi_matrix[cbind(valid_idx, non_na_col_index)]
+
+rm(cbi_matrix)
+
+
+
+# REMOVE 'YR' and "YEAR" from names
+names(dats_no_reburn) <- gsub("(_yr_|_year_)", "_", names(dats_no_reburn))
+# 
+# # GET THE OTHER CBI CONTEXT DATA
+# 
+# # Function to extract burn-year-aligned values from year-tagged columns
+# extract_burn_year_value <- function(df, burn_year, prefix) {
+#   # Get matching columns like 'cbi_1kmmwmedian_2008'
+#   pattern <- paste0("^", prefix, "_\\d{4}$")
+#   cols <- grep(pattern, names(df), value = TRUE)
+#   
+#   # Extract years from column names
+#   years <- as.integer(sub(".*_(\\d{4})$", "\\1", cols))
+#   
+#   # Create value matrix (rows = obs, cols = years)
+#   value_mat <- as.data.frame(df[cols], stringsAsFactors = FALSE)
+#   
+#   # Create lookup index: for each row, match burn_year to column year
+#   col_index <- match(burn_year, years)
+#   
+#   # Use cbind(row, col) indexing to extract values
+#   result <- mapply(function(row, col) {
+#     if (!is.na(col)) value_mat[row, col] else NA
+#   }, row = seq_along(burn_year), col = col_index)
+#   
+#   return(result)
+# }
+# 
+# # Apply the function to create the new columns
+# dats_no_reburn$burn_cbi_500mmwmean <- extract_burn_year_value(
+#   dats_no_reburn,
+#   burn_year = dats_no_reburn$burn_year,
+#   prefix = "cbi_500mmwmean"
+# )
+# 
+# dats_no_reburn$burn_cbi_500mmwstd <- extract_burn_year_value(
+#   dats_no_reburn,
+#   burn_year = dats_no_reburn$burn_year,
+#   prefix = "cbi_500mmwstd"
+# )
+# 
+# dats_no_reburn$burn_distance_forest_after <- extract_burn_year_value(
+#   dats_no_reburn,
+#   burn_year = dats_no_reburn$burn_year,
+#   prefix = "distance_forest_after"
+# )
+
+# Generate mock_burn_year
+dats_no_reburn$mock_burn_year <- dats_no_reburn$burn_year
+
+na_idx <- which(is.na(dats_no_reburn$mock_burn_year))
+dats_no_reburn$mock_burn_year[na_idx] <- sample(1984:2020, length(na_idx), replace = TRUE)
+
+
+# RESOLVED THESE
+# # Replace NAs with 0 in specified columns
+# cols_to_fill <- c("burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd")
+# 
+# for (col in cols_to_fill) {
+#   dats_no_reburn[[col]][is.na(dats_no_reburn[[col]])] <- 0
+# }
+
+# # Remove the few rows that still have the strange fire but no burn year phenomenon
+# x <- dats_no_reburn |>
+#   filter(!(fire == 1 & is.na(burn_year)))
+
+```
+
+
+
+# Rescale data and deal with factors etc
+
+```{r}
+
+dats_no_reburn <- dats_no_reburn |>
+  mutate(
+    across(
+      c(starts_with("vcf_tree_SD"), starts_with("pdsi_")),
+      ~ .x * 0.01
+    )
+  )
+
+# NFG metadata: https://data.fs.usda.gov/geodata/rastergateway/forest_type/conus_forest_type_group_metadata.php
+nfg_lookup <- c(
+  "100" = "White/Red/Jack Pine Group",
+  "120" = "Spruce/Fir Group",
+  "140" = "Longleaf/Slash Pine Group",
+  "160" = "Loblolly/Shortleaf Pine Group",
+  "180" = "Pinyon/Juniper Group",
+  "200" = "Douglas-fir Group",
+  "220" = "Ponderosa Pine Group",
+  "240" = "Western White Pine Group",
+  "260" = "Fir/Spruce/Mountain Hemlock Group",
+  "280" = "Lodgepole Pine Group",
+  "300" = "Hemlock/Sitka Spruce Group",
+  "320" = "Western Larch Group",
+  "340" = "Redwood Group",
+  "360" = "Other Western Softwood Group",
+  "370" = "California Mixed Conifer Group",
+  "380" = "Exotic Softwoods Group",
+  "400" = "Oak/Pine Group",
+  "500" = "Oak/Hickory Group",
+  "600" = "Oak/Gum/Cypress Group",
+  "700" = "Elm/Ash/Cottonwood Group",
+  "800" = "Maple/Beech/Birch Group",
+  "900" = "Aspen/Birch Group",
+  "910" = "Alder/Maple Group",
+  "920" = "Western Oak Group",
+  "940" = "Tanoak/Laurel Group",
+  "950" = "Other Western Hardwoods Group",
+  "980" = "Tropical Hardwoods Group",
+  "990" = "Exotic Hardwoods Group"
+)
+
+dats_no_reburn <- dats_no_reburn |>
+  mutate(
+    nfg_factor = factor(nfg_lookup[as.character(nfg)])
+  )
+
+dats_no_reburn <- dats_no_reburn %>%
+  mutate(
+    burn_sev = case_when(
+      fire == 1 & burn_cbi >= 2.25 ~ "High",
+      fire == 1 & burn_cbi < 0.1 ~ "Negligible",
+      fire == 1 & burn_cbi >= 0.1 & burn_cbi < 2.25 ~ "Low/Moderate",
+      #fire == 1 & burn_cbi >= 0.1 & burn_cbi <  ~ "Low",
+      #fire == 1 * burn_cbi >= & burn_cbi < 2.25 ~ "Moderate"
+      TRUE ~ "Never"
+    )
+  )
+
+dats_no_reburn <- dats_no_reburn
+
+
+#Clean up factors & years as integers 
+dats_no_reburn <- dats_no_reburn |>
+  mutate(frg_reclass_desc = case_when(frg_reclass == 1 ~ "<35 return, low/mixed",
+                                 frg_reclass == 2 ~ "<35 return, replacement",
+                                 frg_reclass == 3 ~ "35-200 return, low/mixed",
+                                 frg_reclass == 4 ~ "35-200 return replacement",
+                                 frg_reclass == 5 ~ ">200 return any"),
+         frg_reclass_desc = as.factor(frg_reclass_desc),
+         burn_sev = fct_relevel(as.factor(burn_sev), c("Never", "Negligible", "Low/Moderate", "High")),
+         burn_year = as.integer(burn_year),
+         mock_burn_year = as.integer(mock_burn_year))
+
+```
+
+
+# Get biotic & drought sums and means in time before/after burn
+```{r}
+
+transform_annual_to_priorafter <- function(df, column_pattern, summary_fn_name, nyears) {
+  # Validate the summary function
+  if (!exists(summary_fn_name, mode = "function")) {
+    stop("Summary function '", summary_fn_name, "' is not a valid function.")
+  }
+  summary_fn <- match.fun(summary_fn_name)
+  
+  # Identify columns matching pattern
+  matched_cols <- grep(column_pattern, names(df), value = TRUE)
+  if (length(matched_cols) == 0) return(df)
+  
+  # Extract base name
+  base_name <- sub("^(.*?)_\\d{4}$", "\\1", matched_cols[1])
+  
+  # Map year to column names
+  col_years <- as.integer(sub(".*_(\\d{4})$", "\\1", matched_cols))
+  col_year_map <- setNames(matched_cols, col_years)
+  
+  # Initialize result vectors
+  n <- nrow(df)
+  prior_vals <- rep(NA_real_, n)
+  after_vals <- rep(NA_real_, n)
+  
+  for (i in seq_len(n)) {
+    byr <- df$mock_burn_year[i]
+    if (!is.na(byr)) {
+      # Prior 5 years
+      yrs_prior <- (byr - nyears):(byr - 1)
+      if (all(yrs_prior %in% col_years)) {
+        cols <- col_year_map[as.character(yrs_prior)]
+        vals <- unlist(df[i, ..cols])
+        if (!any(is.na(vals))) prior_vals[i] <- summary_fn(vals, na.rm = TRUE)
+      }
+      
+      # After 5 years
+      yrs_after <- (byr + 1):(byr + nyears)
+      if (all(yrs_after %in% col_years)) {
+        cols <- col_year_map[as.character(yrs_after)]
+        vals <- unlist(df[i, ..cols])
+        if (!any(is.na(vals))) after_vals[i] <- summary_fn(vals, na.rm = TRUE)
+      }
+    }
+  }
+  
+  # Construct column names with function name
+  fn_suffix <- tolower(summary_fn_name)
+  prior_col <- paste0(base_name, "_", nyears, "_yrs_prior_", fn_suffix)
+  after_col <- paste0(base_name, "_", nyears, "_yrs_after_", fn_suffix)
+  
+  df[[prior_col]] <- prior_vals
+  df[[after_col]] <- after_vals
+  
+  # DO NOT DO THIS ANYMORE TO ALLOW FOR NON-CD ANALYSES
+  # # Filter out rows where either summary column is NA
+  # df <- df[!is.na(df[[prior_col]]) & !is.na(df[[after_col]]), ]
+  
+  return(df)
+}
+
+
+n_beyond_threshold_x_yrs <- function(df, column_pattern, nyears, threshold) {
+  # Validate and parse the threshold expression
+  threshold_fn <- tryCatch(
+    {
+      eval(parse(text = paste0("function(x) x", threshold)))
+    },
+    error = function(e) stop("Invalid threshold expression: ", threshold)
+  )
+  
+  # Identify columns matching the pattern
+  matched_cols <- grep(column_pattern, names(df), value = TRUE)
+  if (length(matched_cols) == 0) return(df)
+  
+  # Extract base name and year info
+  base_name <- sub("^(.*?)_\\d{4}$", "\\1", matched_cols[1])
+  col_years <- as.integer(sub(".*_(\\d{4})$", "\\1", matched_cols))
+  col_year_map <- setNames(matched_cols, col_years)
+  
+  # Initialize result vectors
+  n <- nrow(df)
+  prior_counts <- integer(n)
+  after_counts <- integer(n)
+  
+  for (i in seq_len(n)) {
+    byr <- df$mock_burn_year[i]
+    if (!is.na(byr)) {
+      # Prior years
+      yrs_prior <- (byr - nyears):(byr - 1)
+      if (all(yrs_prior %in% col_years)) {
+        cols <- col_year_map[as.character(yrs_prior)]
+        vals <- unlist(df[i, ..cols])
+        prior_counts[i] <- sum(threshold_fn(vals), na.rm = TRUE)
+      } else {
+        prior_counts[i] <- NA_integer_
+      }
+      
+      # After years
+      yrs_after <- (byr + 1):(byr + nyears)
+      if (all(yrs_after %in% col_years)) {
+        cols <- col_year_map[as.character(yrs_after)]
+        vals <- unlist(df[i, ..cols])
+        after_counts[i] <- sum(threshold_fn(vals), na.rm = TRUE)
+      } else {
+        after_counts[i] <- NA_integer_
+      }
+    } else {
+      prior_counts[i] <- NA_integer_
+      after_counts[i] <- NA_integer_
+    }
+  }
+  
+  # Create new column names
+  prior_col <- paste0(base_name, "_", nyears, "_yrs_prior_threshold")
+  after_col <- paste0(base_name, "_", nyears, "_yrs_after_threshold")
+  
+  # Append to df
+  df[[prior_col]] <- prior_counts
+  df[[after_col]] <- after_counts
+  
+  return(df)
+}
+
+
+dats_simple_added <- transform_annual_to_priorafter(
+  df = dats_no_reburn,
+  column_pattern = "^biotic_\\d{4}$",
+  summary_fn_name = "sum",
+  nyears = 5
+)
+
+dats_simple_added <- transform_annual_to_priorafter(
+  df = dats_simple_added,
+  column_pattern = "^hd_fingerprint_\\d{4}$",
+  summary_fn_name = "sum",
+  nyears = 5
+)
+
+dats_simple_added <- transform_annual_to_priorafter(
+  df = dats_simple_added,
+  column_pattern = "^hd_fingerprint_\\d{4}$",
+  summary_fn_name = "mean",
+  nyears = 5
+)
+
+dats_simple_added <- transform_annual_to_priorafter(
+  df = dats_simple_added,
+  column_pattern = "^pdsi_annual_\\d{4}$",
+  summary_fn_name = "sum",
+  nyears = 5
+)
+
+dats_simple_added <- transform_annual_to_priorafter(
+  df = dats_simple_added,
+  column_pattern = "^pdsi_annual_\\d{4}$",
+  summary_fn_name = "mean",
+  nyears = 5
+)
+
+# dats_simple_added <- transform_annual_to_priorafter(
+#   df = dats_simple_added,
+#   column_pattern = "^pdsi_summer_\\d{4}$",
+#   summary_fn_name = "sum",
+#   nyears = 5
+# )
+# 
+# dats_simple_added <- transform_annual_to_priorafter(
+#   df = dats_simple_added,
+#   column_pattern = "^pdsi_summer_\\d{4}$",
+#   summary_fn_name = "mean",
+#   nyears = 5
+# )
+
+
+
+# Add thresholded data
+dats_simple_added <- n_beyond_threshold_x_yrs(
+  df = dats_simple_added,
+  column_pattern = "^pdsi_annual_\\d{4}$",
+  nyears = 5,
+  threshold = "<=-4"
+)
+
+# dats_simple_added <- n_beyond_threshold_x_yrs(
+#   df = dats_simple_added,
+#   column_pattern = "^pdsi_summer_\\d{4}$",
+#   nyears = 5,
+#   threshold = "<=-4"
+# )
+
+
+dats_simple_added <- n_beyond_threshold_x_yrs(
+  df = dats_simple_added,
+  column_pattern = "^hd_fingerprint_\\d{4}$",
+  nyears = 5,
+  threshold = ">=6"
+)
+
+
+# hist(dats_simple_added$hd_fingerprint_5_yrs_prior_threshold)
+# hist(dats_simple_added$hd_fingerprint_5_yrs_after_threshold)
+# hist(dats_simple_added$pdsi_annual_5_yrs_prior_threshold)
+# hist(dats_simple_added$pdsi_annual_5_yrs_after_threshold)
+
+```
+
+
+# Deal with response data (VCF & RAP) - GAMs
+
+```{r}
+
+test <- dats_no_reburn |> filter(burn_year == 2005) |> slice_head(n = 100)
+
+compute_gam_stats <- function(
+  df,
+  column_prefix,
+  reference_time_col,
+  k = 10,
+  min_n = 8,
+  post_min_search_max_year = Inf,
+  gam_method = "REML",
+  parallel = FALSE,
+  n_cores = max(1L, parallel::detectCores() - 1L),
+  debug = FALSE
+) {
+  stopifnot(is.data.frame(df))
+  if (!requireNamespace("data.table", quietly = TRUE)) stop("Please install 'data.table'.")
+  if (!requireNamespace("mgcv", quietly = TRUE)) stop("Please install 'mgcv'.")
+  if (!requireNamespace("tibble", quietly = TRUE)) stop("Please install 'tibble'.")
+
+  dt <- data.table::as.data.table(df)
+
+  if (!reference_time_col %in% names(dt)) {
+    stop("reference_time_col not found in df: ", reference_time_col)
+  }
+
+  ts_cols <- grep(paste0("^", column_prefix, "\\d{4}$"), names(dt), value = TRUE)
+  if (length(ts_cols) == 0) {
+    stop("No time-series columns found matching prefix+YYYY for prefix: ", column_prefix)
+  }
+
+  # Tag used in output names (strip trailing underscore if present)
+  prefix_tag <- sub("_$", "", column_prefix)
+
+  nm_pre6_fit <- paste0("gam_", prefix_tag, "_pre6_fit")
+  nm_post_min <- paste0("gam_", prefix_tag, "_post_min")
+  nm_post_min_year <- paste0("gam_", prefix_tag, "_post_min_year")
+  nm_yrs_ref_to_post_min <- paste0("gam_", prefix_tag, "_yrs_ref_to_post_min")
+  nm_diff_pre6_to_post_min <- paste0("gam_", prefix_tag, "_diff_pre6_to_post_min")
+
+  nm_fit_ref_p10 <- paste0("gam_", prefix_tag, "_fit_ref_p10")
+  nm_fit_ref_p15 <- paste0("gam_", prefix_tag, "_fit_ref_p15")
+  nm_fit_ref_p20 <- paste0("gam_", prefix_tag, "_fit_ref_p20")
+
+  nm_diff_post_min_to_p10 <- paste0("gam_", prefix_tag, "_diff_post_min_to_p10")
+  nm_diff_post_min_to_p15 <- paste0("gam_", prefix_tag, "_diff_post_min_to_p15")
+  nm_diff_post_min_to_p20 <- paste0("gam_", prefix_tag, "_diff_post_min_to_p20")
+
+  nm_slope_post_min_to_p10 <- paste0("gam_", prefix_tag, "_slope_post_min_to_p10")
+  nm_slope_post_min_to_p15 <- paste0("gam_", prefix_tag, "_slope_post_min_to_p15")
+  nm_slope_post_min_to_p20 <- paste0("gam_", prefix_tag, "_slope_post_min_to_p20")
+
+  dt[, id__temp := .I]
+
+  long_dt <- data.table::melt(
+    dt,
+    id.vars = c("id__temp", reference_time_col),
+    measure.vars = ts_cols,
+    variable.name = "year_col",
+    value.name = "value"
+  )
+
+  long_dt[, year := as.integer(sub(column_prefix, "", year_col))]
+  long_dt[, ref_year := as.integer(get(reference_time_col))]
+
+  long_dt <- long_dt[!is.na(ref_year)]
+
+  dbg <- new.env(parent = emptyenv())
+  dbg$fail_bad_ref <- 0L
+  dbg$fail_min_n <- 0L
+  dbg$fail_years_lt3 <- 0L
+  dbg$fail_gam <- 0L
+  dbg$ok <- 0L
+  dbg$first_gam_error <- NULL
+
+  na_row <- function(id) {
+    out <- list(
+      id__temp = id,
+      NA_real_, NA_real_, NA_real_, NA_real_, NA_real_,
+      NA_real_, NA_real_, NA_real_,
+      NA_real_, NA_real_, NA_real_,
+      NA_real_, NA_real_, NA_real_
+    )
+    names(out) <- c(
+      "id__temp",
+      nm_pre6_fit,
+      nm_post_min,
+      nm_post_min_year,
+      nm_yrs_ref_to_post_min,
+      nm_diff_pre6_to_post_min,
+      nm_fit_ref_p10,
+      nm_fit_ref_p15,
+      nm_fit_ref_p20,
+      nm_diff_post_min_to_p10,
+      nm_diff_post_min_to_p15,
+      nm_diff_post_min_to_p20,
+      nm_slope_post_min_to_p10,
+      nm_slope_post_min_to_p15,
+      nm_slope_post_min_to_p20
+    )
+    data.table::as.data.table(out)
+  }
+
+  fit_one <- function(d) {
+    id <- unique(d$id__temp)[1]
+
+    ref <- unique(d$ref_year)
+    if (length(ref) != 1L || is.na(ref)) {
+      if (isTRUE(debug)) dbg$fail_bad_ref <- dbg$fail_bad_ref + 1L
+      return(na_row(id))
+    }
+
+    d_fit <- d[!is.na(value) & !is.na(year)]
+    if (nrow(d_fit) < min_n) {
+      if (isTRUE(debug)) dbg$fail_min_n <- dbg$fail_min_n + 1L
+      return(na_row(id))
+    }
+
+    years_obs <- sort(unique(d_fit$year))
+    if (length(years_obs) < 3) {
+      if (isTRUE(debug)) dbg$fail_years_lt3 <- dbg$fail_years_lt3 + 1L
+      return(na_row(id))
+    }
+
+    d_fit[, t := year - ref]
+    t_obs <- sort(unique(d_fit$t))
+
+    k_eff <- min(as.integer(k), max(3L, length(t_obs) - 1L))
+
+    g <- tryCatch(
+      mgcv::gam(value ~ s(t, k = k_eff), data = d_fit, method = gam_method),
+      error = function(e) {
+        if (isTRUE(debug) && is.null(dbg$first_gam_error)) dbg$first_gam_error <- conditionMessage(e)
+        NULL
+      }
+    )
+    if (is.null(g)) {
+      if (isTRUE(debug)) dbg$fail_gam <- dbg$fail_gam + 1L
+      return(na_row(id))
+    }
+
+    t_min <- min(t_obs)
+    t_max <- max(t_obs)
+
+    t_pre6 <- -6L
+    pre6_fit <- if (t_pre6 >= t_min && t_pre6 <= t_max) {
+      as.numeric(stats::predict(g, newdata = data.frame(t = t_pre6), type = "response"))
+    } else {
+      NA_real_
+    }
+
+    t_cap <- if (is.finite(post_min_search_max_year)) post_min_search_max_year - ref else Inf
+    post_ts <- t_obs[t_obs > 0 & t_obs <= t_cap]
+
+    post_min_val <- NA_real_
+    post_min_t <- NA_real_
+
+    if (length(post_ts) > 0) {
+      post_fits <- as.numeric(stats::predict(g, newdata = data.frame(t = post_ts), type = "response"))
+      i_min <- which.min(post_fits)
+      post_min_val <- post_fits[i_min]
+      post_min_t <- post_ts[i_min]
+    }
+
+    post_min_year <- if (!is.na(post_min_t)) ref + post_min_t else NA_real_
+    yrs_ref_to_min <- if (!is.na(post_min_t)) post_min_t else NA_real_
+    diff_pre6_to_min <- if (!is.na(pre6_fit) && !is.na(post_min_val)) post_min_val - pre6_fit  else NA_real_
+
+    t_p10 <- 10L
+    t_p15 <- 15L
+    t_p20 <- 20L
+
+    fit_p10 <- if (t_p10 >= t_min && t_p10 <= t_max) {
+      as.numeric(stats::predict(g, newdata = data.frame(t = t_p10), type = "response"))
+    } else {
+      NA_real_
+    }
+
+    fit_p15 <- if (t_p15 >= t_min && t_p15 <= t_max) {
+      as.numeric(stats::predict(g, newdata = data.frame(t = t_p15), type = "response"))
+    } else {
+      NA_real_
+    }
+
+    fit_p20 <- if (t_p20 >= t_min && t_p20 <= t_max) {
+      as.numeric(stats::predict(g, newdata = data.frame(t = t_p20), type = "response"))
+    } else {
+      NA_real_
+    }
+
+    diff_min_to_p10 <- if (!is.na(post_min_val) && !is.na(fit_p10)) fit_p10 - post_min_val else NA_real_
+    diff_min_to_p15 <- if (!is.na(post_min_val) && !is.na(fit_p15)) fit_p15 - post_min_val else NA_real_
+    diff_min_to_p20 <- if (!is.na(post_min_val) && !is.na(fit_p20)) fit_p20 - post_min_val else NA_real_
+
+    slope_to_p10 <- if (!is.na(post_min_t) && !is.na(post_min_val) && !is.na(fit_p10) && (t_p10 != post_min_t)) {
+      (fit_p10 - post_min_val) / (t_p10 - post_min_t)
+    } else {
+      NA_real_
+    }
+
+    slope_to_p15 <- if (!is.na(post_min_t) && !is.na(post_min_val) && !is.na(fit_p15) && (t_p15 != post_min_t)) {
+      (fit_p15 - post_min_val) / (t_p15 - post_min_t)
+    } else {
+      NA_real_
+    }
+
+    slope_to_p20 <- if (!is.na(post_min_t) && !is.na(post_min_val) && !is.na(fit_p20) && (t_p20 != post_min_t)) {
+      (fit_p20 - post_min_val) / (t_p20 - post_min_t)
+    } else {
+      NA_real_
+    }
+
+    if (isTRUE(debug)) dbg$ok <- dbg$ok + 1L
+
+    out <- list(
+      id__temp = id,
+      pre6_fit,
+      post_min_val,
+      post_min_year,
+      yrs_ref_to_min,
+      diff_pre6_to_min,
+      fit_p10,
+      fit_p15,
+      fit_p20,
+      diff_min_to_p10,
+      diff_min_to_p15,
+      diff_min_to_p20,
+      slope_to_p10,
+      slope_to_p15,
+      slope_to_p20
+    )
+    names(out) <- c(
+      "id__temp",
+      nm_pre6_fit,
+      nm_post_min,
+      nm_post_min_year,
+      nm_yrs_ref_to_post_min,
+      nm_diff_pre6_to_post_min,
+      nm_fit_ref_p10,
+      nm_fit_ref_p15,
+      nm_fit_ref_p20,
+      nm_diff_post_min_to_p10,
+      nm_diff_post_min_to_p15,
+      nm_diff_post_min_to_p20,
+      nm_slope_post_min_to_p10,
+      nm_slope_post_min_to_p15,
+      nm_slope_post_min_to_p20
+    )
+    data.table::as.data.table(out)
+  }
+
+  split_list <- split(long_dt, long_dt$id__temp)
+
+  if (isTRUE(parallel)) {
+    if (!requireNamespace("future.apply", quietly = TRUE)) stop("Please install 'future.apply' for parallel=TRUE.")
+    if (!requireNamespace("future", quietly = TRUE)) stop("Please install 'future' for parallel=TRUE.")
+    old_plan <- future::plan()
+    on.exit(future::plan(old_plan), add = TRUE)
+    future::plan(future::multisession, workers = n_cores)
+
+    res_list <- future.apply::future_lapply(split_list, fit_one)
+  } else {
+    res_list <- lapply(split_list, fit_one)
+  }
+
+  stats_dt <- data.table::rbindlist(res_list, use.names = TRUE, fill = TRUE)
+
+  out <- merge(dt, stats_dt, by = "id__temp", all.x = TRUE)
+  out[, id__temp := NULL]
+
+  if (isTRUE(debug)) {
+    message(
+      "compute_gam_stats debug counts:\n",
+      "ok: ", dbg$ok, "\n",
+      "fail_bad_ref: ", dbg$fail_bad_ref, "\n",
+      "fail_min_n: ", dbg$fail_min_n, "\n",
+      "fail_years_lt3: ", dbg$fail_years_lt3, "\n",
+      "fail_gam: ", dbg$fail_gam
+    )
+    if (!is.null(dbg$first_gam_error)) message("First GAM error: ", dbg$first_gam_error)
+  }
+
+  tibble::as_tibble(out)
+}
+
+test_gam <- compute_gam_stats(
+  df = test,
+  column_prefix = "rap_tree_",
+  reference_time_col = "burn_year",
+  k = 8,
+  min_n = 15,
+  gam_method = "REML",
+  parallel = FALSE,
+  debug = TRUE
+)
+
+test_gam <- compute_gam_stats(
+  df = test_gam,
+  column_prefix = "vcf_tree_",
+  reference_time_col = "burn_year",
+  k = 8,
+  min_n = 15,
+  gam_method = "REML",
+  parallel = FALSE,
+  debug = TRUE
+)
+
+```
+
+# Check GAMs
+
+```{r}
+
+# Visual QC for compute_gam_stats(): pick 5 rows, refit GAM, plot TS + GAM,
+# and annotate the computed metrics on each panel.
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(purrr)
+  library(ggplot2)
+  library(mgcv)
+})
+
+# ---- helpers ----
+
+extract_year <- function(x, prefix) {
+  as.integer(sub(paste0("^", prefix), "", x))
+}
+
+# Detect "gam_<prefix>_*" columns in a row and map to a standard set of metric keys.
+# Returns a list: prefix_tag, cols (named vector of columns found)
+detect_gam_metric_cols <- function(row_df) {
+  nm <- names(row_df)
+
+  # Candidate metric endings we know how to use
+  endings <- c(
+    "pre6_fit",
+    "post_min",
+    "post_min_year",
+    "yrs_ref_to_post_min",
+    "diff_pre6_to_post_min",
+    "fit_ref_p10",
+    "fit_ref_p15",
+    "fit_ref_p20"
+  )
+
+  # Find any columns matching gam_<something>_<ending>
+  # Capture <something> as prefix_tag
+  rx <- paste0("^gam_([^_].*?)_(", paste(endings, collapse = "|"), ")$")
+  hits <- grep(rx, nm, value = TRUE)
+  if (length(hits) == 0) {
+    return(list(prefix_tag = NA_character_, cols = setNames(character(0), character(0))))
+  }
+
+  # Pick the prefix_tag with the most matching columns
+  tag <- sub(rx, "\\1", hits)
+  tbl <- sort(table(tag), decreasing = TRUE)
+  best_tag <- names(tbl)[1]
+
+  cols_found <- setNames(character(0), character(0))
+  for (end in endings) {
+    colname <- paste0("gam_", best_tag, "_", end)
+    if (colname %in% nm) cols_found[end] <- colname
+  }
+
+  list(prefix_tag = best_tag, cols = cols_found)
+}
+
+# Refit GAM and recompute metrics for ONE row (unchanged logic)
+refit_gam_and_metrics_one <- function(row_df,
+                                     column_prefix = "rap_tree_",
+                                     reference_time_col = "burn_year",
+                                     k = 8,
+                                     gam_method = "REML") {
+  stopifnot(nrow(row_df) == 1)
+
+  ts_cols <- grep(paste0("^", column_prefix, "\\d{4}$"), names(row_df), value = TRUE)
+  if (length(ts_cols) == 0) stop("No time-series columns found for prefix: ", column_prefix)
+
+  ref <- as.integer(row_df[[reference_time_col]][[1]])
+  if (is.na(ref)) stop("Reference year is NA for this row.")
+
+  long <- tibble::tibble(
+    year = extract_year(ts_cols, column_prefix),
+    value = as.numeric(row_df[1, ts_cols, drop = TRUE])
+  ) |>
+    arrange(year) |>
+    filter(!is.na(value)) |>
+    mutate(t = year - ref)
+
+  if (nrow(long) < 3) stop("Too few non-NA observations to fit GAM for this row.")
+
+  t_obs <- sort(unique(long$t))
+  k_eff <- min(as.integer(k), max(3L, length(t_obs) - 1L))
+
+  g <- mgcv::gam(value ~ s(t, k = k_eff), data = long, method = gam_method)
+
+  pred_grid <- tibble::tibble(year = sort(unique(long$year))) |>
+    mutate(
+      t = year - ref,
+      gam_fit = as.numeric(predict(g, newdata = data.frame(t = t), type = "response"))
+    )
+
+  pre6_fit <- if (-6L %in% pred_grid$t) pred_grid$gam_fit[pred_grid$t == -6L][1] else NA_real_
+
+  post_pred <- pred_grid |> filter(t > 0)
+  if (nrow(post_pred) > 0) {
+    i_min <- which.min(post_pred$gam_fit)
+    post_min_val <- post_pred$gam_fit[i_min]
+    post_min_year <- post_pred$year[i_min]
+    post_min_t <- post_pred$t[i_min]
+  } else {
+    post_min_val <- NA_real_
+    post_min_year <- NA_real_
+    post_min_t <- NA_real_
+  }
+
+  yrs_ref_to_min <- if (!is.na(post_min_t)) post_min_t else NA_real_
+  diff_pre6_to_min <- if (!is.na(pre6_fit) && !is.na(post_min_val)) pre6_fit - post_min_val else NA_real_
+
+  fit_p10 <- if (10L %in% pred_grid$t) pred_grid$gam_fit[pred_grid$t == 10L][1] else NA_real_
+  fit_p15 <- if (15L %in% pred_grid$t) pred_grid$gam_fit[pred_grid$t == 15L][1] else NA_real_
+  fit_p20 <- if (20L %in% pred_grid$t) pred_grid$gam_fit[pred_grid$t == 20L][1] else NA_real_
+
+  diff_min_to_p10 <- if (!is.na(post_min_val) && !is.na(fit_p10)) fit_p10 - post_min_val else NA_real_
+  diff_min_to_p15 <- if (!is.na(post_min_val) && !is.na(fit_p15)) fit_p15 - post_min_val else NA_real_
+  diff_min_to_p20 <- if (!is.na(post_min_val) && !is.na(fit_p20)) fit_p20 - post_min_val else NA_real_
+
+  slope_to_p10 <- if (!is.na(post_min_t) && !is.na(post_min_val) && !is.na(fit_p10) && (10L != post_min_t)) {
+    (fit_p10 - post_min_val) / (10L - post_min_t)
+  } else NA_real_
+
+  slope_to_p15 <- if (!is.na(post_min_t) && !is.na(post_min_val) && !is.na(fit_p15) && (15L != post_min_t)) {
+    (fit_p15 - post_min_val) / (15L - post_min_t)
+  } else NA_real_
+
+  slope_to_p20 <- if (!is.na(post_min_t) && !is.na(post_min_val) && !is.na(fit_p20) && (20L != post_min_t)) {
+    (fit_p20 - post_min_val) / (20L - post_min_t)
+  } else NA_real_
+
+  metrics <- tibble::tibble(
+    ref_year = ref,
+    gam_pre6_fit = pre6_fit,
+    gam_post_min = post_min_val,
+    gam_post_min_year = post_min_year,
+    gam_yrs_ref_to_post_min = yrs_ref_to_min,
+    gam_diff_pre6_to_post_min = diff_pre6_to_min,
+    gam_fit_ref_p10 = fit_p10,
+    gam_fit_ref_p15 = fit_p15,
+    gam_fit_ref_p20 = fit_p20,
+    gam_diff_post_min_to_p10 = diff_min_to_p10,
+    gam_diff_post_min_to_p15 = diff_min_to_p15,
+    gam_diff_post_min_to_p20 = diff_min_to_p20,
+    gam_slope_post_min_to_p10 = slope_to_p10,
+    gam_slope_post_min_to_p15 = slope_to_p15,
+    gam_slope_post_min_to_p20 = slope_to_p20
+  )
+
+  list(long_obs = long, pred = pred_grid, metrics = metrics)
+}
+
+# Plot one row with annotations + overlay prior metric points in red
+plot_one_gam_qc <- function(row_df,
+                            row_id,
+                            column_prefix = "rap_tree_",
+                            reference_time_col = "burn_year",
+                            k = 8,
+                            gam_method = "REML") {
+  out <- refit_gam_and_metrics_one(
+    row_df = row_df,
+    column_prefix = column_prefix,
+    reference_time_col = reference_time_col,
+    k = k,
+    gam_method = gam_method
+  )
+
+  obs <- out$long_obs
+  pred <- out$pred
+  m <- out$metrics
+  ref <- m$ref_year[1]
+
+  # Pull previously generated metric points from row_df (any gam_<prefix>_* set)
+  det <- detect_gam_metric_cols(row_df)
+  prev_prefix <- det$prefix_tag
+  prev_cols <- det$cols
+
+  # Build points from ref +/- offsets using the *previous* computed fits (red points)
+  prev_points <- tibble::tibble(
+    label = character(0),
+    year = numeric(0),
+    value = numeric(0)
+  )
+
+  if (!is.na(prev_prefix) && length(prev_cols) > 0) {
+    # Helper to safely pull a scalar numeric from row_df
+    pull_num <- function(col) {
+      if (is.null(col) || !nzchar(col) || !(col %in% names(row_df))) return(NA_real_)
+      as.numeric(row_df[[col]][[1]])
+    }
+
+    prev_pre6 <- pull_num(prev_cols[["pre6_fit"]])
+    prev_post_min <- pull_num(prev_cols[["post_min"]])
+    prev_post_min_year <- pull_num(prev_cols[["post_min_year"]])
+    prev_fit_p10 <- pull_num(prev_cols[["fit_ref_p10"]])
+    prev_fit_p15 <- pull_num(prev_cols[["fit_ref_p15"]])
+    prev_fit_p20 <- pull_num(prev_cols[["fit_ref_p20"]])
+
+    prev_points <- tibble::tibble(
+      label = c("prev_pre6", "prev_post_min", "prev_ref+10", "prev_ref+15", "prev_ref+20"),
+      year = c(ref - 6L, prev_post_min_year, ref + 10L, ref + 15L, ref + 20L),
+      value = c(prev_pre6, prev_post_min, prev_fit_p10, prev_fit_p15, prev_fit_p20)
+    ) |>
+      filter(!is.na(year) & !is.na(value))
+  }
+
+  # Newly computed metric points (default styling; distinct from red previous points)
+  mark_df <- tibble::tibble(
+    label = c("pre6", "post_min", "ref+10", "ref+15", "ref+20"),
+    year = c(ref - 6L, m$gam_post_min_year[1], ref + 10L, ref + 15L, ref + 20L),
+    value = c(m$gam_pre6_fit[1], m$gam_post_min[1], m$gam_fit_ref_p10[1], m$gam_fit_ref_p15[1], m$gam_fit_ref_p20[1])
+  ) |>
+    filter(!is.na(year) & !is.na(value))
+
+  # Annotation text: show both "new" (recomputed) and "prev" prefix used for overlay
+  ann <- paste0(
+    "ref=", ref,
+    "\n[new] pre6=", signif(m$gam_pre6_fit[1], 4),
+    "\n[new] post_min=", signif(m$gam_post_min[1], 4), " @", m$gam_post_min_year[1],
+    "\n[new] Δt(ref→min)=", signif(m$gam_yrs_ref_to_post_min[1], 4),
+    "\n[new] pre6 - min=", signif(m$gam_diff_pre6_to_post_min[1], 4),
+    "\n[new] fit+10=", signif(m$gam_fit_ref_p10[1], 4),
+    "\n[new] fit+15=", signif(m$gam_fit_ref_p15[1], 4),
+    "\n[new] fit+20=", signif(m$gam_fit_ref_p20[1], 4),
+    "\n[prev set] ", ifelse(is.na(prev_prefix), "none", prev_prefix),
+    "\nfire_sev=", row_df$burn_sev
+  )
+
+  ggplot() +
+    # raw data
+    geom_point(data = obs, aes(x = year, y = value), alpha = 0.7) +
+    # newly refit GAM curve
+    geom_line(data = pred, aes(x = year, y = gam_fit), linewidth = 0.8) +
+    geom_vline(xintercept = ref, linetype = "dashed") +
+    # newly computed metric points (not red)
+    geom_point(data = mark_df, aes(x = year, y = value), size = 2.2) +
+    geom_text(
+      data = mark_df,
+      aes(x = year, y = value, label = label),
+      nudge_y = 1.0,
+      size = 3,
+      check_overlap = TRUE
+    ) +
+    # previously generated metric points (red)
+    geom_point(
+      data = prev_points,
+      aes(x = year, y = value),
+      size = 2.6,
+      color = "red"
+    ) +
+    geom_text(
+      data = prev_points,
+      aes(x = year, y = value, label = label),
+      nudge_y = -1.2,
+      size = 3,
+      color = "red",
+      check_overlap = TRUE
+    ) +
+    annotate(
+      "text",
+      x = min(pred$year, na.rm = TRUE),
+      y = max(c(obs$value, pred$gam_fit), na.rm = TRUE),
+      hjust = 0, vjust = 1,
+      label = ann,
+      size = 3.0
+    ) +
+    labs(
+      title = paste0("GAM QC row ", row_id),
+      subtitle = paste0("k=", k, " (effective k may be reduced per row), dashed = reference year"),
+      x = "Year",
+      y = column_prefix
+    ) +
+    theme_minimal(base_size = 11)
+}
+
+# ---- run: sample rows from test_gam and plot ----
+set.seed(123)
+
+# Pick a stable row identifier to label panels.
+# Prefer pt_id if present; else use row number.
+id_col <- if ("pt_id" %in% names(test_gam)) "pt_id" else NULL
+
+rows <- test_gam |>
+  slice_sample(n = 10)
+
+plots <- purrr::map(seq_len(nrow(rows)), function(i) {
+  row_df <- rows[i, , drop = FALSE]
+  row_id <- if (!is.null(id_col)) as.character(row_df[[id_col]][[1]]) else as.character(i)
+
+  plot_one_gam_qc(
+    row_df = row_df,
+    row_id = row_id,
+    column_prefix = "rap_tree_",
+    reference_time_col = "burn_year",
+    k = 8,
+    gam_method = "REML"
+  )
+})
+
+# Print plots (in RStudio this will show them one by one)
+for (p in plots) print(p)
+
+# Optional: arrange in a grid if you have patchwork installed
+# install.packages("patchwork")
+# library(patchwork)
+# wrap_plots(plots, ncol = 1)
+
+test_gam$gam_pre6_fit
+
+
+# ---- run: sample rows from test_gam and plot ----
+set.seed(123)
+
+# Pick a stable row identifier to label panels.
+# Prefer pt_id if present; else use row number.
+id_col <- if ("pt_id" %in% names(test_gam)) "pt_id" else NULL
+
+rows <- test_gam |>
+  slice_sample(n = 10)
+
+plots <- purrr::map(seq_len(nrow(rows)), function(i) {
+  row_df <- rows[i, , drop = FALSE]
+  row_id <- if (!is.null(id_col)) as.character(row_df[[id_col]][[1]]) else as.character(i)
+
+  plot_one_gam_qc(
+    row_df = row_df,
+    row_id = row_id,
+    column_prefix = "vcf_tree_",
+    reference_time_col = "burn_year",
+    k = 8,
+    gam_method = "REML"
+  )
+})
+
+# Print plots (in RStudio this will show them one by one)
+for (p in plots) print(p)
+
+# Optional: arrange in a grid if you have patchwork installed
+# install.packages("patchwork")
+# library(patchwork)
+# wrap_plots(plots, ncol = 1)
+
+test_gam$gam_pre6_fit
+
+
+plot_one_gam_qc(
+  row_df = test_gam |> filter(pt_id == "r10632_c6397"),
+  row_id = "r10632_c6397",
+  column_prefix = "rap_tree_",
+  reference_time_col = "burn_year",
+  k = 8,
+  gam_method = "REML"
+)
+
+```
+# New QAQC
+```{r}
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(purrr)
+  library(ggplot2)
+  library(mgcv)
+})
+
+extract_year <- function(x, prefix) {
+  as.integer(sub(paste0("^", prefix), "", x))
+}
+
+pick_gam_tag_for_base <- function(nm, base_prefix_tag) {
+  endings <- c(
+    "pre6_fit", "post_min", "post_min_year", "yrs_ref_to_post_min",
+    "diff_pre6_to_post_min", "fit_ref_p10", "fit_ref_p15", "fit_ref_p20"
+  )
+  rx <- paste0("^gam_(", base_prefix_tag, ".*)_(", paste(endings, collapse = "|"), ")$")
+  hits <- grep(rx, nm, value = TRUE)
+  if (length(hits) == 0) return(NA_character_)
+  tags <- sub(rx, "\\1", hits)
+  names(sort(table(tags), decreasing = TRUE))[1]
+}
+
+metric_col_map <- function(nm, gam_tag) {
+  endings <- c(
+    "pre6_fit", "post_min", "post_min_year", "yrs_ref_to_post_min",
+    "diff_pre6_to_post_min", "fit_ref_p10", "fit_ref_p15", "fit_ref_p20"
+  )
+  out <- setNames(rep(NA_character_, length(endings)), endings)
+  for (e in endings) {
+    col <- paste0("gam_", gam_tag, "_", e)
+    if (col %in% nm) out[e] <- col
+  }
+  out
+}
+
+refit_gam_one_prefix <- function(row_df,
+                                 column_prefix,
+                                 reference_time_col,
+                                 k = 8,
+                                 gam_method = "REML") {
+  stopifnot(nrow(row_df) == 1)
+
+  ts_cols <- grep(paste0("^", column_prefix, "\\d{4}$"), names(row_df), value = TRUE)
+  if (length(ts_cols) == 0) stop("No time-series columns found for prefix: ", column_prefix)
+
+  ref <- as.integer(row_df[[reference_time_col]][[1]])
+  if (is.na(ref)) stop("Reference year is NA for this row.")
+
+  obs <- tibble::tibble(
+    year = extract_year(ts_cols, column_prefix),
+    value = as.numeric(row_df[1, ts_cols, drop = TRUE])
+  ) |>
+    arrange(year) |>
+    filter(!is.na(value)) |>
+    mutate(t = year - ref)
+
+  if (nrow(obs) < 3) stop("Too few non-NA observations to fit GAM for this row/prefix: ", column_prefix)
+
+  t_obs <- sort(unique(obs$t))
+  k_eff <- min(as.integer(k), max(3L, length(t_obs) - 1L))
+
+  g <- mgcv::gam(value ~ s(t, k = k_eff), data = obs, method = gam_method)
+
+  pred <- tibble::tibble(year = sort(unique(obs$year))) |>
+    mutate(
+      t = year - ref,
+      gam_fit = as.numeric(predict(g, newdata = data.frame(t = t), type = "response"))
+    )
+
+  list(ref_year = ref, obs = obs, pred = pred)
+}
+
+pull_prev_metric_points <- function(row_df, ref_year, gam_tag) {
+  nm <- names(row_df)
+  if (is.na(gam_tag)) {
+    return(tibble::tibble(label = character(0), year = numeric(0), value = numeric(0)))
+  }
+
+  cols <- metric_col_map(nm, gam_tag)
+
+  pull_num <- function(col) {
+    if (is.na(col) || !(col %in% nm)) return(NA_real_)
+    as.numeric(row_df[[col]][[1]])
+  }
+
+  pre6 <- pull_num(cols["pre6_fit"])
+  post_min <- pull_num(cols["post_min"])
+  post_min_year <- pull_num(cols["post_min_year"])
+  fit_p10 <- pull_num(cols["fit_ref_p10"])
+  fit_p15 <- pull_num(cols["fit_ref_p15"])
+  fit_p20 <- pull_num(cols["fit_ref_p20"])
+
+  tibble::tibble(
+    label = c("pre6", "post_min", "ref+10", "ref+15", "ref+20"),
+    year  = c(ref_year - 6L, post_min_year, ref_year + 10L, ref_year + 15L, ref_year + 20L),
+    value = c(pre6, post_min, fit_p10, fit_p15, fit_p20)
+  ) |>
+    filter(!is.na(year) & !is.na(value))
+}
+
+# ---- MAIN: overlay or facet multiple prefixes ----
+plot_multi_gam_qc <- function(df,
+                             sample_id,
+                             id_col = "pt_id",
+                             column_prefixes,
+                             colors,
+                             reference_time_col,
+                             k = 8,
+                             gam_method = "REML",
+                             gam_tags = NULL,
+                             facet = FALSE) {
+  stopifnot(length(column_prefixes) >= 1)
+  stopifnot(length(colors) == length(column_prefixes))
+
+  if (!id_col %in% names(df)) stop("id_col not found in df: ", id_col)
+  if (!reference_time_col %in% names(df)) stop("reference_time_col not found in df: ", reference_time_col)
+
+  row_df <- df[df[[id_col]] == sample_id, , drop = FALSE]
+  if (nrow(row_df) != 1) stop("Expected exactly 1 row for sample_id; got: ", nrow(row_df))
+
+  base_tags <- sub("_$", "", column_prefixes)
+  series_names <- base_tags
+  nm <- names(row_df)
+
+  if (!is.null(gam_tags)) {
+    stopifnot(length(gam_tags) == length(column_prefixes))
+    used_gam_tags <- gam_tags
+  } else {
+    used_gam_tags <- purrr::map_chr(base_tags, ~ pick_gam_tag_for_base(nm, .x))
+  }
+
+  pieces <- purrr::pmap(
+    list(column_prefixes, series_names, colors, used_gam_tags),
+    function(col_pref, series, col, gam_tag) {
+      fit <- refit_gam_one_prefix(
+        row_df = row_df,
+        column_prefix = col_pref,
+        reference_time_col = reference_time_col,
+        k = k,
+        gam_method = gam_method
+      )
+
+      obs_df <- fit$obs |>
+        mutate(series = series)
+
+      pred_df <- fit$pred |>
+        mutate(series = series)
+
+      dia_df <- pull_prev_metric_points(
+        row_df = row_df,
+        ref_year = fit$ref_year,
+        gam_tag = gam_tag
+      ) |>
+        mutate(series = series)
+
+      list(
+        ref_year = fit$ref_year,
+        obs = obs_df,
+        pred = pred_df,
+        diamonds = dia_df,
+        series = series,
+        color = col,
+        gam_tag = gam_tag
+      )
+    }
+  )
+
+  ref_lines <- purrr::map_dfr(pieces, ~ tibble::tibble(series = .x$series, ref_year = .x$ref_year))
+  obs_all <- purrr::map_dfr(pieces, "obs")
+  pred_all <- purrr::map_dfr(pieces, "pred")
+  dia_all <- purrr::map_dfr(pieces, "diamonds")
+
+  color_map <- setNames(colors, series_names)
+
+  tag_txt <- purrr::map_chr(pieces, ~ paste0(.x$series, " diamonds=", ifelse(is.na(.x$gam_tag), "none", .x$gam_tag)))
+  subtitle_txt <- paste(tag_txt, collapse = " | ")
+
+  p <- ggplot() +
+    # raw TS (colored by series)
+    geom_point(
+      data = obs_all,
+      aes(x = year, y = value, color = series),
+      alpha = 0.7
+    ) +
+    # newly refit GAM curve (colored by series)
+    geom_line(
+      data = pred_all,
+      aes(x = year, y = gam_fit, color = series),
+      linewidth = 0.8
+    ) +
+    # reference-year dashed line per series (colored)
+    geom_vline(
+      data = ref_lines,
+      aes(xintercept = ref_year, color = series),
+      linetype = "dashed"
+    ) +
+    # previously-generated metric points as diamonds (shape 18), colored by series
+    geom_point(
+      data = dia_all,
+      aes(x = year, y = value, color = series),
+      shape = 18,
+      size = 3.0
+    ) +
+    geom_text(
+      data = dia_all,
+      aes(x = year, y = value, label = label, color = series),
+      nudge_y = -1.0,
+      size = 3,
+      check_overlap = TRUE
+    ) +
+    scale_color_manual(values = color_map) +
+    labs(
+      title = paste0("GAM QC overlay: ", id_col, " = ", sample_id),
+      subtitle = subtitle_txt,
+      x = "Year",
+      y = "Value"
+    ) +
+    theme_minimal(base_size = 11)
+
+  if (isTRUE(facet)) {
+    p <- p + facet_wrap(~ series, scales = "free_y")
+  }
+
+  p
+}
+
+# ---- Examples ----
+# 1) Overlay different variables (2 raw series + 2 GAM fits + 2 diamond sets)
+plot_multi_gam_qc(
+  df = test_gam,
+  sample_id = test_gam$pt_id[1],
+  id_col = "pt_id",
+  column_prefixes = c("rap_tree_", "vcf_tree_"),
+  colors = c("steelblue", "darkorange"),
+  reference_time_col = "burn_year",
+  k = 8,
+  gam_method = "REML",
+  facet = FALSE
+)
+#
+#2) Same, but faceted (cleanest when units differ)
+plot_multi_gam_qc(
+  df = test_gam,
+  sample_id = test_gam$pt_id[1],
+  id_col = "pt_id",
+  column_prefixes = c("rap_tree_", "vcf_tree_"),
+  colors = c("steelblue", "darkorange"),
+  reference_time_col = "burn_year",
+  k = 8,
+  gam_method = "REML",
+  facet = TRUE
+)
+
+
+
+
+
+for(i in 1:10) {
+  p <- plot_multi_gam_qc(
+    df = test_gam,
+    sample_id = test_gam$pt_id[i],
+    id_col = "pt_id",
+    column_prefixes = c("rap_tree_", "vcf_tree_"),
+    colors = c("steelblue", "darkorange"),
+    reference_time_col = "burn_year",
+    k = 8,
+    gam_method = "REML",
+    facet = FALSE
+  )
+  print(p)
+}
+
+
+t <- test_gam |> slice_head(n = 3) |> select(pt_id, dplyr::starts_with("rap_"), dplyr::starts_with("gam_"))
+
+
+```
+
+
+# Deal with response data (VCF & RAP) - OLD (avgs, etc)
+
+
+```{r}
+
+compute_forest_response_offset <- function(dt, offsets, new_col_name, prefix = "rap_TRE_") {
+  # Ensure dt is a data.table
+  dt <- as.data.table(copy(dt))
+  dt[, id__temp := .I]  # Create unique ID for merge
+
+  # Melt relevant columns
+  melt_cols <- grep(paste0("^", prefix, "\\d{4}$"), names(dt), value = TRUE)
+
+  long_dt <- melt(
+    dt,
+    id.vars = c("id__temp", "mock_burn_year"),
+    measure.vars = melt_cols,
+    variable.name = "year_col",
+    value.name = "value"
+  )
+
+  # Extract year from column name
+  long_dt[, year := as.integer(sub(prefix, "", year_col))]
+
+  # Calculate offset from burn year
+  long_dt[, offset := year - mock_burn_year]
+
+  # Only keep rows with desired offsets
+  long_dt <- long_dt[offset %in% offsets]
+
+  # Now, summarize carefully
+  summary_dt <- long_dt[, .(
+    n_available = sum(!is.na(value)),
+    n_expected = length(offsets),
+    avg = if (sum(!is.na(value)) == length(offsets)) mean(value, na.rm = TRUE) else NA_real_
+  ), by = id__temp]
+
+  # Keep only id and avg
+  summary_dt <- summary_dt[, .(id__temp, avg)]
+
+  # Merge back
+  dt <- merge(dt, summary_dt, by = "id__temp", all.x = TRUE)
+  setnames(dt, "avg", new_col_name)
+  dt[, id__temp := NULL]
+
+  return(as_tibble(dt))
+}
+
+
+#' Compute Post-Fire Forest Trend Slope from forest cover Time Series
+#'
+#' This function calculates the slope and R-squared value of a thiel-sen regression
+#' fitted to post-fire remote sensing time series data (e.g., RAP TRE) over
+#' specified year offsets. The output includes the computed slope and R² for each
+#' observation where sufficient data is available.
+#'
+#' @param dt A `data.table` or `data.frame` containing RAP data and a `mock_burn_year` column.
+#' @param offsets Integer vector indicating year offsets from `mock_burn_year` to include in the slope calculation. Defaults to `2:10`.
+#' @param req_yrs Integer indicating the minimum number of non-NA observations required to fit a regression. Defaults to `5`.
+#' @param new_col_name Name of the column to store computed slope values. Defaults to `"post_fire_rap_slope"`.
+#' @param r2_col_name Name of the column to store R-squared values. Defaults to `"post_fire_rap_r2"`.
+#' @param prefix Prefix of column names containing yearly response values. These should be named like `prefixYYYY` (e.g., `"rap_TRE_2012"`).
+#'
+#' @return A `tibble` with the original data and two additional columns containing slope and R-squared values.
+#'
+#' @details
+#' The function internally melts the  time series into long format, filters values
+#' by offset from the `mock_burn_year`, and fits a thiel-sen model (`value ~ offset`) for each
+#' row. If the number of non-NA years is below `req_yrs`, NA values are returned.
+#'
+#' @importFrom data.table as.data.table copy melt setnames
+#' @importFrom stats lm coef summary
+#' @importFrom tibble as_tibble
+#'
+#' @examples
+#' \dontrun{
+#' dt <- data.table(
+#'   burn_year = c(2010, 2012),
+#'   rap_TRE_2011 = c(0.5, 0.6),
+#'   rap_TRE_2012 = c(0.6, 0.65),
+#'   rap_TRE_2013 = c(0.7, NA),
+#'   rap_TRE_2014 = c(0.8, 0.75)
+#' )
+#' compute_post_fire_forest_slope_dt(dt, offsets = 1:4, req_yrs = 3)
+#' }
+#'
+#' @export
+compute_post_fire_forest_slope_dt <- function(
+  dt,
+  offsets = 2:10,
+  req_yrs = 5,
+  new_col_name = "post_fire_rap_slope",
+  r2_col_name = "post_fire_rap_r2",
+  prefix = "rap_TRE_"
+) {
+  dt <- as.data.table(copy(dt))
+  dt[, id__temp := .I]  # Unique ID
+
+  # Melt RAP TRE columns
+  melt_cols <- grep(paste0("^", prefix, "\\d{4}$"), names(dt), value = TRUE)
+
+  long_dt <- melt(
+    dt,
+    id.vars = c("id__temp", "mock_burn_year"),
+    measure.vars = melt_cols,
+    variable.name = "year_col",
+    value.name = "value"
+  )
+
+  # Extract year
+  long_dt[, year := as.integer(sub(prefix, "", year_col))]
+
+  # Calculate offset from burn year
+  long_dt[, offset := year - mock_burn_year]
+
+  # Keep only desired offsets
+  long_dt <- long_dt[offset %in% offsets]
+
+  # Group and compute slope + R2 if enough data
+  slope_dt <- long_dt[
+    !is.na(value),
+    {
+      if (.N >= req_yrs) {
+        # model <- lm(value ~ offset, data = .SD) ####################SWITCH TO USE THEIL-SEN REGRESSION
+        # list(
+        #   slope = coef(model)[["offset"]],
+        #   r2 = summary(model)$r.squared
+        # )
+        model <- mblm::mblm(value ~ offset, data = .SD, repeated = FALSE)
+        preds <- predict(model)
+        r2 <- 1 - sum((.SD$value - preds)^2, na.rm = TRUE) / sum((.SD$value - mean(.SD$value, na.rm = TRUE))^2, na.rm = TRUE)
+
+        list(
+          slope = coef(model)[["offset"]],
+          r2 = r2
+        )
+      } else {
+        list(
+          slope = NA_real_,
+          r2 = NA_real_
+        )
+      }
+    },
+    by = id__temp
+  ]
+
+  # Merge results back
+  dt <- merge(dt, slope_dt, by = "id__temp", all.x = TRUE)
+  setnames(dt, c("slope", "r2"), c(new_col_name, r2_col_name))
+  dt[, id__temp := NULL]
+
+  return(as_tibble(dt))
+}
+
+compute_avgs <- function(dats, prefix) {
+  dats <- dats |>
+  compute_forest_response_offset(offsets = 9:11,
+                                 new_col_name = glue("avg_{prefix}10_yr_post_fire"),
+                                 prefix = prefix) |>
+  compute_forest_response_offset(offsets = 14:16,
+                                 new_col_name = glue("avg_{prefix}15_yr_post_fire"),
+                                 prefix = prefix) |>
+  compute_forest_response_offset(offsets = 19:21,
+                                 new_col_name = glue("avg_{prefix}20_yr_post_fire"),
+                                 prefix = prefix) |>
+  compute_forest_response_offset(offsets = -7:-5,
+                                 new_col_name = glue("avg_{prefix}6_yr_pre_fire"),
+                                 prefix = prefix) |>
+  compute_forest_response_offset(offsets = 2:4, 
+                                 new_col_name = glue("avg_{prefix}3_yr_post_fire"),  # USE 3 YRS POST FIRE SO THAT WINDOW CAPTURES 2-4, missing most delayed mortality
+                                 prefix = prefix)
+  return(dats)
+}
+
+compute_response_differences_recovery <- function(dats, prefix) {
+  dats <- dats |>
+    mutate(
+      # n6 -> 3 year difference
+      !!sym(glue("post_fire_{prefix}difference_n6_3_yr")) :=
+        !!sym(glue("avg_{prefix}3_yr_post_fire")) -
+        !!sym(glue("avg_{prefix}6_yr_pre_fire")),
+
+      # increase from 3 -> 10 years post-fire
+      !!sym(glue("post_fire_{prefix}increase_3_10_yr")) :=
+        !!sym(glue("avg_{prefix}10_yr_post_fire")) -
+        !!sym(glue("avg_{prefix}3_yr_post_fire")),
+
+      # increase from 3 -> 15 years post-fire
+      !!sym(glue("post_fire_{prefix}increase_3_15_yr")) :=
+        !!sym(glue("avg_{prefix}15_yr_post_fire")) -
+        !!sym(glue("avg_{prefix}3_yr_post_fire")),
+      
+      # increase from 3 -> 20 years post-fire
+      !!sym(glue("post_fire_{prefix}increase_3_20_yr")) :=
+        !!sym(glue("avg_{prefix}20_yr_post_fire")) -
+        !!sym(glue("avg_{prefix}3_yr_post_fire")),
+
+      # percent recovery (3–10yr)
+      !!sym(glue("post_fire_{prefix}perc_recovery_n6_3_10_yr")) :=
+        (!!sym(glue("post_fire_{prefix}increase_3_10_yr")) /
+        (-1 * !!sym(glue("post_fire_{prefix}difference_n6_3_yr")))) * 100,
+
+      # percent recovery (3–15yr)
+      !!sym(glue("post_fire_{prefix}perc_recovery_n6_3_15_yr")) :=
+        (!!sym(glue("post_fire_{prefix}increase_3_15_yr")) /
+        (-1 * !!sym(glue("post_fire_{prefix}difference_n6_3_yr")))) * 100,
+      
+      # percent recovery (3–20yr)
+      !!sym(glue("post_fire_{prefix}perc_recovery_n6_3_20_yr")) :=
+        (!!sym(glue("post_fire_{prefix}increase_3_20_yr")) /
+        (-1 * !!sym(glue("post_fire_{prefix}difference_n6_3_yr")))) * 100
+    )
+  return(dats)
+}  
+
+# Allow for up to 1 missing year for each slope computation
+compute_response_slopes <- function(dats, prefix) {
+  dats <- dats |>
+    compute_post_fire_forest_slope_dt(
+      offsets = 3:10,
+      req_yrs = 7,
+      new_col_name = glue("post_fire_{prefix}slope_3_10_yrs"),
+      r2_col_name = glue("post_fire_{prefix}3_10_yrs_r2"),
+      prefix = prefix) |>
+    compute_post_fire_forest_slope_dt(
+      offsets = 3:15,
+      req_yrs = 12,
+      new_col_name = glue("post_fire_{prefix}slope_3_15_yrs"),
+      r2_col_name = glue("post_fire_{prefix}3_15_yrs_r2"),
+      prefix = prefix) |>
+    compute_post_fire_forest_slope_dt(
+      offsets = 3:20,
+      req_yrs = 17,
+      new_col_name = glue("post_fire_{prefix}slope_3_20_yrs"),
+      r2_col_name = glue("post_fire_{prefix}3_20_yrs_r2"),
+      prefix = prefix)
+  return(dats)
+}
+
+
+# Use functions
+tic() #161 seconds for 36k row dataset
+dats_response <- dats_simple_added |>
+  compute_avgs(prefix = "rap_tree_") |>
+  compute_avgs(prefix = "vcf_tree_") |>
+  compute_response_differences_recovery(prefix = "rap_tree_")  |>
+  compute_response_differences_recovery(prefix = "vcf_tree_") |>
+  compute_response_slopes(prefix = "rap_tree_") |>
+  compute_response_slopes(prefix = "vcf_tree_")
+toc()
+
+
+
+dats_response <- dats_simple_added
+
+
+
+
+```
+
+
+
+# Clean and write short data
+
+```{r}
+dats_clean <- dats_response |>
+  mutate(uniqueID = row_number()) |> # apply a unique ID to be sure it has one
+  remove_columns_with_prefix(prefixes = c("cbi", "distance_forest_after"))
+
+
+arrow::write_parquet(x = dats_clean, sink = here(dir_derived, "all_dats_cleaned.parquet"))
+#dats_clean <- read_parquet(here(dir_derived, "test_dats_cleaned.parquet"))
+
+
+
+# Clean up unnecessary columns
+dats_short <- dats_clean |>
+  remove_columns_with_prefix(prefixes = c("^pdsi_summer_\\d{4}$",
+                                          "^pdsi_annual_\\d{4}$",
+                                          "^hd_fingerprint_\\d{4}$",
+                                          "^biotic_\\d{4}$",
+                                          "rap_tree",
+                                          "vcf_tree"))
+
+
+arrow::write_parquet(x = dats_short, sink = here(dir_derived, "test_dats_short.parquet"))
+
+
+
+# Create gpkg for points
+
+gpkg <- dats_short |>
+  select(uniqueID, lat, long, ecoregion) |>
+  st_as_sf(
+    coords = c("long", "lat"),
+    crs = 4326,
+    remove = FALSE
+  )
+
+sf::st_write(gpkg, here(dir_derived, "test_dats_sf.gpkg"), append = FALSE)
+
+```
+
+
+# Long data
+```{r}
+dats_long <- dats_clean |>
+  pivot_longer(
+    cols = matches("_(19|20)\\d{2}$"),        # ends with a 4-digit year
+    names_to = c(".value", "year"),           # .value = "pdsi_summer", "vpd_fall", ...
+    names_pattern = "(.*)_(\\d{4})"           # capture "pdsi_summer" and the year
+  ) |>
+  mutate(year = as.integer(year)) |>
+  mutate(year_from_fire_index = year - mock_burn_year,
+         fire_timeframe = ifelse(year_from_fire_index < 0, "before_burn", ifelse(year_from_fire_index > 0, "after_burn", "year_of_burn")),
+         treated = ifelse(year_from_fire_index >= 0 & fire == 1, 1, 0))
+
+tic()
+arrow::write_parquet(x = dats_long, sink = here(dir_derived, "all_dats_long.parquet"))
+toc()
+
+```
+
+
+
+
+
+<button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne" >Click to see Session Information</button><div id="collapseOne" class="accordion-collapse collapse"><div>
+
+```{r sessionInfo}
+sessionInfo()
+```
+
+</div></div>

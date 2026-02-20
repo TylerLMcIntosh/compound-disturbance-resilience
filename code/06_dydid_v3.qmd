@@ -66,7 +66,7 @@ install_load_packages(c(
   "ggfixest"))
 
 dir_figs <- here::here('figs')
-dir_derived <- here::here('data', 'derived')
+dir_derived <- here::here('data', 'derived', 'GEE_Exports_resilience_20260218')
 dir_raw <- here::here('data', 'raw')
 dir_manual <- here::here('data', 'manual')
 dir_ensure(c(dir_figs,
@@ -84,79 +84,237 @@ set.seed(seed)
 
 ```{r}
   
-dats_long <- arrow::read_parquet(here(dir_derived, "test_dats_long.parquet"))
+dats_long <- arrow::read_parquet(here(dir_derived, "all_dats_long.parquet"))
 
 dats_long <- dats_long |>
-  select(uniqueID, year, rap_tree, vcf_tree, lat, long, ecoregion, )
+  select(uniqueID, year, rap_tree, vcf_tree, lat, long, ecoregion_short_name, biotic_5_yrs_prior_sum, biotic, pdsi_annual, pdsi_annual_5_yrs_prior_sum, fire, treated)
 
+
+# Set cohorts
+dats_long_did <- get.cohort(dats_long, D = "treated",
+                                 index = c("uniqueID", "year"),
+                                 start0 = TRUE)
+dats_long_did[which(is.na(dats_long_did$FirstTreat)),"FirstTreat"] <- 1000 
+
+
+set_cd_groups <- function(df, b_threshold, d_threshold) {
+  df_new <- df |>
+    mutate(cd_group = case_when(#biotic_5_yrs_prior_sum < b_threshold & 
+                                  fire == 1 & 
+                                  pdsi_annual_5_yrs_prior_sum > d_threshold ~ "f",
+                                #biotic_5_yrs_prior_sum >= b_threshold & 
+                                  fire == 1 & 
+                                  pdsi_annual_5_yrs_prior_sum > d_threshold ~ "bf",
+                                #biotic_5_yrs_prior_sum < b_threshold &
+                                  fire == 1 & 
+                                  pdsi_annual_5_yrs_prior_sum <= d_threshold ~ "df",
+                                #biotic_5_yrs_prior_sum >= b_threshold &
+                                  fire == 1 & 
+                                  pdsi_annual_5_yrs_prior_sum <= d_threshold ~ "bdf",
+                                TRUE ~ NA))
+  return(df_new)
+}
+
+dats_use <- set_cd_groups(df = dats_long_did, b_threshold = 10, d_threshold = -10)
+
+unique(dats_use$cd_group)
+hist(dats_long$pdsi_annual_5_yrs_after_sum)
 
 ```
+
 
 # Functions to set treatment cohorts for different treatments
 ```{r}
 
-# We don't have any always-treated units, so we don't need to worry about the Goodman-Bacon decomposition
 
 
-x <- dats_long |> filter(biotic_)
+
+```
 
 
-dmini <- dats_long |>
-  slice_sample(n = 20000) |>
-  select(uniqueID, year, rap_tree, vcf_tree, lat, long, ecoregion, biotic_5_yrs_prior_sum, pdsi_annual_5_yrs_prior_sum)
 
-dmini <- dmini |>
-  mutate(biotic_before_10t = case_when(biotic_5_yrs_prior_sum >= 10 ~ 1,
-                                  biotic_5_yrs_prior_sum <= 10 ~ 0),
-         pdsi_before_n1000t = case_when(pdsi_annual_5_yrs_prior_sum <= -1000 ~ 1,
-                                 pdsi_annual_5_yrs_prior_sum > -1000 ~ 0))  
+# Test spatial cutoffs - LATER
+
+```{}
 
 
-# A wrapper for fect::get.cohort for use when dealing with multiple treatments
-set_cohorts_for_trt <- function(df,
-                                treatment_col, #string
-                                prefix,
-                                out_of_bounds_value = 1000,
-                                remove_nas = TRUE,
-                                index = c("uniqueID", "year"),
-                                start0 = TRUE,
-                                drop.always.treat = FALSE) {
+```
+
+
+# Wrapper functions
+```{r}
+
+# This function runs a feols analysis on dataframe df using ref_period.
+# It will compute the model using all 0 values in trt_col (treatment column) as the control and all 1 values in trt_col with grp in subgrp_col as the estimating group 
+feols_trt_subg <- function(subgrp_col,
+                              grp,
+                              trt_col = "fire",
+                              df,
+                              ...) {
+  # Convert string to symbol
+  col_sym <- sym(subgrp_col)
+  trt_col_sym <- sym(trt_col)
   
-  if(remove_nas) {
-    df <- df |>
-      filter(!is.na(.data[[treatment_col]]))
-  }
+  df_never_trt <- df |>
+    filter(!!trt_col_sym == 0)
   
+  df_subset <- df |>
+    filter(!!trt_col_sym == 1 & !!col_sym == grp)
   
-  df_new <- fect::get.cohort(df,
-                       D = treatment_col,
-                       index = index,
-                       start0 = start0,
-                       drop.always.treat = drop.always.treat
-                       )
+  df_use <- bind_rows(df_never_trt, df_subset)
+
+  model <- feols(
+    data = df_use,
+    ...
+  )
   
-  df_new[which(is.na(df_new$FirstTreat)),"FirstTreat"] <- out_of_bounds_value # Fill NAs with out of bounds value
+  n_treated_subgroup_units <- length(unique(df_subset$uniqueID))
+  n_never_treated_units <- length(unique(df_never_trt$uniqueID))
+  attr(model, "n_treated_subgroup_units") <- n_treated_subgroup_units
+  attr(model, "n_never_treated_units") <- n_never_treated_units
   
-  df_new <- df_new |>
-    rename_with(
-      ~ paste0(prefix, "_", .x),
-      c(FirstTreat, Cohort, Time_to_Treatment)
-    )
-  
-  return(df_new)
+  return(model)
 }
 
 
-test <- set_cohorts_for_trt(df = dmini,
-                            treatment_col = "biotic_before_10t",
-                            prefix = "BF",
-                            remove_nas = TRUE,
-                            drop.always.treat = TRUE)
+feols_multi_trt <- function(subgrp_col,
+                            df,
+                            groups = NULL,
+                            trt_col,
+                            ...) {
+
+  if (is.null(groups)) {
+    groups <- sort(unique(df[[subgrp_col]]))
+    groups <- groups[!is.na(groups)]
+  }
+
+  models <- purrr::map(groups, \(g) {
+    feols_trt_subg(subgrp_col = subgrp_col, grp = g, df = df, trt_col = trt_col, ...)
+  })
+
+  names(models) <- groups
+
+  models
+}
+
+
+# Model list and model_labels should be the same length!
+# If item in model_list contains attribute "n_treated_subgroup_units", the attribute will be appended to the model name in the legend
+
+plot_sunab_models <- function(model_list,
+                              model_labels = NULL,
+                              title = "Dynamic-DiD Event-Study Estimates from Multiple Models",
+                              ribbon_type = "ribbon", #either "ribbon" or "dashed",
+                              caption = "95% confidence intervals shown;\nInteraction-weighted (Sun-Abraham) estimates used;\nConley standard errors with 125km cutoff, 20km pixel",
+                              baseline = -1,
+                              xlim = c(-10, 20),
+                              ylim = c(-50, 50)
+                              ) {
+  
+  # If no labels provided, auto-label as Model 1, Model 2, etc.
+  if (is.null(model_labels)) {
+    model_labels <- paste0("Model ", seq_along(model_list))
+  }
+  
+  # Extract coefficients for each model and attach model label
+  plot_data <- map2_dfr(model_list, model_labels, function(model, label) {
+    df <- as.data.frame(as.matrix(model$coeftable))
+    df$term <- rownames(model$coeftable)
+    
+    has_attr <- function(x, attr_name) {
+      !is.null(attr(x, attr_name))
+    }
+    
+    if (has_attr(model, "n_treated_subgroup_units")) {
+      label <- glue("{label} (N = {attr(model, 'n_treated_subgroup_units')})")
+    }
+    
+    df %>%
+      filter(str_detect(term, "^year::")) %>%
+      mutate(
+        Time = as.numeric(str_extract(term, "-?\\d+")),
+        CI_upper = Estimate + 1.96 * `Std. Error`,
+        CI_lower = Estimate - 1.96 * `Std. Error`,
+        Model = label
+      )
+  })
+
+  # Plot
+  if(ribbon_type == "ribbon") {
+    ggplot(plot_data, aes(x = Time, y = Estimate, color = Model, fill = Model)) +
+      geom_line(linewidth = 1) +
+      geom_point(size = 2) +
+      geom_ribbon(aes(ymin = CI_lower, ymax = CI_upper), alpha = 0.2, color = NA) +
+      geom_vline(xintercept = baseline, linetype = "dashed", color = "gray40") +
+      geom_hline(yintercept = 0, color = "black") +
+      labs(
+        x = "Event Time",
+        y = "Treatment Effect",
+        title = title,
+        caption = caption
+      ) +
+      theme_minimal(base_size = 13) +
+      theme(legend.position = "bottom")  +
+      xlim(xlim)+
+      ylim(ylim)
+  } else {
+    ggplot(plot_data, aes(x = Time, y = Estimate, color = Model)) +
+      geom_line(linewidth = 1) +
+      geom_point(size = 2) +
+      
+      # CI as dotted lines instead of ribbon
+      geom_line(aes(y = CI_upper), linetype = "dotted", linewidth = 0.8) +
+      geom_line(aes(y = CI_lower), linetype = "dotted", linewidth = 0.8) +
+      
+      geom_vline(xintercept = baseline, linetype = "dashed", color = "gray40") +
+      geom_hline(yintercept = 0, color = "black") +
+      labs(
+        x = "Event Time",
+        y = "Treatment Effect",
+        title = title,
+        caption = caption
+      ) +
+      theme_minimal(base_size = 13) +
+      theme(legend.position = "bottom") +
+      xlim(xlim) +
+      ylim(ylim)
+  }
+
+}
 
 
 
+```
 
 
+# Run models
+```{r}
+
+dt <- dats_use |> slice_sample(n = 1000000)
+
+idb_models <- feols_multi_trt(subgrp_col = "cd_group",
+                              df = dt,
+                              groups = NULL,
+                              trt_col = "fire",
+                              #fml = rap_tree ~ biotic + pdsi_annual + sunab(FirstTreat, year, ref.p = -6) | uniqueID + year,
+                              fml = rap_tree ~ pdsi_annual + sunab(FirstTreat, year, ref.p = -6) | uniqueID + year,
+                              mem.clean = TRUE,
+                              lean = FALSE,
+                              vcov = fixest::vcov_conley(lat = "lat",
+                                                         lon = "long",
+                                                         cutoff = 125,
+                                                         pixel = 20,
+                                                         distance = "triangular"
+                                                         )
+                              )
+
+
+
+plot_sunab_models(idb_models,
+                  names(idb_models),
+                  baseline = -6,
+                  xlim = c(-10, 20),
+                  ylim = c(-50, 10))
 
 
 ```

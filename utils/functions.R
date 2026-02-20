@@ -152,8 +152,46 @@ access_data_epa_l3_ecoregions_vsi <- function() {
 #' \dontrun{
 #' df <- read_matching_csvs_from_gdrive("GEE_Exports", "2023")
 #' }
+# 
+# read_matching_csvs_from_gdrive <- function(drive_folder, pattern, force_cols = NA, force_types = NA) {
+#   # List all files in the folder
+#   folder_contents <- googledrive::drive_ls(path = drive_folder)
+#   
+#   # Filter files by name pattern
+#   matching_files <- folder_contents |>
+#     dplyr::filter(grepl(pattern, name))
+#   
+#   if (nrow(matching_files) == 0) {
+#     stop("No files found in folder '", drive_folder, "' matching pattern: ", pattern)
+#   } else {
+#     message("Found ", nrow(matching_files), " matching file(s).")
+#   }
+#   
+#   # Safely read each file, collect into a list
+#   data_list <- lapply(matching_files$name, function(fname) {
+#     tryCatch({
+#       read_csv_from_gdrive_v2(drive_folder, fname)
+#     }, error = function(e) {
+#       warning("Failed to read file: ", fname, " - ", e$message)
+#       NULL
+#     })
+#   })
+#   
+#   # Filter out any NULLs from failed reads
+#   data_list <- Filter(Negate(is.null), data_list)
+#   
+#   if(!is.na(force_cols)) {
+#     
+#     
+#   }
+#   
+#   # Combine safely: dplyr::bind_rows fills missing columns with NA
+#   combined_df <- dplyr::bind_rows(data_list)
+#   
+#   return(combined_df)
+# }
 
-read_matching_csvs_from_gdrive <- function(drive_folder, pattern) {
+read_matching_csvs_from_gdrive <- function(drive_folder, pattern, force_cols = NA, force_types = NA) {
   # List all files in the folder
   folder_contents <- googledrive::drive_ls(path = drive_folder)
   
@@ -180,11 +218,56 @@ read_matching_csvs_from_gdrive <- function(drive_folder, pattern) {
   # Filter out any NULLs from failed reads
   data_list <- Filter(Negate(is.null), data_list)
   
+  if (!all(is.na(force_cols))) {
+    if (all(is.na(force_types))) {
+      stop("If 'force_cols' is provided, you must also provide 'force_types'.")
+    }
+    if (!is.character(force_cols) || !is.character(force_types)) {
+      stop("'force_cols' and 'force_types' must both be character vectors.")
+    }
+    if (length(force_cols) != length(force_types)) {
+      stop("'force_cols' and 'force_types' must be the same length.")
+    }
+    
+    coerce_one <- function(df, col, typ) {
+      # ensure column exists so bind_rows doesn't surprise you later
+      if (!col %in% names(df)) df[[col]] <- NA
+      
+      typ <- tolower(typ)
+      
+      if (typ == "character") {
+        df[[col]] <- as.character(df[[col]])
+      } else if (typ %in% c("double", "numeric")) {
+        df[[col]] <- suppressWarnings(as.numeric(df[[col]]))
+      } else if (typ == "integer") {
+        df[[col]] <- suppressWarnings(as.integer(df[[col]]))
+      } else if (typ == "logical") {
+        df[[col]] <- as.logical(df[[col]])
+      } else if (typ == "date") {
+        df[[col]] <- as.Date(df[[col]])
+      } else if (typ == "posixct") {
+        df[[col]] <- as.POSIXct(df[[col]])
+      } else {
+        stop("Unsupported force_types value: '", typ, "' for column '", col, "'.")
+      }
+      
+      df
+    }
+    
+    data_list <- lapply(data_list, function(df) {
+      for (i in seq_along(force_cols)) {
+        df <- coerce_one(df, force_cols[[i]], force_types[[i]])
+      }
+      df
+    })
+  }
+  
   # Combine safely: dplyr::bind_rows fills missing columns with NA
   combined_df <- dplyr::bind_rows(data_list)
   
   return(combined_df)
 }
+
 
 
 #' Read a CSV File from Google Drive

@@ -408,7 +408,6 @@ toc()
 
 tic()
 est_sunab_eco_test_hs_controlled <- feols(
-  rap_TRE ~ biotic_sum + pdsi_annual + sunab(FirstTreat, year, ref.p = -1) | uniqueID + year,
   data = xx_hs,
   mem.clean = TRUE,
   lean = FALSE,
