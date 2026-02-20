@@ -205,13 +205,13 @@ forested_ecoregions <- tibble(
 # 
 # 
 # 
-# # Use local download
-# all_files <- list.files(dir_derived, full.names = TRUE)
-# files_with_data <- all_files[fs::file_size(all_files) > 2] 
-# all_dats <- lapply(files_with_data, fread) |>
-#   bind_rows()
-# 
-# arrow::write_parquet(x = all_dats, sink = here(dir_derived, "merged_dats.parquet"))
+# Use local download
+all_files <- list.files(dir_derived, full.names = TRUE)
+files_with_data <- all_files[fs::file_size(all_files) > 2]
+all_dats <- lapply(files_with_data, fread) |>
+  bind_rows()
+
+arrow::write_parquet(x = all_dats, sink = here(dir_derived, "merged_dats.parquet"))
 ```
 
 # Examine GEE data & clean NAs
@@ -668,7 +668,6 @@ dats_simple_added <- n_beyond_threshold_x_yrs(
 
 ```{r}
 
-test <- dats_no_reburn |> filter(burn_year == 2005) |> slice_head(n = 100)
 
 compute_gam_stats <- function(
   df,
@@ -698,7 +697,6 @@ compute_gam_stats <- function(
     stop("No time-series columns found matching prefix+YYYY for prefix: ", column_prefix)
   }
 
-  # Tag used in output names (strip trailing underscore if present)
   prefix_tag <- sub("_$", "", column_prefix)
 
   nm_pre6_fit <- paste0("gam_", prefix_tag, "_pre6_fit")
@@ -718,6 +716,17 @@ compute_gam_stats <- function(
   nm_slope_post_min_to_p10 <- paste0("gam_", prefix_tag, "_slope_post_min_to_p10")
   nm_slope_post_min_to_p15 <- paste0("gam_", prefix_tag, "_slope_post_min_to_p15")
   nm_slope_post_min_to_p20 <- paste0("gam_", prefix_tag, "_slope_post_min_to_p20")
+
+  # --- NEW metric names ---
+  nm_post_min_after_p10 <- paste0("gam_", prefix_tag, "_post_min_after_p10")
+  nm_post_min_after_p15 <- paste0("gam_", prefix_tag, "_post_min_after_p15")
+  nm_post_min_after_p20 <- paste0("gam_", prefix_tag, "_post_min_after_p20")
+
+  nm_min_at_end <- paste0("gam_", prefix_tag, "_min_at_end")
+
+  nm_perc_recov_p10 <- paste0("gam_", prefix_tag, "_perc_recov_p10")
+  nm_perc_recov_p15 <- paste0("gam_", prefix_tag, "_perc_recov_p15")
+  nm_perc_recov_p20 <- paste0("gam_", prefix_tag, "_perc_recov_p20")
 
   dt[, id__temp := .I]
 
@@ -745,13 +754,19 @@ compute_gam_stats <- function(
   na_row <- function(id) {
     out <- list(
       id__temp = id,
+
       NA_real_, NA_real_, NA_real_, NA_real_, NA_real_,
       NA_real_, NA_real_, NA_real_,
       NA_real_, NA_real_, NA_real_,
+      NA_real_, NA_real_, NA_real_,
+
+      NA, NA, NA,
+      NA,
       NA_real_, NA_real_, NA_real_
     )
     names(out) <- c(
       "id__temp",
+
       nm_pre6_fit,
       nm_post_min,
       nm_post_min_year,
@@ -765,7 +780,17 @@ compute_gam_stats <- function(
       nm_diff_post_min_to_p20,
       nm_slope_post_min_to_p10,
       nm_slope_post_min_to_p15,
-      nm_slope_post_min_to_p20
+      nm_slope_post_min_to_p20,
+
+      nm_post_min_after_p10,
+      nm_post_min_after_p15,
+      nm_post_min_after_p20,
+
+      nm_min_at_end,
+
+      nm_perc_recov_p10,
+      nm_perc_recov_p15,
+      nm_perc_recov_p20
     )
     data.table::as.data.table(out)
   }
@@ -833,7 +858,9 @@ compute_gam_stats <- function(
 
     post_min_year <- if (!is.na(post_min_t)) ref + post_min_t else NA_real_
     yrs_ref_to_min <- if (!is.na(post_min_t)) post_min_t else NA_real_
-    diff_pre6_to_min <- if (!is.na(pre6_fit) && !is.na(post_min_val)) post_min_val - pre6_fit  else NA_real_
+
+    # Your convention: negative if decreases from before to after
+    diff_pre6_to_min <- if (!is.na(pre6_fit) && !is.na(post_min_val)) post_min_val - pre6_fit else NA_real_
 
     t_p10 <- 10L
     t_p15 <- 15L
@@ -879,42 +906,79 @@ compute_gam_stats <- function(
       NA_real_
     }
 
+
+    # min_at_end: post-min is the last point in the series (within the post-min search window)
+    # note: post_ts is already the post-reference grid that was searched for minima
+    min_at_end <- if (!is.na(post_min_t) && length(post_ts) > 0) {
+      isTRUE(post_min_t == max(post_ts))
+    } else {
+      NA
+    }
+
+    # percent recovery: (diff min->px / abs(diff pre6->min)) * 100
+    denom <- abs(diff_pre6_to_min)
+    perc_recov_p10 <- if (!is.na(diff_min_to_p10) && !is.na(denom) && denom > 0) (diff_min_to_p10 / denom) * 100 else NA_real_
+    perc_recov_p15 <- if (!is.na(diff_min_to_p15) && !is.na(denom) && denom > 0) (diff_min_to_p15 / denom) * 100 else NA_real_
+    perc_recov_p20 <- if (!is.na(diff_min_to_p20) && !is.na(denom) && denom > 0) (diff_min_to_p20 / denom) * 100 else NA_real_
+
     if (isTRUE(debug)) dbg$ok <- dbg$ok + 1L
 
     out <- list(
       id__temp = id,
+
       pre6_fit,
       post_min_val,
       post_min_year,
       yrs_ref_to_min,
       diff_pre6_to_min,
+
       fit_p10,
       fit_p15,
       fit_p20,
+
       diff_min_to_p10,
       diff_min_to_p15,
       diff_min_to_p20,
+
       slope_to_p10,
       slope_to_p15,
-      slope_to_p20
+      slope_to_p20,
+
+      min_at_end,
+
+      perc_recov_p10,
+      perc_recov_p15,
+      perc_recov_p20
     )
+
     names(out) <- c(
       "id__temp",
+
       nm_pre6_fit,
       nm_post_min,
       nm_post_min_year,
       nm_yrs_ref_to_post_min,
       nm_diff_pre6_to_post_min,
+
       nm_fit_ref_p10,
       nm_fit_ref_p15,
       nm_fit_ref_p20,
+
       nm_diff_post_min_to_p10,
       nm_diff_post_min_to_p15,
       nm_diff_post_min_to_p20,
+
       nm_slope_post_min_to_p10,
       nm_slope_post_min_to_p15,
-      nm_slope_post_min_to_p20
+      nm_slope_post_min_to_p20,
+
+      nm_min_at_end,
+
+      nm_perc_recov_p10,
+      nm_perc_recov_p15,
+      nm_perc_recov_p20
     )
+
     data.table::as.data.table(out)
   }
 
@@ -952,6 +1016,36 @@ compute_gam_stats <- function(
   tibble::as_tibble(out)
 }
 
+dats_simple_added <- compute_gam_stats(
+  df = dats_simple_added,
+  column_prefix = "rap_tree_",
+  reference_time_col = "burn_year",
+  k = 8,
+  min_n = 15,
+  gam_method = "REML",
+  parallel = FALSE,
+  debug = TRUE
+)
+
+dats_simple_added <- compute_gam_stats(
+  df = dats_simple_added,
+  column_prefix = "vcf_tree_",
+  reference_time_col = "burn_year",
+  k = 8,
+  min_n = 15,
+  gam_method = "REML",
+  parallel = FALSE,
+  debug = TRUE
+)
+
+```
+
+# Check GAMs
+
+```{r}
+
+test <- dats_simple_added |> filter(burn_year == 2005) |> slice_head(n = 100)
+
 test_gam <- compute_gam_stats(
   df = test,
   column_prefix = "rap_tree_",
@@ -974,22 +1068,8 @@ test_gam <- compute_gam_stats(
   debug = TRUE
 )
 
-```
-
-# Check GAMs
-
-```{r}
-
 # Visual QC for compute_gam_stats(): pick 5 rows, refit GAM, plot TS + GAM,
 # and annotate the computed metrics on each panel.
-
-suppressPackageStartupMessages({
-  library(dplyr)
-  library(tidyr)
-  library(purrr)
-  library(ggplot2)
-  library(mgcv)
-})
 
 # ---- helpers ----
 
@@ -1335,13 +1415,6 @@ plot_one_gam_qc(
 # New QAQC
 ```{r}
 
-suppressPackageStartupMessages({
-  library(dplyr)
-  library(tidyr)
-  library(purrr)
-  library(ggplot2)
-  library(mgcv)
-})
 
 extract_year <- function(x, prefix) {
   as.integer(sub(paste0("^", prefix), "", x))
