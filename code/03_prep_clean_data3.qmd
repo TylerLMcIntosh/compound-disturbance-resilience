@@ -1045,7 +1045,9 @@ dats_simple_added <- compute_gam_stats(
 ```{r}
 
 test <- dats_simple_added |> filter(burn_year == 2005) |> slice_head(n = 100)
+test <- dats_no_reburn |> slice_head(n = 10000)
 
+tic()
 test_gam <- compute_gam_stats(
   df = test,
   column_prefix = "rap_tree_",
@@ -1056,6 +1058,7 @@ test_gam <- compute_gam_stats(
   parallel = FALSE,
   debug = TRUE
 )
+toc()
 
 test_gam <- compute_gam_stats(
   df = test_gam,

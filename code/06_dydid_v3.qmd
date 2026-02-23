@@ -66,7 +66,8 @@ install_load_packages(c(
   "ggfixest"))
 
 dir_figs <- here::here('figs')
-dir_derived <- here::here('data', 'derived', 'GEE_Exports_resilience_20260218')
+#dir_derived <- here::here('data', 'derived', 'GEE_Exports_resilience_20260218')
+dir_derived <- here::here('data', 'derived', 'idb_500_20251130')
 dir_raw <- here::here('data', 'raw')
 dir_manual <- here::here('data', 'manual')
 dir_ensure(c(dir_figs,
@@ -84,10 +85,14 @@ set.seed(seed)
 
 ```{r}
   
-dats_long <- arrow::read_parquet(here(dir_derived, "all_dats_long.parquet"))
+#dats_long <- arrow::read_parquet(here(dir_derived, "all_dats_long.parquet"))
+dats_long <- arrow::read_parquet(here(dir_derived, "test_dats_long.parquet"))
+
 
 dats_long <- dats_long |>
-  select(uniqueID, year, rap_tree, vcf_tree, lat, long, ecoregion_short_name, biotic_5_yrs_prior_sum, biotic, pdsi_annual, pdsi_annual_5_yrs_prior_sum, fire, treated)
+  select(uniqueID, year, rap_tree, vcf_tree, lat, long, 
+         #ecoregion_short_name,
+         biotic_5_yrs_prior_sum, biotic, pdsi_annual, pdsi_annual_5_yrs_prior_sum, fire, treated)
 
 
 # Set cohorts
@@ -99,16 +104,16 @@ dats_long_did[which(is.na(dats_long_did$FirstTreat)),"FirstTreat"] <- 1000
 
 set_cd_groups <- function(df, b_threshold, d_threshold) {
   df_new <- df |>
-    mutate(cd_group = case_when(#biotic_5_yrs_prior_sum < b_threshold & 
+    mutate(cd_group = case_when(biotic_5_yrs_prior_sum < b_threshold & 
                                   fire == 1 & 
                                   pdsi_annual_5_yrs_prior_sum > d_threshold ~ "f",
-                                #biotic_5_yrs_prior_sum >= b_threshold & 
+                                biotic_5_yrs_prior_sum >= b_threshold & 
                                   fire == 1 & 
                                   pdsi_annual_5_yrs_prior_sum > d_threshold ~ "bf",
-                                #biotic_5_yrs_prior_sum < b_threshold &
+                                biotic_5_yrs_prior_sum < b_threshold &
                                   fire == 1 & 
                                   pdsi_annual_5_yrs_prior_sum <= d_threshold ~ "df",
-                                #biotic_5_yrs_prior_sum >= b_threshold &
+                                biotic_5_yrs_prior_sum >= b_threshold &
                                   fire == 1 & 
                                   pdsi_annual_5_yrs_prior_sum <= d_threshold ~ "bdf",
                                 TRUE ~ NA))
@@ -118,18 +123,10 @@ set_cd_groups <- function(df, b_threshold, d_threshold) {
 dats_use <- set_cd_groups(df = dats_long_did, b_threshold = 10, d_threshold = -10)
 
 unique(dats_use$cd_group)
-hist(dats_long$pdsi_annual_5_yrs_after_sum)
+#hist(dats_long$pdsi_annual_5_yrs_after_sum)
 
 ```
 
-
-# Functions to set treatment cohorts for different treatments
-```{r}
-
-
-
-
-```
 
 
 
@@ -290,14 +287,14 @@ plot_sunab_models <- function(model_list,
 # Run models
 ```{r}
 
-dt <- dats_use |> slice_sample(n = 1000000)
+#dt <- dats_use |> slice_sample(n = 1000000)
 
 idb_models <- feols_multi_trt(subgrp_col = "cd_group",
-                              df = dt,
+                              df = dats_use,
                               groups = NULL,
                               trt_col = "fire",
-                              #fml = rap_tree ~ biotic + pdsi_annual + sunab(FirstTreat, year, ref.p = -6) | uniqueID + year,
-                              fml = rap_tree ~ pdsi_annual + sunab(FirstTreat, year, ref.p = -6) | uniqueID + year,
+                              fml = rap_tree ~ biotic + pdsi_annual + sunab(FirstTreat, year, ref.p = -6) | uniqueID + year,
+                              #fml = rap_tree ~ pdsi_annual + sunab(FirstTreat, year, ref.p = -6) | uniqueID + year,
                               mem.clean = TRUE,
                               lean = FALSE,
                               vcov = fixest::vcov_conley(lat = "lat",
