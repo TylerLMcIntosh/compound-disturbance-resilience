@@ -475,7 +475,6 @@ dir_ensure <- function(path) {
   return(invisible(path))
 }
 
-
 #' Install and Load R Packages with Optional Version Control
 #'
 #' Ensures that specified R packages are installed and loaded, optionally using
@@ -493,51 +492,20 @@ dir_ensure <- function(path) {
 #'   load packages at the specific version available on the given date. Defaults to \code{FALSE}.
 #' @param pak_quiet Logical; if \code{TRUE} (default), suppresses verbose output
 #'   from \pkg{pak} during installation.
+#' @param try_pak Logical; if \code{TRUE} (default), attempts to use \pkg{pak}
+#'   (installing it if needed) for faster installs. If \code{FALSE}, skips
+#'   all \pkg{pak} logic and uses the base fallback installer only.
 #'
-#' @details
-#' This function performs the following steps:
-#' \enumerate{
-#'   \item Checks whether requested packages are already installed.
-#'   \item Optionally installs and uses \pkg{pak} for efficient package installation.
-#'   \item Optionally installs and uses \pkg{groundhog} for reproducible version loading.
-#'   \item Falls back to base R \code{install.packages()} if necessary.
-#'   \item Sets the CRAN repository URL, optionally tied to a date snapshot.
-#'   \item Loads all requested packages, reporting any that fail to load.
-#' }
-#'
-#' The function automatically installs \pkg{pak} if missing, attempting both
-#' CRAN installation and the official bootstrap script if needed. If packages
-#' are newly installed or updated, a restart of the R session may be required
-#' to ensure all dependencies load properly.
-#'
-#' @return
-#' A named character vector (invisible) of loaded package versions, with
-#' \code{NA} for any packages that failed to load.
-#'
-#' @note
-#' - Include \pkg{pak} and \pkg{groundhog} in your \code{Suggests} field if used.
-#' - The helper function internally suppresses warnings during installation to
-#'   maintain a clean console output.
-#' - It is recommended to restart R after major updates or new installations.
-#'
-#' @examples
-#' \dontrun{
-#' # Standard installation and loading
-#' install_load_packages(c("dplyr", "ggplot2"))
-#'
-#' # Using a CRAN snapshot for reproducibility
-#' install_load_packages(c("dplyr", "ggplot2"), date = "2023-01-01")
-#'
-#' # Using groundhog for strict version control
-#' install_load_packages(c("dplyr", "ggplot2"), groundhog = TRUE, date = "2023-01-01")
-#' }
-#'
-#' @importFrom utils install.packages packageVersion
-#' @importFrom utils installed.packages
+#' @importFrom utils install.packages packageVersion installed.packages
 #' @importFrom base requireNamespace library
-#'
 #' @export
-install_load_packages <- function(pkgs, date = NULL, groundhog = FALSE, pak_quiet = TRUE) {
+install_load_packages <- function(
+    pkgs,
+    date = NULL,
+    groundhog = FALSE,
+    pak_quiet = TRUE,
+    try_pak = TRUE
+) {
   
   # --- Helper: quiet install with base R ---
   safe_install <- function(pkg, repos = "https://cloud.r-project.org") {
@@ -553,34 +521,6 @@ install_load_packages <- function(pkgs, date = NULL, groundhog = FALSE, pak_quie
   
   if (length(missing_pkgs) == 0) {
     message("All requested packages are already installed.")
-  }
-  
-  # --- Only ensure pak if actually needed ---
-  has_pak <- requireNamespace("pak", quietly = TRUE)
-  if (length(missing_pkgs) > 0 && !has_pak) {
-    message("Some packages are missing; installing 'pak'...")
-    
-    pak_install_success <- FALSE
-    try({
-      suppressWarnings(
-        install.packages("pak", repos = "https://cloud.r-project.org", dependencies = TRUE)
-      )
-      pak_install_success <- requireNamespace("pak", quietly = TRUE)
-    }, silent = TRUE)
-    
-    if (!pak_install_success) {
-      message("Standard install failed; trying pak bootstrap installer...")
-      try({
-        source("https://pak.r-lib.org/install.R")
-        pak_install_success <- requireNamespace("pak", quietly = TRUE)
-      }, silent = TRUE)
-    }
-    
-    if (!pak_install_success) {
-      warning("Failed to install 'pak' by any method; will fall back to base installers only.")
-    }
-    
-    has_pak <- requireNamespace("pak", quietly = TRUE)
   }
   
   # --- Optionally ensure groundhog ---
@@ -603,13 +543,46 @@ install_load_packages <- function(pkgs, date = NULL, groundhog = FALSE, pak_quie
   message("Using CRAN repository: ", repo)
   options(repos = c(CRAN = repo))
   
+  # --- pak availability/bootstrapping (optional) ---
+  has_pak <- FALSE
+  if (isTRUE(try_pak) && length(missing_pkgs) > 0) {
+    has_pak <- requireNamespace("pak", quietly = TRUE)
+    
+    # Only try to install pak if missing and we're allowed to try pak
+    if (!has_pak) {
+      message("Some packages are missing; installing 'pak'...")
+      
+      pak_install_success <- FALSE
+      try({
+        suppressWarnings(
+          install.packages("pak", repos = "https://cloud.r-project.org", dependencies = TRUE)
+        )
+        pak_install_success <- requireNamespace("pak", quietly = TRUE)
+      }, silent = TRUE)
+      
+      if (!pak_install_success) {
+        message("Standard install failed; trying pak bootstrap installer...")
+        try({
+          source("https://pak.r-lib.org/install.R")
+          pak_install_success <- requireNamespace("pak", quietly = TRUE)
+        }, silent = TRUE)
+      }
+      
+      if (!pak_install_success) {
+        warning("Failed to install 'pak' by any method; will fall back to base installers only.")
+      }
+      
+      has_pak <- requireNamespace("pak", quietly = TRUE)
+    }
+  }
+  
   # --- Install missing packages ---
   installed_or_updated <- FALSE
   
   if (length(missing_pkgs) > 0) {
     message("Missing packages detected: ", paste(missing_pkgs, collapse = ", "))
     
-    if (has_pak) {
+    if (isTRUE(try_pak) && has_pak) {
       tryCatch({
         if (pak_quiet) {
           message("Attempting install with pak (quietly)...")
@@ -620,15 +593,19 @@ install_load_packages <- function(pkgs, date = NULL, groundhog = FALSE, pak_quie
           message("Attempting install with pak...")
           pak::pkg_install(missing_pkgs, ask = FALSE, upgrade = FALSE)
         }
-        installed_or_updated <<- TRUE
+        installed_or_updated <- TRUE
       }, error = function(e) {
         message("pak installation failed: ", e$message)
         message("Falling back to install.packages()...")
         for (p in missing_pkgs) safe_install(p, repos = repo)
-        installed_or_updated <<- TRUE
+        installed_or_updated <- TRUE
       })
     } else {
-      message("pak unavailable; installing missing packages with install.packages()...")
+      if (!isTRUE(try_pak)) {
+        message("try_pak = FALSE; installing missing packages with install.packages()...")
+      } else {
+        message("pak unavailable; installing missing packages with install.packages()...")
+      }
       for (p in missing_pkgs) safe_install(p, repos = repo)
       installed_or_updated <- TRUE
     }

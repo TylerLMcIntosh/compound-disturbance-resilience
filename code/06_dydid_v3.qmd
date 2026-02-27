@@ -130,6 +130,58 @@ unique(dats_use$cd_group)
 
 
 
+# new code for setting groups
+
+```{r}
+
+set_cd_groups <- function(df,
+                          b_nm,
+                          d_nm,
+                          cd_nm,
+                          b_threshold,
+                          d_threshold) {
+  df_new <- df |>
+    dplyr::mutate(
+      "{cd_nm}" := dplyr::case_when(
+        .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] >  d_threshold ~ "f",
+        .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] >  d_threshold ~ "bf",
+        .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] <= d_threshold ~ "df",
+        .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] <= d_threshold ~ "bdf",
+        TRUE ~ NA_character_
+      )
+    )
+  
+  return(df_new)
+}
+
+
+d <- set_cd_groups(df = d,
+                   b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+                   d_nm = "pdsi_annual_5_yrs_prior_threshold_n4_yot",
+                   cd_nm = "cd_group_b10_pdsin4t1",
+                   b_threshold = 10,
+                   d_threshold = 1)
+
+d <- set_cd_groups(df = d,
+                   b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+                   d_nm = "pdsi_annual_5_yrs_prior_threshold_n3_yot",
+                   cd_nm = "cd_group_b10_pdsin3t1",
+                   b_threshold = 10,
+                   d_threshold = 1)
+
+d <- set_cd_groups(df = d,
+                   b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+                   d_nm = "pdsi_annual_5_yrs_prior_threshold_n3_yot",
+                   cd_nm = "cd_group_b10_pdsin4t3",
+                   b_threshold = 10,
+                   d_threshold = 3)
+
+
+```
+
+
+
+
 # Test spatial cutoffs - LATER
 
 ```{}
