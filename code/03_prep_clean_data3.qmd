@@ -65,7 +65,7 @@ install_load_packages(c(
   "data.table"))
 
 set.seed(1234)
-gdrive_folder <- "GEE_resilience_v6_operational_ss1000_ts100000"
+gdrive_folder <- "GEE_resilience_v6_operational_ss500_ts50000"
 service_account_file <- here('config', 'secrets', 'tymc5571-utils-project-692f27c034dd.json')
 
 dir_figs <- here::here('figs')
@@ -206,13 +206,13 @@ forested_ecoregions <- tibble(
 # 
 # 
 # Use local download
-all_files <- list.files(dir_derived, full.names = TRUE)
+all_files <- list.files(dir_derived, full.names = TRUE, pattern = ".csv")
 files_with_data <- all_files[fs::file_size(all_files) > 2]
 all_dats <- lapply(files_with_data, fread) |>
   bind_rows()
 
-arrow::write_parquet(x = all_dats, sink = here(dir_derived, "merged_dats.parquet"))
-write_csv(x = all_dats, file = here(dir_derived, "merged_dats.csv"))
+arrow::write_parquet(x = all_dats, sink = here(dir_derived, "merged_dats_raw.parquet"))
+write_csv(x = all_dats, file = here(dir_derived, "merged_dats_raw.csv"))
 ```
 
 # Examine GEE data & clean NAs

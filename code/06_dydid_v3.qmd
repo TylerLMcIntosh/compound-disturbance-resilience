@@ -66,8 +66,8 @@ install_load_packages(c(
   "ggfixest"))
 
 dir_figs <- here::here('figs')
-#dir_derived <- here::here('data', 'derived', 'GEE_Exports_resilience_20260218')
-dir_derived <- here::here('data', 'derived', 'idb_500_20251130')
+dir_derived <- here::here('data', 'derived', 'GEE_resilience_v6_operational_ss500_ts50000')
+#dir_derived <- here::here('data', 'derived', 'idb_500_20251130')
 dir_raw <- here::here('data', 'raw')
 dir_manual <- here::here('data', 'manual')
 dir_ensure(c(dir_figs,
@@ -84,46 +84,18 @@ set.seed(seed)
 #
 
 ```{r}
-  
-#dats_long <- arrow::read_parquet(here(dir_derived, "all_dats_long.parquet"))
-dats_long <- arrow::read_parquet(here(dir_derived, "test_dats_long.parquet"))
 
 
-# dats_long_f <- dats_long |>
-#   select(uniqueID, year, rap_tree, vcf_tree, lat, long, 
-#          #ecoregion_short_name,
-#          biotic_5_yrs_prior_sum, biotic, pdsi_annual, pdsi_annual_5_yrs_prior_sum, fire, treated)
 
+d_l_f <- list.files(
+  here::here(dir_derived, "parquet"),
+  pattern = "dats_long.*\\.parquet$",
+  full.names = TRUE
+)
 
-# Set cohorts
-dats_long_did <- get.cohort(dats_long, D = "treated",
-                                 index = c("uniqueID", "year"),
-                                 start0 = TRUE)
-dats_long_did[which(is.na(dats_long_did$FirstTreat)),"FirstTreat"] <- 1000 
+d_l <- open_dataset(d_l_f, format = "parquet") |>
+  collect()
 
-
-set_cd_groups <- function(df, b_threshold, d_threshold) {
-  df_new <- df |>
-    mutate(cd_group = case_when(biotic_5_yrs_prior_sum < b_threshold & 
-                                  fire == 1 & 
-                                  pdsi_annual_5_yrs_prior_sum > d_threshold ~ "f",
-                                biotic_5_yrs_prior_sum >= b_threshold & 
-                                  fire == 1 & 
-                                  pdsi_annual_5_yrs_prior_sum > d_threshold ~ "bf",
-                                biotic_5_yrs_prior_sum < b_threshold &
-                                  fire == 1 & 
-                                  pdsi_annual_5_yrs_prior_sum <= d_threshold ~ "df",
-                                biotic_5_yrs_prior_sum >= b_threshold &
-                                  fire == 1 & 
-                                  pdsi_annual_5_yrs_prior_sum <= d_threshold ~ "bdf",
-                                TRUE ~ NA))
-  return(df_new)
-}
-
-dats_use <- set_cd_groups(df = dats_long_did, b_threshold = 10, d_threshold = -10)
-
-unique(dats_use$cd_group)
-#hist(dats_long$pdsi_annual_5_yrs_after_sum)
 
 ```
 
@@ -155,26 +127,33 @@ set_cd_groups <- function(df,
 }
 
 
-d <- set_cd_groups(df = d,
+d_l <- set_cd_groups(df = d_l,
                    b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
                    d_nm = "pdsi_annual_5_yrs_prior_threshold_n4_yot",
                    cd_nm = "cd_group_b10_pdsin4t1",
                    b_threshold = 10,
                    d_threshold = 1)
 
-d <- set_cd_groups(df = d,
+d_l <- set_cd_groups(df = d_l,
                    b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
                    d_nm = "pdsi_annual_5_yrs_prior_threshold_n3_yot",
                    cd_nm = "cd_group_b10_pdsin3t1",
                    b_threshold = 10,
                    d_threshold = 1)
 
-d <- set_cd_groups(df = d,
+d_l <- set_cd_groups(df = d_l,
                    b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
                    d_nm = "pdsi_annual_5_yrs_prior_threshold_n3_yot",
                    cd_nm = "cd_group_b10_pdsin4t3",
                    b_threshold = 10,
                    d_threshold = 3)
+
+d_l <- set_cd_groups(df = d_l,
+                   b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+                   d_nm = "pdsi_annual_5_yrs_prior_sum_yot",
+                   cd_nm = "cd_group_b10_pdsisumn10",
+                   b_threshold = 10,
+                   d_threshold = -10)
 
 
 ```
@@ -339,13 +318,16 @@ plot_sunab_models <- function(model_list,
 # Run models
 ```{r}
 
-#dt <- dats_use |> slice_sample(n = 1000000)
+ids_f <- unique(d_l |> filter(fire == 1) |> pull(pt_id)) |> sample(10000)
+ids_nf <- unique(d_l |> filter(fire == 1) |> pull(pt_id)) |> sample(10000)
 
-idb_models <- feols_multi_trt(subgrp_col = "cd_group",
-                              df = dats_use,
+dt <- d_l |> filter(pt_id %in% c(ids_f, ids_nf))
+
+models1 <- feols_multi_trt(subgrp_col = "cd_group_b10_pdsisumn10",
+                              df = dt,
                               groups = NULL,
                               trt_col = "fire",
-                              fml = rap_tree ~ biotic + pdsi_annual + sunab(FirstTreat, year, ref.p = -6) | uniqueID + year,
+                              fml = rap_tree ~ biotic_relaxedforestnorm + pdsi_annual + sunab(FirstTreat, year, ref.p = -6) | pt_id + year,
                               #fml = rap_tree ~ pdsi_annual + sunab(FirstTreat, year, ref.p = -6) | uniqueID + year,
                               mem.clean = TRUE,
                               lean = FALSE,
@@ -359,68 +341,21 @@ idb_models <- feols_multi_trt(subgrp_col = "cd_group",
 
 
 
-plot_sunab_models(idb_models,
-                  names(idb_models),
+plot_sunab_models(models1,
+                  names(models1),
                   baseline = -6,
                   xlim = c(-10, 20),
                   ylim = c(-50, 10))
 
-ggplot(dats_use |> filter(cd_group == "bf" | cd_group == "bdf"), aes(biotic_5_yrs_prior_sum)) +
-  geom_histogram(bins = 30) +
-  facet_wrap(~ cd_group)
+# 
+# ggplot(dats_use |> filter(cd_group == "bf" | cd_group == "bdf"), aes(biotic_5_yrs_prior_sum)) +
+#   geom_histogram(bins = 30) +
+#   facet_wrap(~ cd_group)
 
 
 ```
 
 
-
-```{r}
-
-
-dats_quick <- dats_use |>
-  filter(!is.na(cd_group)) |>
-  slice_head(n = 100000) |>
-  mutate(fire_frg = interaction(burn_sev, frg_reclass_desc),
-         fire_pre_drought = interaction(burn_sev, pdsi_annual_5_yrs_prior_threshold),
-         fire_pre_drought = interaction(burn_sev, pdsi_annual_5_yrs_after_threshold),
-         biotic_cut = cut(biotic,
-             breaks = c(0, 20, 40, 60, 80, 100),
-             labels = c()
-             )
-         )
-
-ggplot(dats_quick) +
-  geom_smooth(method = 'gam', aes(x = Time_to_Treatment, y = rap_tree, color = cd_group)) +
-  xlim(c(-10, 20)) +
-  labs(title = "GAM fits sample")
-
-ggplot(dats_quick) +
-  geom_smooth(method = 'gam', aes(x = Time_to_Treatment, y = vcf_tree, color = cd_group)) +
-  xlim(c(-10, 20)) +
-  labs(title = "GAM fits sample")
-
-ggplot(dats_quick |> filter(burn_sev != "Negligible")) +
-  geom_smooth(method = 'gam', aes(x = Time_to_Treatment, y = rap_tree, color = frg_reclass_desc, lty = burn_sev)) +
-  xlim(c(-10, 20)) +
-  labs(title = "GAM fits sample")
-
-
-
-
-```
-
-
-
-```{r}
-dats_short <- arrow::read_parquet(here(dir_derived, 'test_dats_short.parquet'))
-
-glimpse(dats_short)
-```
-
-```{r}
-
-
-```
 
 
 <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne" >Click to see Session Information</button><div id="collapseOne" class="accordion-collapse collapse"><div>

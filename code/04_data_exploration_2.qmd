@@ -1,0 +1,399 @@
+---
+title: "04_data_exploration_2"
+format: html
+editor: visual
+---
+
+# Setup for analysis
+
+``` {r setupchunk}
+#| echo: true
+#| message: false
+#| warning: false
+#| results: 'hide'
+
+rm(list = ls())
+
+if(!requireNamespace("here", quietly = TRUE)) {
+  install.packages("here")
+}
+library(here)
+
+source(here::here("utils", "functions.R"))
+
+install_load_packages(c(
+  "tidyverse",
+  "arrow",
+  "sf",
+  "scales",
+  "rlang",
+  "ggpmisc"))
+
+gdrive_folder <- "GEE_resilience_v6_operational_ss500_ts50000"
+
+dir_figs <- here::here('figs')
+dir_derived <- here::here('data', 'derived', gdrive_folder)
+dir_raw <- here::here('data', 'raw')
+dir_manual <- here::here('data', 'manual')
+dir_ensure(c(dir_figs,
+             dir_derived,
+             dir_manual,
+             dir_raw))
+
+seed = 1234
+set.seed(seed)
+
+
+```
+
+# Data
+```{r}
+
+d_s_f <- list.files(
+  here::here(dir_derived, "parquet"),
+  pattern = "dats_short.*\\.parquet$",
+  full.names = TRUE
+)
+
+d_s <- open_dataset(d_s_f, format = "parquet") |>
+  collect()
+
+d_s_fire <- d_s |> filter(fire == 1)
+
+```
+
+# Hist & N for each (burn_year 2005-2020)
+
+
+```{r}
+
+plot_density_with_deciles <- function(df, var, x_label = NULL, log_scale = FALSE) {
+
+  var_quo <- enquo(var)
+  var_name <- as_name(var_quo)
+
+  # Handle log scale
+  if (log_scale) {
+    df_plot <- df |> filter(!!var_quo > 0)
+  } else {
+    df_plot <- df
+  }
+
+  # Compute deciles
+  probs <- seq(0.1, 0.9, by = 0.1)
+  deciles <- quantile(
+    df_plot[[var_name]],
+    probs = probs,
+    na.rm = TRUE
+  )
+
+  caption_text <- paste0(
+    "Deciles (10–90%): ",
+    paste0(
+      names(deciles),
+      " = ",
+      round(deciles, 3),
+      collapse = " | "
+    )
+  )
+
+  p <- ggplot(df_plot, aes(x = !!var_quo)) +
+    geom_density() +
+    geom_vline(
+      xintercept = deciles,
+      linetype = "dotted",
+      color = "red"
+    ) +
+    labs(
+      x = ifelse(is.null(x_label), var_name, x_label),
+      y = "Density",
+      caption = caption_text
+    ) +
+    theme_minimal()
+
+  if (log_scale) {
+    p <- p + scale_x_log10(labels = label_number())
+  }
+
+  p
+}
+
+
+
+plot_density_with_deciles(
+  d_s_fire,
+  biotic_relaxedforestnorm_5_yrs_prior_sum_yot,
+  x_label = "Biotic 5-yr prior sum",
+  log_scale = TRUE
+)
+
+plot_density_with_deciles(
+  d_s_fire,
+  biotic_6roll_max,
+  x_label = "Biotic 5-yr rolling maximum",
+  log_scale = TRUE
+)
+
+
+plot_density_with_deciles(
+  d_s_fire,
+  pdsi_annual_5_yrs_prior_sum_yot,
+  x_label = "PDSI sum 5-yr prior",
+  log_scale = FALSE
+)
+
+plot_density_with_deciles(
+  d_s_fire,
+  pdsi_annual_5_yrs_prior_threshold_n4_yot,
+  x_label = "PDSI -4 threshold 5-yr prior",
+  log_scale = FALSE
+)
+
+```
+
+```{r}
+
+ggplot(d_s) +
+  geom_density(aes(x = biotic_relaxedforestnorm_5_yrs_prior_sum_yot))
+
+set_cd_groups <- function(df,
+                          b_nm,
+                          d_nm,
+                          cd_nm,
+                          b_threshold,
+                          d_threshold) {
+  df_new <- df |>
+    dplyr::mutate(
+      "{cd_nm}" := dplyr::case_when(
+        .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] >  d_threshold ~ "f",
+        .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] >  d_threshold ~ "bf",
+        .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] <= d_threshold ~ "df",
+        .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] <= d_threshold ~ "bdf",
+        TRUE ~ NA_character_
+      )
+    )
+  
+  return(df_new)
+}
+
+
+d_s <- set_cd_groups(df = d_s,
+                   b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+                   d_nm = "pdsi_annual_5_yrs_prior_threshold_n4_yot",
+                   cd_nm = "cd_group_b10_pdsin4t1",
+                   b_threshold = 10,
+                   d_threshold = 1)
+
+d_s <- set_cd_groups(df = d_s,
+                   b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+                   d_nm = "pdsi_annual_5_yrs_prior_threshold_n3_yot",
+                   cd_nm = "cd_group_b10_pdsin3t1",
+                   b_threshold = 10,
+                   d_threshold = 1)
+
+d_s <- set_cd_groups(df = d_s,
+                   b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+                   d_nm = "pdsi_annual_5_yrs_prior_threshold_n3_yot",
+                   cd_nm = "cd_group_b10_pdsin4t3",
+                   b_threshold = 10,
+                   d_threshold = 3)
+
+d_s <- set_cd_groups(df = d_s,
+                   b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+                   d_nm = "pdsi_annual_5_yrs_prior_sum_yot",
+                   cd_nm = "cd_group_b10_pdsisumn10",
+                   b_threshold = 10,
+                   d_threshold = -10)
+
+# GAM METRIC DISTRIBUTIONS
+
+
+
+plot_density_by_group_with_n <- function(df, x_var, group_var, x_label = NULL) {
+
+  x_quo <- enquo(x_var)
+  g_quo <- enquo(group_var)
+
+  x_name <- as_name(x_quo)
+  g_name <- as_name(g_quo)
+
+  # Filter missing groups
+  d_plot <- df |>
+    filter(!is.na(!!g_quo))
+
+  # Compute N per group
+  group_n <- d_plot |>
+    count(!!g_quo, name = "N") |>
+    mutate(label = paste0(!!g_quo, " (N=", N, ")"))
+
+  lab_vec <- setNames(group_n$label, group_n[[g_name]])
+
+  ggplot(d_plot, aes(x = !!x_quo, color = !!g_quo)) +
+    geom_density() +
+    scale_color_discrete(labels = lab_vec) +
+    labs(
+      x = ifelse(is.null(x_label), x_name, x_label),
+      color = g_name
+    ) +
+    theme_minimal()
+}
+
+plot_density_by_group_with_n(
+  d_s,
+  gam_rap_tree_diff_pre6_to_post_min,
+  cd_group_b10_pdsin4t1,
+  x_label = "RAP total loss"
+)
+
+plot_density_by_group_with_n(
+  d_s,
+  gam_rap_tree_diff_pre6_to_post_min,
+  cd_group_b10_pdsin3t1,
+  x_label = "RAP total loss"
+)
+
+plot_density_by_group_with_n(
+  d_s,
+  gam_rap_tree_diff_pre6_to_post_min,
+  cd_group_b10_pdsin4t3,
+  x_label = "RAP total loss"
+)
+
+
+plot_density_by_group_with_n(
+  d_s,
+  gam_rap_tree_diff_pre6_to_post_min,
+  cd_group_b10_pdsisumn10,
+  x_label = "RAP total loss"
+)
+
+
+
+
+
+```
+
+
+
+
+
+
+
+# VCF vs RAP plots
+
+```{r}
+
+plot_lm_r2 <- function(df, x, y, title, xlim = NULL, ylim = NULL) {
+  p <- ggplot(df, aes(x = {{ x }}, y = {{ y }})) +
+    geom_point(alpha = 0.1) +
+    geom_smooth(method = "lm", alpha = 0.1) +
+    ggpmisc::stat_poly_eq(
+      formula = y ~ x,
+      aes(label = after_stat(rr.label)),
+      parse = TRUE,
+      label.x = "right",
+      label.y = "top"
+    ) +
+    labs(title = title)
+
+  if (!is.null(xlim)) p <- p + xlim(xlim)
+  if (!is.null(ylim)) p <- p + ylim(ylim)
+
+  p
+}
+
+p_loss <- plot_lm_r2(
+  d_s,
+  gam_rap_tree_diff_pre6_to_post_min,
+  gam_vcf_tree_diff_pre6_to_post_min,
+  "VCF vs RAP total loss 250m"
+)
+
+p_recov15 <- plot_lm_r2(
+  d_s,
+  gam_rap_tree_perc_recov_p15,
+  gam_vcf_tree_perc_recov_p15,
+  "VCF vs RAP recovery percent 15yr 250m",
+  xlim = c(0, 100),
+  ylim = c(0, 100)
+)
+
+p_slope15 <- plot_lm_r2(
+  d_s,
+  gam_rap_tree_slope_post_min_to_p15,
+  gam_vcf_tree_slope_post_min_to_p15,
+  "VCF vs RAP slope 15yr 250m"
+)
+
+p_pre6 <- plot_lm_r2(
+  d_s,
+  gam_rap_tree_pre6_fit,
+  gam_vcf_tree_pre6_fit,
+  "VCF vs RAP 6-yr prior fit 250m"
+)
+
+p_pre6raw <- plot_lm_r2(
+  d_l |> filter(Time_to_Treatment == -6),
+  rap_tree,
+  vcf_tree,
+  "VCF vs RAP 6-yr-prior raw 250m"
+)
+
+p_min <- plot_lm_r2(
+  d_s,
+  gam_rap_tree_post_min,
+  gam_vcf_tree_post_min,
+  "VCF vs RAP minimum fit 250m"
+)
+
+# Print (or arrange with patchwork/cowplot if you want)
+p_loss
+p_recov15
+p_slope15
+p_pre6
+p_pre6raw
+p_min
+
+
+```
+
+
+```{r}
+
+dats_quick <- d_l |>
+  filter(!is.na(cd_group)) |>
+  slice_head(n = 100000) |>
+  mutate(fire_frg = interaction(burn_sev, frg_reclass_desc),
+         fire_pre_drought = interaction(burn_sev, pdsi_annual_5_yrs_prior_threshold),
+         fire_pre_drought = interaction(burn_sev, pdsi_annual_5_yrs_after_threshold),
+         biotic_cut = cut(biotic,
+             breaks = c(0, 20, 40, 60, 80, 100),
+             labels = c()
+             )
+         )
+
+ggplot(dats_quick) +
+  geom_smooth(method = 'gam', aes(x = Time_to_Treatment, y = rap_tree, color = cd_group)) +
+  xlim(c(-10, 20)) +
+  labs(title = "GAM fits sample")
+
+ggplot(dats_quick) +
+  geom_smooth(method = 'gam', aes(x = Time_to_Treatment, y = vcf_tree, color = cd_group)) +
+  xlim(c(-10, 20)) +
+  labs(title = "GAM fits sample")
+
+ggplot(dats_quick |> filter(burn_sev != "Negligible")) +
+  geom_smooth(method = 'gam', aes(x = Time_to_Treatment, y = rap_tree, color = frg_reclass_desc, lty = burn_sev)) +
+  xlim(c(-10, 20)) +
+  labs(title = "GAM fits sample")
+
+
+```
+
+
+<button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne" >Click to see Session Information</button><div id="collapseOne" class="accordion-collapse collapse"><div>
+
+```{r sessionInfo}
+sessionInfo()
+```
+
