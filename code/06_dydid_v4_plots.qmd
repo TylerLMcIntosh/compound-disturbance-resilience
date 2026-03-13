@@ -127,7 +127,7 @@ plot_saved_sunab_general <- function(coef_tbl,
                                      filters = list(),
                                      color_var,
                                      linetype_var = NULL,
-                                     facet_var = NULL,
+                                     facet_vars = NULL,
                                      facet_ncol = NULL,
                                      facet_scales = "fixed",
                                      show_ci = TRUE,
@@ -143,45 +143,71 @@ plot_saved_sunab_general <- function(coef_tbl,
                                      legend_title_linetype = NULL,
                                      label_var = NULL,
                                      show_n = FALSE,
-                                     n_label = c("units", "events", "both", "none")) {
-  
+                                     n_label = c("units", "events", "both", "none"),
+                                     min_line_n_ptids = NULL,
+                                     min_line_n_fireids = NULL,
+                                     min_line_n_treated_units = NULL,
+                                     min_line_n_treated_events = NULL,
+                                     show_event_support = FALSE,
+                                     min_event_n_ptids = NULL,
+                                     min_event_n_fireids = NULL,
+                                     event_support_y = NULL,
+                                     event_support_size = 2.5,
+                                     event_support_alpha = 0.8) {
+
   ci_style <- match.arg(ci_style)
   n_label <- match.arg(n_label)
-  
+
   dt <- coef_tbl |>
     dplyr::filter(term_matches_pattern)
-  
+
   if (length(filters) > 0) {
     for (nm in names(filters)) {
       dt <- dt |>
         dplyr::filter(.data[[nm]] %in% filters[[nm]])
     }
   }
-  
-  if (nrow(dt) == 0) {
-    stop("No rows found after applying filters.")
+
+  if (!is.null(min_line_n_ptids) && "n_ptids" %in% names(dt)) {
+    dt <- dt |> dplyr::filter(is.na(n_ptids) | n_ptids >= min_line_n_ptids)
   }
-  
+  if (!is.null(min_line_n_fireids) && "n_fireids" %in% names(dt)) {
+    dt <- dt |> dplyr::filter(is.na(n_fireids) | n_fireids >= min_line_n_fireids)
+  }
+  if (!is.null(min_line_n_treated_units) && "n_treated_units" %in% names(dt)) {
+    dt <- dt |> dplyr::filter(n_treated_units >= min_line_n_treated_units)
+  }
+  if (!is.null(min_line_n_treated_events) && "n_treated_events" %in% names(dt)) {
+    dt <- dt |> dplyr::filter(n_treated_events >= min_line_n_treated_events)
+  }
+
+  if (nrow(dt) == 0) {
+    stop("No rows found after applying filters and minimum-support thresholds.")
+  }
+
   if (!color_var %in% names(dt)) {
     stop("color_var not found in coef_tbl.")
   }
-  
+
   if (!is.null(linetype_var) && !linetype_var %in% names(dt)) {
     stop("linetype_var not found in coef_tbl.")
   }
-  
-  if (!is.null(facet_var) && !facet_var %in% names(dt)) {
-    stop("facet_var not found in coef_tbl.")
+
+  if (!is.null(facet_vars)) {
+    missing_facet_vars <- setdiff(facet_vars, names(dt))
+    if (length(missing_facet_vars) > 0) {
+      stop("facet_vars not found in coef_tbl: ", paste(missing_facet_vars, collapse = ", "))
+    }
   }
-  
+
   if (is.null(label_var)) {
     label_var <- color_var
   }
-  
+
   if (!label_var %in% names(dt)) {
     stop("label_var not found in coef_tbl.")
   }
-  
+
   label_tbl <- dt |>
     dplyr::distinct(
       dplyr::across(dplyr::all_of(unique(c(color_var, label_var)))),
@@ -199,66 +225,50 @@ plot_saved_sunab_general <- function(coef_tbl,
       n_treated_events
     ) |>
     dplyr::arrange(color_key)
-  
+
   if (show_n) {
     label_tbl <- label_tbl |>
       dplyr::mutate(
         display_label = dplyr::case_when(
-          n_label == "units" ~ paste0(
-            label_key,
-            "\nN_pt = ",
-            scales::comma(n_treated_units)
-          ),
-          n_label == "events" ~ paste0(
-            label_key,
-            "\nN_ev = ",
-            scales::comma(n_treated_events)
-          ),
+          n_label == "units" ~ paste0(label_key, "\nN_pt = ", scales::comma(n_treated_units)),
+          n_label == "events" ~ paste0(label_key, "\nN_ev = ", scales::comma(n_treated_events)),
           n_label == "both" ~ paste0(
             label_key,
-            "\nN_pt = ",
-            scales::comma(n_treated_units),
-            "\nN_ev = ",
-            scales::comma(n_treated_events)
+            "\nN_pt = ", scales::comma(n_treated_units),
+            "\nN_ev = ", scales::comma(n_treated_events)
           ),
           TRUE ~ as.character(label_key)
         )
       )
   } else {
     label_tbl <- label_tbl |>
-      dplyr::mutate(
-        display_label = as.character(label_key)
-      )
+      dplyr::mutate(display_label = as.character(label_key))
   }
-  
+
   dt <- dt |>
     dplyr::left_join(
-      label_tbl |>
-        dplyr::select(color_key, display_label),
+      label_tbl |> dplyr::select(color_key, display_label),
       by = setNames("color_key", color_var)
     )
-  
+
   color_levels <- unique(as.character(dt[[color_var]]))
   dt[[color_var]] <- factor(dt[[color_var]], levels = color_levels)
-  
+
   if (is.null(color_values)) {
     color_values <- scales::hue_pal()(length(color_levels))
     names(color_values) <- color_levels
   } else {
     missing_colors <- setdiff(color_levels, names(color_values))
     if (length(missing_colors) > 0) {
-      stop(
-        "Missing colors for: ",
-        paste(missing_colors, collapse = ", ")
-      )
+      stop("Missing colors for: ", paste(missing_colors, collapse = ", "))
     }
     color_values <- color_values[names(color_values) %in% color_levels]
   }
-  
+
   if (!is.null(linetype_var)) {
     linetype_levels <- unique(as.character(dt[[linetype_var]]))
     dt[[linetype_var]] <- factor(dt[[linetype_var]], levels = linetype_levels)
-    
+
     if (is.null(linetype_values)) {
       default_ltys <- c("solid", "dashed", "dotted", "dotdash", "longdash", "twodash")
       linetype_values <- default_ltys[seq_along(linetype_levels)]
@@ -266,39 +276,38 @@ plot_saved_sunab_general <- function(coef_tbl,
     } else {
       missing_ltys <- setdiff(linetype_levels, names(linetype_values))
       if (length(missing_ltys) > 0) {
-        stop(
-          "Missing linetypes for: ",
-          paste(missing_ltys, collapse = ", ")
-        )
+        stop("Missing linetypes for: ", paste(missing_ltys, collapse = ", "))
       }
       linetype_values <- linetype_values[names(linetype_values) %in% linetype_levels]
     }
   }
-  
-  if (!is.null(facet_var)) {
-    facet_levels <- unique(as.character(dt[[facet_var]]))
-    dt[[facet_var]] <- factor(dt[[facet_var]], levels = facet_levels)
+
+  if (!is.null(facet_vars)) {
+    for (facet_var in facet_vars) {
+      facet_levels <- unique(as.character(dt[[facet_var]]))
+      dt[[facet_var]] <- factor(dt[[facet_var]], levels = facet_levels)
+    }
   }
-  
+
   label_map <- label_tbl$display_label
   names(label_map) <- label_tbl$color_key
-  
+
   if (is.null(title)) {
     title <- "Dynamic DiD event-study estimates"
   }
-  
+
   if (is.null(caption)) {
     caption <- if (show_ci) "95% confidence intervals shown" else NULL
   }
-  
+
   if (is.null(legend_title_color)) {
     legend_title_color <- color_var
   }
-  
+
   if (is.null(legend_title_linetype) && !is.null(linetype_var)) {
     legend_title_linetype <- linetype_var
   }
-  
+
   if (is.null(linetype_var)) {
     p <- ggplot2::ggplot(
       dt,
@@ -325,7 +334,7 @@ plot_saved_sunab_general <- function(coef_tbl,
       ggplot2::geom_line(linewidth = 1) +
       ggplot2::geom_point(size = 2)
   }
-  
+
   if (show_ci) {
     if (ci_style == "ribbon") {
       if (is.null(linetype_var)) {
@@ -354,57 +363,69 @@ plot_saved_sunab_general <- function(coef_tbl,
           )
       }
     }
-    
+
     if (ci_style == "lines") {
       if (is.null(linetype_var)) {
         p <- p +
-          ggplot2::geom_line(
-            ggplot2::aes(y = ci_upper),
-            linewidth = 0.7,
-            alpha = 0.8
-          ) +
-          ggplot2::geom_line(
-            ggplot2::aes(y = ci_lower),
-            linewidth = 0.7,
-            alpha = 0.8
-          )
+          ggplot2::geom_line(ggplot2::aes(y = ci_upper), linewidth = 0.7, alpha = 0.8) +
+          ggplot2::geom_line(ggplot2::aes(y = ci_lower), linewidth = 0.7, alpha = 0.8)
       } else {
         p <- p +
           ggplot2::geom_line(
-            ggplot2::aes(
-              y = ci_upper,
-              group = interaction(.data[[color_var]], .data[[linetype_var]])
-            ),
+            ggplot2::aes(y = ci_upper, group = interaction(.data[[color_var]], .data[[linetype_var]])),
             linewidth = 0.7,
             alpha = 0.8
           ) +
           ggplot2::geom_line(
-            ggplot2::aes(
-              y = ci_lower,
-              group = interaction(.data[[color_var]], .data[[linetype_var]])
-            ),
+            ggplot2::aes(y = ci_lower, group = interaction(.data[[color_var]], .data[[linetype_var]])),
             linewidth = 0.7,
             alpha = 0.8
           )
       }
     }
   }
-  
+
+  if (show_event_support) {
+    support_dt <- dt
+
+    if (!is.null(min_event_n_ptids) && "n_ptids" %in% names(support_dt)) {
+      support_dt <- support_dt |> dplyr::filter(is.na(n_ptids) | n_ptids >= min_event_n_ptids)
+    }
+    if (!is.null(min_event_n_fireids) && "n_fireids" %in% names(support_dt)) {
+      support_dt <- support_dt |> dplyr::filter(is.na(n_fireids) | n_fireids >= min_event_n_fireids)
+    }
+
+    support_dt <- support_dt |>
+      dplyr::distinct(dplyr::across(dplyr::all_of(c(color_var, linetype_var, facet_vars, "term_value"))))
+
+    if (nrow(support_dt) > 0) {
+      if (is.null(event_support_y)) {
+        event_support_y <- min(dt$estimate, na.rm = TRUE)
+        if (is.finite(event_support_y)) {
+          event_support_y <- event_support_y - 0.05 * diff(range(dt$estimate, na.rm = TRUE))
+        }
+      }
+
+      p <- p +
+        ggplot2::geom_point(
+          data = support_dt,
+          ggplot2::aes(
+            x = term_value,
+            y = event_support_y,
+            color = .data[[color_var]]
+          ),
+          inherit.aes = FALSE,
+          size = event_support_size,
+          alpha = event_support_alpha,
+          shape = 124
+        )
+    }
+  }
+
   p <- p +
-    ggplot2::geom_vline(
-      xintercept = baseline,
-      linetype = "dashed",
-      color = "gray40"
-    ) +
-    ggplot2::geom_vline(
-      xintercept = 0,
-      linetype = "dashed",
-      color = "red"
-    ) +
-    ggplot2::geom_hline(
-      yintercept = 0,
-      color = "black"
-    ) +
+    ggplot2::geom_vline(xintercept = baseline, linetype = "dashed", color = "gray40") +
+    ggplot2::geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+    ggplot2::geom_hline(yintercept = 0, color = "black") +
     ggplot2::scale_color_manual(
       values = color_values,
       breaks = names(color_values),
@@ -423,36 +444,23 @@ plot_saved_sunab_general <- function(coef_tbl,
       legend.text = ggplot2::element_text(lineheight = 1.1)
     ) +
     ggplot2::coord_cartesian(xlim = xlim, ylim = ylim)
-  
+
   if (!is.null(linetype_var)) {
     p <- p +
-      ggplot2::scale_linetype_manual(
-        values = linetype_values,
-        name = legend_title_linetype
-      )
+      ggplot2::scale_linetype_manual(values = linetype_values, name = legend_title_linetype)
   }
-  
+
   if (show_ci && ci_style == "ribbon") {
-    p <- p +
-      ggplot2::scale_fill_manual(
-        values = color_values,
-        guide = "none"
-      )
+    p <- p + ggplot2::scale_fill_manual(values = color_values, guide = "none")
   }
-  
-  if (!is.null(facet_var)) {
-    p <- p +
-      ggplot2::facet_wrap(
-        stats::as.formula(paste("~", facet_var)),
-        ncol = facet_ncol,
-        scales = facet_scales
-      )
+
+  if (!is.null(facet_vars)) {
+    facet_formula <- stats::as.formula(paste("~", paste(facet_vars, collapse = " + ")))
+    p <- p + ggplot2::facet_wrap(facet_formula, ncol = facet_ncol, scales = facet_scales)
   }
-  
+
   p
 }
-
-
 
 
 
@@ -536,15 +544,17 @@ ecoregion_palette <- make_named_palette_from_tbl(
 
 p <- plot_saved_sunab_general(
   coef_tbl = coef_tbl,
-  subgroup_filters = list(
+  filters = list(
     analysis_id = "aznmmtns",
     vcov_id = "iid"
   ),
   color_var = "subgroup",
-  facet_var = "group_id",
+  facet_vars = "group_id",
   facet_ncol = 2,
-  min_treated_events = 10,
-  min_n_fireids = 15,
+  min_line_n_treated_events = 10,
+  min_line_n_fireids = 15,
+  show_event_support = TRUE,
+  min_event_n_fireids = 25,
   show_ci = FALSE#,
   #ci_style = "ribbon"
 )
