@@ -1,4 +1,6 @@
 
+# ~6 hours for all ecoregions with run_grid 120
+
 # Setup ----
 
 rm(list = ls())
@@ -229,9 +231,11 @@ group_specs <- tibble::tibble(
   group_id = c(
     "b10_pdsin4t1",
     "b10_pdsin3t1",
-    "b10_pdsisumn10"
+    "b10_pdsisumn10",
+    "b25_pdsisumn10"
   ),
   group_fun = list(
+    set_cd_groups,
     set_cd_groups,
     set_cd_groups,
     set_cd_groups
@@ -257,30 +261,20 @@ group_specs <- tibble::tibble(
       cd_nm = "b10_pdsisumn10",
       b_threshold = 10,
       d_threshold = -10
+    ),
+    list(
+      b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+      d_nm = "pdsi_annual_5_yrs_prior_sum_yot",
+      cd_nm = "b25_pdsisumn10",
+      b_threshold = 25,
+      d_threshold = -10
     )
   )
 )
 
-# group_specs <- tibble::tibble(
-#   group_id = c(
-#     "b10_pdsin3t1"
-#   ),
-#   group_fun = list(
-#     set_cd_groups
-#   ),
-#   group_args = list(
-#     list(
-#       b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
-#       d_nm = "pdsi_annual_5_yrs_prior_threshold_n3_yot",
-#       cd_nm = "b10_pdsin3t1",
-#       b_threshold = 10,
-#       d_threshold = 1
-#     )
-#   )
-# )
 
 model_specs <- tibble::tibble(
-  model_id = c("sunab_main"),
+  model_id = c("b_pdsi_sunab_twfe"),
   formula_template = c(
     "{outcome} ~ biotic_relaxedforestnorm + pdsi_annual + sunab(FirstTreat, year, ref.p = -6) | pt_id + year"
   ),
@@ -290,38 +284,76 @@ model_specs <- tibble::tibble(
 )
 
 
-vcov_specs <- tibble::tibble(
+ecor_vcov_specs <- tibble::tibble(
   vcov_id = c(
-    #"cluster_fireid",
-    "conley_125km_20km",
-    "conley_50km_10km"
+    "iid",
+    "cluster_pt",
+    "cluster_eco4",
+    # "conley_50km_20km",
+    # "conley_75km_20km",
+    "conley_125km_20km"#,
+    # "conley_150km_20km",
+    # "conley_50km_10km"
   ),
   vcov_label = c(
-    #"Clustered SEs: fireid",
-    "Conley SEs: 125 km cutoff, 20 km pixel",
-    "Conley SEs: 50 km cutoff, 10 km pixel"
+    "IID Classical",
+    "Cluster pt_id",
+    "Clustered SEs: eco4",
+    # "Conley SEs: 50 km cutoff, 20 km pixel",
+    # "Conley SEs: 75 km cutoff, 20 km pixel",
+    "Conley SEs: 125 km cutoff, 20 km pixel"#,
+    # "Conley SEs: 150 km cutoff, 20 km pixel",
+    # "Conley SEs: 50 km cutoff, 10 km pixel"
   ),
   vcov = list(
-    #stats::as.formula("~fireid"),
+    "iid",
+    stats::as.formula("~pt_id"),
+    stats::as.formula("~us_l4code"),
+    # fixest::vcov_conley(
+    #   lat = "lat",
+    #   lon = "long",
+    #   cutoff = 50,
+    #   pixel = 20,
+    #   distance = "triangular"
+    # ),
+    # fixest::vcov_conley(
+    #   lat = "lat",
+    #   lon = "long",
+    #   cutoff = 75,
+    #   pixel = 20,
+    #   distance = "triangular"
+    # ),
     fixest::vcov_conley(
       lat = "lat",
       lon = "long",
       cutoff = 125,
       pixel = 20,
       distance = "triangular"
-    ),
-    fixest::vcov_conley(
-      lat = "lat",
-      lon = "long",
-      cutoff = 50,
-      pixel = 10,
-      distance = "triangular"
-    )
+    )#,
+    # fixest::vcov_conley(
+    #   lat = "lat",
+    #   lon = "long",
+    #   cutoff = 150,
+    #   pixel = 20,
+    #   distance = "triangular"
+    # ),
+    # fixest::vcov_conley(
+    #   lat = "lat",
+    #   lon = "long",
+    #   cutoff = 50,
+    #   pixel = 10,
+    #   distance = "triangular"
+    # )
   ),
   vcov_vars = list(
-    #c("fireid"),
-    c("lat", "long"),
-    c("lat", "long")
+    character(0),
+    c("pt_id"),
+    c("us_l4code"),
+    # c("lat", "long"),
+    # c("lat", "long"),
+    c("lat", "long")#,
+    # c("lat", "long"),
+    # c("lat", "long")
   )
 )
 
@@ -342,11 +374,12 @@ run_grid |>
 
 tic()
 dydid_results <- run_dydid_experiment(
-  analysis_specs = (analysis_specs |> arrange(analysis_id))[1:11,],
+  #analysis_specs = (analysis_specs |> arrange(analysis_id))[1,],
+  analysis_specs = ecoregion_analysis_specs,
   outcome_specs = outcome_specs,
   group_specs = group_specs,
   model_specs = model_specs,
-  vcov_specs = vcov_specs,
+  vcov_specs = ecor_vcov_specs,
   dir_out = dir_results,
   trt_col = "fire",
   ci_level = 0.95,
@@ -357,11 +390,11 @@ dydid_results <- run_dydid_experiment(
 toc()
 
 
-# 
-# all_tables <- rebuild_dydid_tables_from_by_run(
-#   dir_out = dir_results,
-#   write_csv = TRUE
-# )
+
+all_tables <- rebuild_dydid_tables_from_by_run(
+  dir_out = dir_results,
+  write_csv = FALSE
+)
 
 
 

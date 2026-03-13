@@ -243,7 +243,7 @@ fit_one_subgroup_model <- function(df,
     data = df_model,
     ...
   )
-  
+
   obs_used <- fixest::obs(model)
   df_est <- df_model[obs_used, , drop = FALSE]
   
@@ -342,6 +342,72 @@ fit_subgroup_models <- function(df,
   models
 }
 
+extract_vcov_table_one_vcov <- function(model,
+                                        vcov,
+                                        vcov_id,
+                                        vcov_label,
+                                        analysis_id,
+                                        outcome,
+                                        group_id,
+                                        subgroup_col,
+                                        model_id,
+                                        formula_template) {
+  
+  vc <- stats::vcov(model, vcov = vcov)
+  vc_mat <- as.matrix(vc)
+  
+  if (is.null(rownames(vc_mat)) || is.null(colnames(vc_mat))) {
+    stop("vcov matrix must have row and column names.")
+  }
+  
+  subgroup <- attr(model, "subgroup")
+  
+  expand.grid(
+    term_i = rownames(vc_mat),
+    term_j = colnames(vc_mat),
+    stringsAsFactors = FALSE
+  ) |>
+    tibble::as_tibble() |>
+    dplyr::mutate(
+      analysis_id = analysis_id,
+      outcome = outcome,
+      group_id = group_id,
+      subgroup_col = subgroup_col,
+      subgroup = subgroup,
+      model_id = model_id,
+      vcov_id = vcov_id,
+      vcov_label = vcov_label,
+      formula_template = formula_template,
+      vcov_value = purrr::map2_dbl(
+        term_i,
+        term_j,
+        \(i, j) vc_mat[i, j]
+      ),
+      subgroup_run_id = glue::glue(
+        "{analysis_id}__{outcome}__{group_id}__{model_id}__{subgroup}"
+      ),
+      vcov_run_id = glue::glue(
+        "{analysis_id}__{outcome}__{group_id}__{model_id}__{subgroup}__{vcov_id}"
+      )
+    ) |>
+    dplyr::select(
+      analysis_id,
+      outcome,
+      group_id,
+      subgroup_col,
+      subgroup,
+      model_id,
+      vcov_id,
+      vcov_label,
+      formula_template,
+      term_i,
+      term_j,
+      vcov_value,
+      subgroup_run_id,
+      vcov_run_id
+    )
+}
+
 
 extract_coef_table_one_vcov <- function(model,
                                         vcov,
@@ -356,7 +422,7 @@ extract_coef_table_one_vcov <- function(model,
                                         term_pattern = ".*",
                                         ci_level = 0.95,
                                         group_palette = NULL) {
-  
+  tic(glue::glue("VCOV: {vcov_label}"))
   ct <- fixest::coeftable(model, vcov = vcov)
   ct_tbl <- tibble::as_tibble(as.data.frame(ct), rownames = "term")
   
@@ -433,6 +499,8 @@ extract_coef_table_one_vcov <- function(model,
         n_rows_treated = NA_integer_
       )
   }
+  
+  toc()
   
   out |>
     dplyr::select(
@@ -570,6 +638,7 @@ run_one_dydid_spec <- function(parquet_files,
   coef_file <- file.path(run_dir, "coef.parquet")
   subgroup_file <- file.path(run_dir, "subgroup.parquet")
   support_file <- file.path(run_dir, "support.parquet")
+  vcov_file <- file.path(run_dir, "vcov.parquet")
   registry_file <- file.path(run_dir, "registry.parquet")
   run_spec_file <- file.path(run_dir, "run_spec.rds")
   
@@ -577,6 +646,7 @@ run_one_dydid_spec <- function(parquet_files,
       file.exists(coef_file) &&
       file.exists(subgroup_file) &&
       file.exists(support_file) &&
+      file.exists(vcov_file) &&
       file.exists(registry_file) &&
       file.exists(run_spec_file)) {
     
@@ -585,6 +655,7 @@ run_one_dydid_spec <- function(parquet_files,
         subgroup_run_summary_file = subgroup_file,
         event_time_support_file = support_file,
         coef_expanded_vcov_file = coef_file,
+        vcov_file = vcov_file,
         run_registry_file = registry_file,
         run_spec_file = run_spec_file,
         skipped_existing = TRUE
@@ -703,6 +774,34 @@ run_one_dydid_spec <- function(parquet_files,
   ) |>
     dplyr::mutate(run_id = run_id)
   
+  vcov_tbl <- purrr::imap_dfr(
+    subgroup_models,
+    \(model, subgroup_nm) {
+      purrr::pmap_dfr(
+        list(
+          vcov = vcov_specs$vcov,
+          vcov_id = vcov_specs$vcov_id,
+          vcov_label = vcov_specs$vcov_label
+        ),
+        \(vcov, vcov_id, vcov_label) {
+          extract_vcov_table_one_vcov(
+            model = model,
+            vcov = vcov,
+            vcov_id = vcov_id,
+            vcov_label = vcov_label,
+            analysis_id = analysis_id,
+            outcome = outcome,
+            group_id = group_id,
+            subgroup_col = subgroup_col,
+            model_id = model_id,
+            formula_template = formula_template
+          )
+        }
+      )
+    }
+  ) |>
+    dplyr::mutate(run_id = run_id)
+  
   registry_tbl <- tibble::tibble(
     run_id = run_id,
     analysis_id = analysis_id,
@@ -729,11 +828,13 @@ run_one_dydid_spec <- function(parquet_files,
     n_subgroups = dplyr::n_distinct(subgroup_tbl$subgroup),
     subgroup_levels = paste(sort(unique(subgroup_tbl$subgroup)), collapse = ","),
     n_support_rows = nrow(support_tbl),
+    n_vcov_rows = nrow(vcov_tbl),
     fit_started = fit_started,
     fit_finished = fit_finished,
     subgroup_run_summary_file = subgroup_file,
     event_time_support_file = support_file,
     coef_expanded_vcov_file = coef_file,
+    vcov_file = vcov_file,
     run_registry_file = registry_file,
     run_spec_file = run_spec_file
   )
@@ -763,15 +864,18 @@ run_one_dydid_spec <- function(parquet_files,
     lean = lean
   )
   
+  tic("Writing files")
   arrow::write_parquet(subgroup_tbl, subgroup_file)
   arrow::write_parquet(support_tbl, support_file)
   arrow::write_parquet(coef_tbl, coef_file)
+  arrow::write_parquet(vcov_tbl, vcov_file)
   arrow::write_parquet(registry_tbl, registry_file)
   saveRDS(run_spec, run_spec_file)
+  toc()
   
   rm(
     subgroup_models, df, df_grouped,
-    subgroup_tbl, support_tbl, coef_tbl, registry_tbl, run_spec
+    subgroup_tbl, support_tbl, coef_tbl, vcov_tbl, registry_tbl, run_spec
   )
   gc()
   
@@ -779,6 +883,7 @@ run_one_dydid_spec <- function(parquet_files,
     subgroup_run_summary_file = subgroup_file,
     event_time_support_file = support_file,
     coef_expanded_vcov_file = coef_file,
+    vcov_file = vcov_file,
     run_registry_file = registry_file,
     run_spec_file = run_spec_file,
     skipped_existing = FALSE
@@ -1375,7 +1480,6 @@ rebuild_dydid_tables_from_by_run <- function(dir_out,
     )
   )
 }
-
 
 
 
