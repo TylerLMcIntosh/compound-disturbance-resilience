@@ -6,7 +6,7 @@ editor: visual
 
 # Setup for analysis
 
-``` {r setupchunk}
+```{r setupchunk}
 #| echo: true
 #| message: false
 #| warning: false
@@ -27,11 +27,13 @@ install_load_packages(c(
   "sf",
   "scales",
   "rlang",
+  "grid",
+  "gridExtra",
   "ggpmisc"))
 
 gdrive_folder <- "GEE_resilience_v6_operational_ss500_ts50000"
 
-dir_figs <- here::here('figs')
+dir_figs <- here::here('figs', gdrive_folder)
 dir_derived <- here::here('data', 'derived', gdrive_folder)
 dir_raw <- here::here('data', 'raw')
 dir_manual <- here::here('data', 'manual')
@@ -47,6 +49,7 @@ set.seed(seed)
 ```
 
 # Data
+
 ```{r}
 
 d_s_f <- list.files(
@@ -59,15 +62,26 @@ d_s <- open_dataset(d_s_f, format = "parquet") |>
   collect()
 
 d_s_fire <- d_s |> filter(fire == 1)
+d_s_nfire <- d_s |> filter(fire == 0)
+
+d_l_f <- list.files(
+  here::here(dir_derived, "parquet"),
+  pattern = "dats_long.*\\.parquet$",
+  full.names = TRUE
+)
+
+d_l <- open_dataset(d_l_f, format = "parquet") |>
+  collect()
+
+d_l_fire <- d_l |> filter(fire == 1)
 
 ```
 
 # Hist & N for each (burn_year 2005-2020)
 
-
 ```{r}
 
-plot_density_with_deciles <- function(df, var, x_label = NULL, log_scale = FALSE) {
+plot_density_with_deciles <- function(df, var, title, x_label = NULL, log_scale = FALSE) {
 
   var_quo <- enquo(var)
   var_name <- as_name(var_quo)
@@ -107,7 +121,8 @@ plot_density_with_deciles <- function(df, var, x_label = NULL, log_scale = FALSE
     labs(
       x = ifelse(is.null(x_label), var_name, x_label),
       y = "Density",
-      caption = caption_text
+      caption = caption_text,
+      title = title
     ) +
     theme_minimal()
 
@@ -120,41 +135,153 @@ plot_density_with_deciles <- function(df, var, x_label = NULL, log_scale = FALSE
 
 
 
-plot_density_with_deciles(
+
+
+compare_densities_with_deciles <- function(
+    df1,
+    df2,
+    var,
+    title,
+    x_label = NULL,
+    log_scale = FALSE,
+    df1_name = deparse(substitute(df1)),
+    df2_name = deparse(substitute(df2))
+) {
+
+  var_quo <- rlang::enquo(var)
+  var_name <- rlang::as_name(var_quo)
+
+  prep_one <- function(df, name) {
+    x <- dplyr::pull(df, !!var_quo)
+
+    if (log_scale) {
+      keep <- !is.na(x) & x > 0
+      x <- x[keep]
+      df <- df[keep, , drop = FALSE]
+    } else {
+      x <- x[!is.na(x)]
+    }
+
+    probs <- seq(0.1, 0.9, by = 0.1)
+    dec <- stats::quantile(x, probs = probs, na.rm = TRUE, names = TRUE)
+
+    list(
+      df = df,
+      name = name,
+      deciles = dec
+    )
+  }
+
+  a <- prep_one(df1, df1_name)
+  b <- prep_one(df2, df2_name)
+
+  df_plot <- dplyr::bind_rows(
+    dplyr::mutate(a$df, .which_df = a$name),
+    dplyr::mutate(b$df, .which_df = b$name)
+  )
+
+  caption_text <- paste0(
+    a$name, " deciles: ",
+    paste0(names(a$deciles), "=", round(a$deciles, 3), collapse = " | "),
+    "\n",
+    b$name, " deciles: ",
+    paste0(names(b$deciles), "=", round(b$deciles, 3), collapse = " | ")
+  )
+
+  p <- ggplot2::ggplot(
+    df_plot,
+    ggplot2::aes(x = !!var_quo, color = .data[[".which_df"]])
+  ) +
+    ggplot2::geom_density() +
+    ggplot2::geom_vline(
+      xintercept = unname(a$deciles),
+      linetype = "dotted",
+      color = "red"
+    ) +
+    ggplot2::geom_vline(
+      xintercept = unname(b$deciles),
+      linetype = "dotted",
+      color = "blue"
+    ) +
+    ggplot2::annotate(
+      "text",
+      x = unname(a$deciles),
+      y = 0,
+      label = names(a$deciles),
+      color = "red",
+      vjust = 0.3,
+      size = 3
+    ) +
+    ggplot2::annotate(
+      "text",
+      x = unname(b$deciles),
+      y = 0,
+      label = names(b$deciles),
+      color = "blue",
+      vjust = 1.2,
+      size = 3
+    ) +
+    ggplot2::scale_color_manual(
+      values = stats::setNames(c("red", "blue"), c(a$name, b$name)),
+      breaks = c(a$name, b$name)
+    ) +
+    ggplot2::labs(
+      x = ifelse(is.null(x_label), var_name, x_label),
+      y = "Density",
+      caption = caption_text,
+      title = title,
+      color = NULL
+    ) +
+    ggplot2::theme_minimal() +
+    theme(
+      plot.caption = element_text(size = 8)
+  )
+
+  if (log_scale) {
+    p <- p + ggplot2::scale_x_log10(labels = scales::label_number())
+  }
+
+  p
+}
+
+compare_densities_with_deciles(
   d_s_fire,
+  d_s_nfire,
   biotic_relaxedforestnorm_5_yrs_prior_sum_yot,
+  title = "Biotic prior sum: fire-only vs no fire",
   x_label = "Biotic 5-yr prior sum",
   log_scale = TRUE
 )
+ggsave(here(dir_figs, "density_biotic_prior.png"))
 
-plot_density_with_deciles(
+compare_densities_with_deciles(
   d_s_fire,
+  d_s_nfire,
   biotic_6roll_max,
-  x_label = "Biotic 5-yr rolling maximum",
+  title = "Biotic roll max : fire-only vs no fire",
+  x_label = "Biotic 5-yr roll max",
   log_scale = TRUE
 )
+ggsave(here(dir_figs, "density_biotic_rollmax.png"))
 
 
-plot_density_with_deciles(
+compare_densities_with_deciles(
   d_s_fire,
+  d_s_nfire,
   pdsi_annual_5_yrs_prior_sum_yot,
-  x_label = "PDSI sum 5-yr prior",
+  title = "PDSI sum prior : fire-only vs no fire",
+  x_label = "PDSI 5-yr sum",
   log_scale = FALSE
 )
+ggsave(here(dir_figs, "density_pdsi_prior.png"))
 
-plot_density_with_deciles(
-  d_s_fire,
-  pdsi_annual_5_yrs_prior_threshold_n4_yot,
-  x_label = "PDSI -4 threshold 5-yr prior",
-  log_scale = FALSE
-)
+
+ # histograms for thresholded data?
+
 
 ```
 
 ```{r}
-
-ggplot(d_s) +
-  geom_density(aes(x = biotic_relaxedforestnorm_5_yrs_prior_sum_yot))
 
 set_cd_groups <- function(df,
                           b_nm,
@@ -162,7 +289,9 @@ set_cd_groups <- function(df,
                           cd_nm,
                           b_threshold,
                           d_threshold) {
-  df_new <- df |>
+  
+  if(d_threshold < 0) {
+    df_new <- df |>
     dplyr::mutate(
       "{cd_nm}" := dplyr::case_when(
         .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] >  d_threshold ~ "f",
@@ -172,9 +301,207 @@ set_cd_groups <- function(df,
         TRUE ~ NA_character_
       )
     )
+  } else {
+    df_new <- df |>
+    dplyr::mutate(
+      "{cd_nm}" := dplyr::case_when(
+        .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] <  d_threshold ~ "f",
+        .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] <  d_threshold ~ "bf",
+        .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] >= d_threshold ~ "df",
+        .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] >= d_threshold ~ "bdf",
+        TRUE ~ NA_character_
+      )
+    )
+    
+  }
+
   
   return(df_new)
 }
+
+
+
+cd_group_table <- function(df, specs) {
+
+  purrr::map_dfr(specs, function(s) {
+
+    df2 <- set_cd_groups(
+      df = df,
+      b_nm = s$b_nm,
+      d_nm = s$d_nm,
+      cd_nm = s$cd_nm,
+      b_threshold = s$b_threshold,
+      d_threshold = s$d_threshold
+    )
+
+    # row counts
+    counts_rows <- df2 |>
+      count(.data[[s$cd_nm]], name = "n") |>
+      mutate(group = .data[[s$cd_nm]]) |>
+      select(group, n) |>
+      tidyr::complete(group = c("f", "df", "bf", "bdf"), fill = list(n = 0)) |>
+      tidyr::pivot_wider(names_from = group, values_from = n)
+
+    # unique fire counts
+    counts_fire <- df2 |>
+      filter(!is.na(.data[[s$cd_nm]])) |>
+      group_by(group = .data[[s$cd_nm]]) |>
+      summarise(nf = n_distinct(fireid), .groups = "drop") |>
+      tidyr::complete(group = c("f", "df", "bf", "bdf"), fill = list(nf = 0)) |>
+      mutate(group = paste0(group, "_nf")) |>
+      tidyr::pivot_wider(names_from = group, values_from = nf)
+
+    out <- dplyr::bind_cols(counts_rows, counts_fire) |>
+      mutate(
+        cd_nm = s$cd_nm,
+        b_nm = s$b_nm,
+        d_nm = s$d_nm,
+        b_threshold = s$b_threshold,
+        d_threshold = s$d_threshold
+      ) |>
+      select(
+        cd_nm, b_nm, b_threshold, d_nm, d_threshold,
+        f, df, bf, bdf,
+        f_nf, df_nf, bf_nf, bdf_nf
+      ) |>
+      mutate(
+        total = f + df + bf + bdf,
+        f_p   = round(100 * f   / total),
+        df_p  = round(100 * df  / total),
+        bf_p  = round(100 * bf  / total),
+        bdf_p = round(100 * bdf / total)
+      ) |>
+      select(-total)
+
+    out
+  })
+}
+
+expand_cd_specs <- function(specs) {
+  # specs: list of lists; each list can include:
+  #   b_nm, d_nm, cd_prefix (optional), b_thresholds, d_thresholds
+  #
+  # returns a list of fully-expanded spec lists:
+  #   b_nm, d_nm, cd_nm, b_threshold, d_threshold
+  
+  expanded <- purrr::map_dfr(specs, function(s) {
+    cd_prefix <- s$cd_prefix %||% paste0("cd_", s$b_nm, "__", s$d_nm)
+
+    tidyr::crossing(
+      b_threshold = s$b_thresholds,
+      d_threshold = s$d_thresholds
+    ) |>
+      mutate(
+        b_nm = s$b_nm,
+        d_nm = s$d_nm,
+        cd_nm = paste0(
+          cd_prefix,
+          "_b", b_threshold,
+          "_d", d_threshold
+        )
+      ) |>
+      select(cd_nm, b_nm, d_nm, b_threshold, d_threshold)
+  })
+
+  # convert rows to list-of-lists (what cd_group_table expects)
+  purrr::pmap(
+    expanded,
+    \(cd_nm, b_nm, d_nm, b_threshold, d_threshold)
+      list(cd_nm = cd_nm, b_nm = b_nm, d_nm = d_nm,
+           b_threshold = b_threshold, d_threshold = d_threshold)
+  )
+}
+
+`%||%` <- function(x, y) if (!is.null(x)) x else y
+
+
+
+specs_grid1 <- list(
+  list(
+    b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+    d_nm = "pdsi_annual_5_yrs_prior_sum_yot",
+    b_thresholds = c(10, 20, 50),
+    d_thresholds = c(-10)
+  )
+)
+
+specs_grid2 <- list(
+  list(
+    b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+    d_nm = "pdsi_annual_5_yrs_prior_threshold_n4_yot",
+    b_thresholds = c(10, 20, 50),
+    d_thresholds = c(1, 2)
+  )
+)
+
+specs_grid3 <- list(
+  list(
+    b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+    d_nm = "pdsi_annual_5_yrs_prior_threshold_n3_yot",
+    b_thresholds = c(10, 20, 50),
+    d_thresholds = c(1, 2, 3)
+  )
+)
+
+specs_grid4 <- list(
+  list(
+    b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+    d_nm = "hd_fingerprint_5_yrs_prior_threshold_6_yot",
+    b_thresholds = c(10, 20, 50),
+    d_thresholds = c(1, 2)
+  )
+)
+
+expanded_specs <- c(
+  expand_cd_specs(specs_grid1),
+  expand_cd_specs(specs_grid2),
+  expand_cd_specs(specs_grid3),
+  expand_cd_specs(specs_grid4)
+)
+
+cd_summary_grid <- cd_group_table(d_s, expanded_specs) |>
+  arrange(b_threshold, d_nm) |>
+  filter(!if_any(where(is.numeric), ~ . == 0)) |>
+  select(-cd_nm)
+
+
+cd_tbl <- tableGrob(
+  cd_summary_grid,
+  theme = ttheme_minimal(
+    core = list(bg_params = list(fill = "white", col = NA)),
+    colhead = list(bg_params = list(fill = "white", col = NA))
+  )
+)
+
+cd_title <- textGrob(
+  "Counts for possible CD groups",
+  gp = gpar(fontsize = 16, fontface = "bold")
+)
+
+cd_table_with_title <- arrangeGrob(
+  cd_tbl,
+  top = cd_title
+)
+
+ggsave(
+  here(dir_figs, "cd_group_counts.png"),
+  cd_table_with_title,
+  width = 20,
+  height = 6,
+  bg = "white"
+)
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 d_s <- set_cd_groups(df = d_s,
@@ -205,81 +532,248 @@ d_s <- set_cd_groups(df = d_s,
                    b_threshold = 10,
                    d_threshold = -10)
 
+
+
+
+
 # GAM METRIC DISTRIBUTIONS
+# 
+# plot_density_by_group_with_n <- function(df, x_var, group_var, x_label = NULL) {
+# 
+#   x_quo <- enquo(x_var)
+#   g_quo <- enquo(group_var)
+# 
+#   x_name <- as_name(x_quo)
+#   g_name <- as_name(g_quo)
+# 
+#   # Filter missing groups
+#   d_plot <- df |>
+#     filter(!is.na(!!g_quo))
+# 
+#   # Compute N per group
+#   group_n <- d_plot |>
+#     count(!!g_quo, name = "N") |>
+#     mutate(label = paste0(!!g_quo, " (N=", N, ")"))
+# 
+#   lab_vec <- setNames(group_n$label, group_n[[g_name]])
+# 
+#   ggplot(d_plot, aes(x = !!x_quo, color = !!g_quo)) +
+#     geom_density() +
+#     scale_color_discrete(labels = lab_vec) +
+#     labs(
+#       x = ifelse(is.null(x_label), x_name, x_label),
+#       color = g_name
+#     ) +
+#     theme_minimal()
+# }
+# 
+# plot_density_by_group_with_n(
+#   d_s,
+#   gam_rap_tree_diff_pre6_to_post_min,
+#   cd_group_b10_pdsin4t1,
+#   x_label = "RAP total loss"
+# )
+# 
+# plot_density_by_group_with_n(
+#   d_s,
+#   gam_rap_tree_diff_pre6_to_post_min,
+#   cd_group_b10_pdsin3t1,
+#   x_label = "RAP total loss"
+# )
+# 
+# plot_density_by_group_with_n(
+#   d_s,
+#   gam_rap_tree_diff_pre6_to_post_min,
+#   cd_group_b10_pdsin4t3,
+#   x_label = "RAP total loss"
+# )
+# 
+# 
+# plot_density_by_group_with_n(
+#   d_s,
+#   gam_rap_tree_diff_pre6_to_post_min,
+#   cd_group_b10_pdsisumn10,
+#   x_label = "RAP total loss"
+# )
+
+
+# Boxplots
+ggplot(
+  d_s |>
+    filter(!is.na(cd_group_b10_pdsin4t1)) |>
+    add_count(cd_group_b10_pdsin4t1, name = "n_group"),
+  aes(
+    x = paste0(cd_group_b10_pdsin4t1, " (N=", n_group, ")"),
+    y = gam_rap_tree_diff_pre6_to_post_min
+  )
+) +
+  geom_boxplot() +
+  labs(y = "RAP total loss") +
+  theme_minimal()
+ggsave(here(dir_figs, "boxplot_raploss_cd_group_b10_pdsin4t1.png"))
+
+
+ggplot(
+  d_s |>
+    filter(!is.na(cd_group_b10_pdsin4t3)) |>
+    add_count(cd_group_b10_pdsin4t3, name = "n_group"),
+  aes(
+    x = paste0(cd_group_b10_pdsin4t3, " (N=", n_group, ")"),
+    y = gam_rap_tree_diff_pre6_to_post_min
+  )
+) +
+  geom_boxplot() +
+  labs(y = "RAP total loss") +
+  theme_minimal()
+ggsave(here(dir_figs, "boxplot_raploss_cd_group_b10_pdsin4t3.png"))
+
+
+ggplot(
+  d_s |>
+    filter(!is.na(cd_group_b10_pdsisumn10)) |>
+    add_count(cd_group_b10_pdsisumn10, name = "n_group"),
+  aes(
+    x = paste0(cd_group_b10_pdsisumn10, " (N=", n_group, ")"),
+    y = gam_rap_tree_diff_pre6_to_post_min
+  )
+) +
+  geom_boxplot() +
+  labs(y = "RAP total loss") +
+  theme_minimal()
+ggsave(here(dir_figs, "boxplot_raploss_cd_group_b10_pdsisumn10.png"))
 
 
 
-plot_density_by_group_with_n <- function(df, x_var, group_var, x_label = NULL) {
 
-  x_quo <- enquo(x_var)
-  g_quo <- enquo(group_var)
-
-  x_name <- as_name(x_quo)
-  g_name <- as_name(g_quo)
-
-  # Filter missing groups
-  d_plot <- df |>
-    filter(!is.na(!!g_quo))
-
-  # Compute N per group
-  group_n <- d_plot |>
-    count(!!g_quo, name = "N") |>
-    mutate(label = paste0(!!g_quo, " (N=", N, ")"))
-
-  lab_vec <- setNames(group_n$label, group_n[[g_name]])
-
-  ggplot(d_plot, aes(x = !!x_quo, color = !!g_quo)) +
-    geom_density() +
-    scale_color_discrete(labels = lab_vec) +
-    labs(
-      x = ifelse(is.null(x_label), x_name, x_label),
-      color = g_name
-    ) +
-    theme_minimal()
-}
-
-plot_density_by_group_with_n(
-  d_s,
-  gam_rap_tree_diff_pre6_to_post_min,
-  cd_group_b10_pdsin4t1,
-  x_label = "RAP total loss"
-)
-
-plot_density_by_group_with_n(
-  d_s,
-  gam_rap_tree_diff_pre6_to_post_min,
-  cd_group_b10_pdsin3t1,
-  x_label = "RAP total loss"
-)
-
-plot_density_by_group_with_n(
-  d_s,
-  gam_rap_tree_diff_pre6_to_post_min,
-  cd_group_b10_pdsin4t3,
-  x_label = "RAP total loss"
-)
+ggplot(
+  d_s |>
+    filter(!is.na(cd_group_b10_pdsin4t3)) |>
+    add_count(cd_group_b10_pdsin4t3, name = "n_group"),
+  aes(
+    x = paste0(cd_group_b10_pdsin4t3, " (N=", n_group, ")"),
+    y = gam_rap_tree_slope_post_min_to_p15
+  )
+) +
+  geom_boxplot() +
+  labs(y = "RAP min to 15 yr recovery slope") +
+  theme_minimal()
+ggsave(here(dir_figs, "boxplot_rapgamslope_cd_group_b10_pdsin4t3.png"))
 
 
-plot_density_by_group_with_n(
-  d_s,
-  gam_rap_tree_diff_pre6_to_post_min,
-  cd_group_b10_pdsisumn10,
-  x_label = "RAP total loss"
-)
 
 
+ggplot(
+  d_s |>
+    filter(!is.na(cd_group_b10_pdsin4t3)) |>
+    add_count(cd_group_b10_pdsin4t3, name = "n_group"),
+  aes(
+    x = paste0(cd_group_b10_pdsin4t3, " (N=", n_group, ")"),
+    y = raw_post_fire_rap_tree_slope_3_15_yrs
+  )
+) +
+  geom_boxplot() +
+  labs(y = "RAP 3-15 yr recovery slope") +
+  theme_minimal()
+ggsave(here(dir_figs, "boxplot_raprawslope_cd_group_b10_pdsin4t3.png"))
+
+
+
+
+# 
+# 
+# 
+# bin_cd_and_boxplot <- function(df, cd_nm = cd_nm, outcome = outcome, fire = fire, n_bins = 10) {
+# 
+#   cd_quo <- rlang::enquo(cd_nm)
+#   out_quo <- rlang::enquo(outcome)
+#   fire_quo <- rlang::enquo(fire)
+# 
+#   cd_name <- rlang::as_name(cd_quo)
+# 
+#   x <- df[[cd_name]]
+# 
+#   if (inherits(x, "integer")) {
+# 
+#     df2 <- df |>
+#       dplyr::mutate(
+#         bin_cd = ifelse(!!fire_quo == 0, NA, as.character(!!cd_quo))
+#       )
+# 
+#   } else {
+# 
+#     rng <- range(x, na.rm = TRUE, finite = TRUE)
+# 
+#     # if there isn't a usable range, bins can't be formed
+#     if (!is.finite(rng[1]) || !is.finite(rng[2]) || rng[1] == rng[2]) {
+#       df2 <- df |>
+#         dplyr::mutate(bin_cd = NA_character_)
+#     } else {
+# 
+#       breaks <- seq(from = rng[1], to = rng[2], length.out = n_bins + 1)
+# 
+#       labels <- paste0(
+#         round(head(breaks, -1), 1),
+#         "–",
+#         round(tail(breaks, -1), 1)
+#       )
+# 
+#       df2 <- df |>
+#         dplyr::mutate(
+#           bin_cd = cut(
+#             !!cd_quo,
+#             breaks = breaks,
+#             include.lowest = TRUE,
+#             labels = labels
+#           ),
+#           bin_cd = ifelse(!!fire_quo == 0, NA, as.character(bin_cd))
+#         )
+#     }
+#   }
+# 
+#   df2 <- df2 |> dplyr::mutate(bin_cd = factor(bin_cd))
+# 
+#   p <- ggplot2::ggplot(df2 |> dplyr::filter(!is.na(bin_cd)),
+#               ggplot2::aes(x = bin_cd, y = !!out_quo)) +
+#     ggplot2::geom_boxplot(outlier.alpha = 0.2) +
+#     ggplot2::labs(
+#       x = paste0(cd_name, " bins"),
+#       y = rlang::as_name(out_quo)
+#     ) +
+#     ggplot2::theme_minimal() +
+#     ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 30, hjust = 1))
+# 
+#   list(data = df2, plot = p)
+# }
+# 
+# 
+# res <- bin_cd_and_boxplot(d_s, biotic_relaxedforestnorm_5_yrs_prior_sum_yot, gam_rap_tree_diff_pre6_to_post_min)
+# res$plot
+# 
+# res <- bin_cd_and_boxplot(d_s, pdsi_annual_5_yrs_prior_threshold_n3_yot, gam_rap_tree_diff_pre6_to_post_min)
+# res$plot
+# 
+# 
+# res <- bin_cd_and_boxplot(d_s, pdsi_annual_5_yrs_prior_threshold_n4_yot, gam_rap_tree_diff_pre6_to_post_min)
+# res$plot
+# 
+# res <- bin_cd_and_boxplot(d_s, pdsi_annual_5_yrs_prior_sum_yot, gam_rap_tree_diff_pre6_to_post_min)
+# res$plot
+# 
+# res <- bin_cd_and_boxplot(d_s,  hd_fingerprint_5_yrs_prior_threshold_6_yot, gam_rap_tree_diff_pre6_to_post_min)
+# res$plot
+# 
 
 
 
 ```
 
-
-
-
-
-
-
 # VCF vs RAP plots
+
+Both metrics & raw data
+
+Takeaways: we find that RAP aggregated to 250m and VCF have RMSE of around 12.4. This remains similar across subgroups of data, although there is a slightly lower error in prefire and no-fire environments than postfire (\~12 vs \~13). The postfire error climbs slightly with vcf above 50, to \~14.
+
+In terms of estimating resilience metrics, there is higher agreement between VCF and RAP when estimating pre-fire cover using an average window or GAM (as opposed to using single raw values). In estimating total loss, recovery, slope, etc, averaged windows provide lower RMSE between the two datasets, likely due to the fact that the GAMs are identifying different minimum values post fire between the two datasets.
 
 ```{r}
 
@@ -292,7 +786,7 @@ plot_lm_r2 <- function(df, x, y, title, xlim = NULL, ylim = NULL) {
       aes(label = after_stat(rr.label)),
       parse = TRUE,
       label.x = "right",
-      label.y = "top"
+      label.y = "bottom"
     ) +
     labs(title = title)
 
@@ -302,61 +796,286 @@ plot_lm_r2 <- function(df, x, y, title, xlim = NULL, ylim = NULL) {
   p
 }
 
-p_loss <- plot_lm_r2(
-  d_s,
-  gam_rap_tree_diff_pre6_to_post_min,
-  gam_vcf_tree_diff_pre6_to_post_min,
-  "VCF vs RAP total loss 250m"
+extract_r2_rmse_table <- function(models) {
+  tibble(
+    model_name = names(models),
+    model = models
+  ) |>
+    mutate(
+      stats = purrr::map(model, broom::glance),
+      rmse = purrr::map_dbl(model, \(m) {
+        sqrt(mean(residuals(m)^2, na.rm = TRUE))
+      })
+    ) |>
+    tidyr::unnest(stats) |>
+    select(model_name, r.squared, rmse)
+}
+
+lm_safe <- function(formula, data) {
+  vars <- all.vars(formula)
+  d <- data |>
+    dplyr::select(dplyr::all_of(vars)) |>
+    dplyr::filter(dplyr::if_all(dplyr::everything(), is.finite))
+  stats::lm(formula, data = d)
+}
+
+# 
+# p_loss <- plot_lm_r2(
+#   d_s,
+#   gam_rap_tree_diff_pre6_to_post_min,
+#   gam_vcf_tree_diff_pre6_to_post_min,
+#   "VCF vs RAP total loss 250m"
+# )
+# 
+# p_loss_raw <- plot_lm_r2(
+#   d_s,
+#   raw_post_fire_rap_tree_difference_n6_3_yr,
+#   raw_post_fire_vcf_tree_difference_n6_3_yr,
+#   "VCF vs RAP total loss 250m -6 to 3 yr raw windows"
+# )
+# 
+# 
+# 
+# p_recov15 <- plot_lm_r2(
+#   d_s,
+#   gam_rap_tree_perc_recov_p15,
+#   gam_vcf_tree_perc_recov_p15,
+#   "VCF vs RAP recovery percent min-15yr 250m",
+#   xlim = c(0, 100),
+#   ylim = c(0, 100)
+# )
+# 
+# p_raw_recov15 <- plot_lm_r2(
+#   d_s,
+#   raw_post_fire_rap_tree_perc_recovery_n6_3_15_yr,
+#   raw_post_fire_vcf_tree_perc_recovery_n6_3_15_yr,
+#   "VCF vs RAP raw recovery percent 3-15yr 250m",
+#   xlim = c(0, 100),
+#   ylim = c(0, 100)
+# )
+# 
+# 
+# p_slope15 <- plot_lm_r2(
+#   d_s,
+#   gam_rap_tree_slope_post_min_to_p15,
+#   gam_vcf_tree_slope_post_min_to_p15,
+#   "VCF vs RAP slope gam min to 15yr slope 250m"
+# )
+# 
+# p_rawslope15 <- plot_lm_r2(
+#   d_s,
+#   raw_post_fire_rap_tree_slope_3_15_yrs,
+#   raw_post_fire_vcf_tree_slope_3_15_yrs,
+#   "VCF vs RAP slope raw 3 to 15yr slope 250m"
+# )
+# 
+# 
+# 
+# p_pre6 <- plot_lm_r2(
+#   d_s,
+#   gam_rap_tree_pre6_fit,
+#   gam_vcf_tree_pre6_fit,
+#   "VCF vs RAP 6-yr prior fit 250m"
+# )
+# 
+# p_pre6raw <- plot_lm_r2(
+#   d_l |> filter(Time_to_Treatment == -6),
+#   rap_tree,
+#   vcf_tree,
+#   "VCF vs RAP 6-yr-prior raw 250m"
+# )
+# 
+# p_pre6raw_win <- plot_lm_r2(
+#   d_s,
+#   raw_avg_rap_tree_6_yr_pre_fire,
+#   raw_avg_vcf_tree_6_yr_pre_fire,
+#   "VCF vs RAP 6-yr-prior-window 250m"
+# )
+# 
+# 
+# 
+# p_min <- plot_lm_r2(
+#   d_s,
+#   gam_rap_tree_post_min,
+#   gam_vcf_tree_post_min,
+#   "VCF vs RAP minimum fit 250m"
+# )
+# 
+# p_3yr_raw <- plot_lm_r2(
+#   d_s,
+#   raw_avg_rap_tree_3_yr_post_fire,
+#   raw_avg_vcf_tree_3_yr_post_fire,
+#   "VCF vs RAP post-fire 3 yr raw"
+# )
+# 
+# 
+# 
+# p_recov_tot <- plot_lm_r2(
+#   d_s,
+#   gam_rap_tree_diff_post_min_to_p15,
+#   gam_vcf_tree_diff_post_min_to_p15,
+#   "VCF vs RAP post-fire min to 15 gam"
+# )
+# 
+# p_recov_tot_raw <- plot_lm_r2(
+#   d_s,
+#   raw_post_fire_rap_tree_increase_3_15_yr,
+#   raw_post_fire_vcf_tree_increase_3_15_yr,
+#   "VCF vs RAP post-fire 3 to 15 raw"
+# )
+# 
+# 
+# p_timetomin <- plot_lm_r2(
+#   d_s,
+#   gam_rap_tree_yrs_ref_to_post_min,
+#   gam_vcf_tree_yrs_ref_to_post_min,
+#   "VCF vs RAP time to minimum 250m"
+# )
+# 
+# 
+# 
+# # Print
+# p_loss
+# p_loss_raw
+# 
+# p_recov15
+# p_raw_recov15
+# 
+# p_slope15
+# p_rawslope15
+# 
+# p_pre6
+# p_pre6raw
+# p_pre6raw_win
+# 
+# p_min
+# p_3yr_raw
+# 
+# p_recov_tot
+# p_recov_tot_raw
+# 
+# p_timetomin
+# 
+# ggplot(d_s) +
+#   geom_bin2d(aes(x = gam_rap_tree_yrs_ref_to_post_min, y = gam_vcf_tree_yrs_ref_to_post_min))
+# 
+
+
+
+
+set.seed(1234)
+d_s_2006 <- d_s |> dplyr::filter(burn_year > 2005)
+d_l_2006 <- d_l |> dplyr::filter(burn_year > 2005)
+
+models_xy <- list(
+  loss_gam = lm_safe(gam_vcf_tree_diff_pre6_to_post_min ~ gam_rap_tree_diff_pre6_to_post_min, d_s_2006),
+  loss_raw = lm_safe(raw_post_fire_vcf_tree_difference_n6_3_yr ~ raw_post_fire_rap_tree_difference_n6_3_yr, d_s_2006),
+
+  recov15_gam = lm_safe(gam_vcf_tree_perc_recov_p15 ~ gam_rap_tree_perc_recov_p15, d_s_2006),
+  recov15_raw = lm_safe(raw_post_fire_vcf_tree_perc_recovery_n6_3_15_yr ~ raw_post_fire_rap_tree_perc_recovery_n6_3_15_yr, d_s_2006),
+
+  slope15_gam = lm_safe(gam_vcf_tree_slope_post_min_to_p15 ~ gam_rap_tree_slope_post_min_to_p15, d_s_2006),
+  slope15_raw = lm_safe(raw_post_fire_vcf_tree_slope_3_15_yrs ~ raw_post_fire_rap_tree_slope_3_15_yrs, d_s_2006),
+
+  pre6_fit_gam = lm_safe(gam_vcf_tree_pre6_fit ~ gam_rap_tree_pre6_fit, d_s_2006),
+  pre6_raw_tminus6 = lm_safe(vcf_tree ~ rap_tree, d_l_2006 |> dplyr::filter(Time_to_Treatment == -6)),
+  pre6_raw_window = lm_safe(raw_avg_vcf_tree_6_yr_pre_fire ~ raw_avg_rap_tree_6_yr_pre_fire, d_s_2006),
+
+  postmin_gam = lm_safe(gam_vcf_tree_post_min ~ gam_rap_tree_post_min, d_s_2006),
+  post3yr_raw = lm_safe(raw_avg_vcf_tree_3_yr_post_fire ~ raw_avg_rap_tree_3_yr_post_fire, d_s_2006),
+
+  recov_tot_gam = lm_safe(gam_vcf_tree_diff_post_min_to_p15 ~ gam_rap_tree_diff_post_min_to_p15, d_s_2006),
+  recov_tot_raw = lm_safe(raw_post_fire_vcf_tree_increase_3_15_yr ~ raw_post_fire_rap_tree_increase_3_15_yr, d_s_2006),
+
+  time_to_min = lm_safe(gam_vcf_tree_yrs_ref_to_post_min ~ gam_rap_tree_yrs_ref_to_post_min, d_s_2006)
 )
 
-p_recov15 <- plot_lm_r2(
-  d_s,
-  gam_rap_tree_perc_recov_p15,
-  gam_vcf_tree_perc_recov_p15,
-  "VCF vs RAP recovery percent 15yr 250m",
-  xlim = c(0, 100),
-  ylim = c(0, 100)
+r2_rmse_table <- extract_r2_rmse_table(models_xy)
+
+r2_rmse_table_g <- tableGrob(
+  r2_rmse_table,
+  theme = ttheme_minimal(
+    core = list(bg_params = list(fill = "white", col = NA)),
+    colhead = list(bg_params = list(fill = "white", col = NA))
+  )
 )
 
-p_slope15 <- plot_lm_r2(
-  d_s,
-  gam_rap_tree_slope_post_min_to_p15,
-  gam_vcf_tree_slope_post_min_to_p15,
-  "VCF vs RAP slope 15yr 250m"
+title1 <- textGrob(
+  "VCF-RAP resilience metric \nR² and RMSE Comparisons \n(burn year >2005)",
+  gp = gpar(fontsize = 16, fontface = "bold")
 )
 
-p_pre6 <- plot_lm_r2(
-  d_s,
-  gam_rap_tree_pre6_fit,
-  gam_vcf_tree_pre6_fit,
-  "VCF vs RAP 6-yr prior fit 250m"
+table_with_title1 <- arrangeGrob(
+  r2_rmse_table_g,
+  top = title1
 )
 
-p_pre6raw <- plot_lm_r2(
-  d_l |> filter(Time_to_Treatment == -6),
-  rap_tree,
-  vcf_tree,
-  "VCF vs RAP 6-yr-prior raw 250m"
+ggsave(
+  here(dir_figs, "rap_vs_vfc_metrics_table.png"),
+  table_with_title1,
+  width = 6,
+  height = 7,
+  bg = "white"
 )
 
-p_min <- plot_lm_r2(
-  d_s,
-  gam_rap_tree_post_min,
-  gam_vcf_tree_post_min,
-  "VCF vs RAP minimum fit 250m"
+
+
+
+# Comparing raw data
+
+
+
+ggplot(d_l) +
+  geom_density(aes(x = rap_tree), color = "red") +
+  geom_density(aes(x = vcf_tree), color = "blue") +
+  labs(xlab = "Percent tree cover", caption = "RAP = red, VCF = blue")
+ggsave(here(dir_figs, "raw_rap_vcf_density.png"))
+
+set.seed(1234)
+models <- list(
+  all = lm(rap_tree ~ vcf_tree, d_l |> slice_sample(n = 1000000)),
+  nofire = lm(rap_tree ~ vcf_tree, d_l |> filter(fire == 0) |> slice_sample(n = 1000000)),
+  prefire = lm(rap_tree ~ vcf_tree, d_l |> filter(fire == 1 & treated == 0) |> slice_sample(n = 1000000)),
+  postfire = lm(rap_tree ~ vcf_tree, d_l |> filter(fire == 1 & treated == 1) |> slice_sample(n = 1000000)),
+  biotic_above10 = lm(rap_tree ~ vcf_tree, d_l |> filter(fire == 0 & biotic_6roll_max > 10) |> slice_sample(n = 1000000)),
+  all_vcf_above50 = lm(rap_tree ~ vcf_tree, d_l |> filter(vcf_tree > 50) |> slice_sample(n = 1000000)),
+  all_vcf_below50 = lm(rap_tree ~ vcf_tree, d_l |> filter(vcf_tree <= 50) |> slice_sample(n = 1000000)),
+  postfire_vcf_above50 = lm(rap_tree ~ vcf_tree, d_l |> filter(vcf_tree > 50 & fire == 1 & treated == 1) |> slice_sample(n = 1000000)),
+  postfire_vcf_below50 = lm(rap_tree ~ vcf_tree, d_l |> filter(vcf_tree <= 50 & fire == 1 & treated == 1) |> slice_sample(n = 1000000))
 )
 
-# Print (or arrange with patchwork/cowplot if you want)
-p_loss
-p_recov15
-p_slope15
-p_pre6
-p_pre6raw
-p_min
+
+tbl <- tableGrob(
+  extract_r2_rmse_table(models),
+  theme = ttheme_minimal(
+    core = list(bg_params = list(fill = "white", col = NA)),
+    colhead = list(bg_params = list(fill = "white", col = NA))
+  )
+)
+
+title <- textGrob(
+  "Raw VCF-RAP data R² and RMSE Comparisons\n1 million samples per model",
+  gp = gpar(fontsize = 16, fontface = "bold")
+)
+
+table_with_title <- arrangeGrob(
+  tbl,
+  top = title
+)
+
+ggsave(
+  here(dir_figs, "rap_vs_vfc_raw_table.png"),
+  table_with_title,
+  width = 6,
+  height = 4,
+  bg = "white"
+)
+
+
+
 
 
 ```
-
 
 ```{r}
 
@@ -390,10 +1109,18 @@ ggplot(dats_quick |> filter(burn_sev != "Negligible")) +
 
 ```
 
+<button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne">
 
-<button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne" >Click to see Session Information</button><div id="collapseOne" class="accordion-collapse collapse"><div>
+Click to see Session Information
+
+</button>
+
+:::: {#collapseOne .accordion-collapse .collapse}
+<div>
 
 ```{r sessionInfo}
 sessionInfo()
 ```
 
+</div>
+::::

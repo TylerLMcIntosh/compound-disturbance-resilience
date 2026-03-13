@@ -1,4 +1,7 @@
 
+# 5.6 hours in series locally
+
+
 rm(list = ls())
 
 cyverse = FALSE
@@ -35,7 +38,7 @@ install_load_packages(c(
 
 set.seed(1234)
 gdrive_folder <- "GEE_resilience_v6_operational_ss500_ts50000"
-run <- "v6_ss1000_ts100000"
+#run <- "v6_ss1000_ts100000"
 service_account_file <- here('config', 'secrets', 'tymc5571-utils-project-692f27c034dd.json')
 
 if(cyverse) {
@@ -135,12 +138,14 @@ process_ecoregion <- function(l3, parquet_path, out_dir, utils_path) {
   d <- arrow::open_dataset(parquet_path, format = "parquet") |>
     dplyr::filter(ecoregion_code_name == l3) |>
     dplyr::collect()
+  print("prepping")
   d <- basic_prep_fire(d)
+  print("biotic_drought")
   d <- biotic_drought_process(d,
                               nyears = 5,
                               before_inclusive_year_of = TRUE) #thresholds are set inside function
   
-  
+  print("gams")
   d <- compute_gam_stats(
     df = d,
     column_prefix = "rap_tree_",
@@ -163,7 +168,7 @@ process_ecoregion <- function(l3, parquet_path, out_dir, utils_path) {
     debug = FALSE
   )
   
-  # Use functions
+  print("raw")
   d <- d |>
     compute_avgs(prefix = "rap_tree_") |>
     compute_avgs(prefix = "vcf_tree_") |>
@@ -172,7 +177,7 @@ process_ecoregion <- function(l3, parquet_path, out_dir, utils_path) {
     compute_response_slopes(prefix = "rap_tree_") |>
     compute_response_slopes(prefix = "vcf_tree_")
   
-  
+  print("generating")
   # Final clean
   d <- d |>
     remove_columns_with_prefix(prefixes = c("cbi",
@@ -610,6 +615,12 @@ biotic_drought_process <- function(dats,
     threshold_nm = "6",
     before_inclusive_year_of = before_inclusive_year_of
   )
+  
+  dats <- dats |>
+    extract_year_of_value(column_pattern = "^pdsi_annual_\\d{4}$",
+                          year_col = "burn_year") |>
+    extract_year_of_value(column_pattern = "^hd_fingerprint_\\d{4}$",
+                          year_col = "burn_year")
   
   dats
 }
@@ -1129,6 +1140,42 @@ compute_post_fire_forest_slope_dt <- function(
   return(as_tibble(dt))
 }
 
+
+extract_year_of_value <- function(df, column_pattern, year_col = "mock_burn_year") {
+  
+  matched_cols <- grep(column_pattern, names(df), value = TRUE)
+  if (length(matched_cols) == 0) return(df)
+  
+  base_name <- sub("^(.*?)_\\d{4}$", "\\1", matched_cols[1])
+  
+  col_years <- as.integer(sub(".*_(\\d{4})$", "\\1", matched_cols))
+  col_year_map <- setNames(matched_cols, as.character(col_years))
+  
+  n <- nrow(df)
+  out_vals <- rep(NA_real_, n)
+  
+  yr_vec <- df[[year_col]]
+  
+  for (i in seq_len(n)) {
+    
+    yr <- yr_vec[i]
+    if (is.na(yr)) next
+    
+    yr_i <- as.integer(yr)
+    
+    col <- col_year_map[as.character(yr_i)]  # returns NA if not present
+    if (is.na(col)) next
+    
+    out_vals[i] <- df[[col]][i]
+  }
+  
+  new_col <- paste0(base_name, "_year_of")
+  df[[new_col]] <- out_vals
+  
+  df
+}
+
+
 compute_avgs <- function(dats, prefix) {
   dats <- dats |>
     compute_forest_response_offset(offsets = 9:11,
@@ -1260,7 +1307,6 @@ dats_by_l3 <- purrr::map(
   utils_path = here::here("utils", "functions.R")
 )
 toc()
-
 
 
 
