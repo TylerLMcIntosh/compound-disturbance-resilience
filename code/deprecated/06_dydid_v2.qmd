@@ -141,8 +141,7 @@ df.use <- dats_long_did |>
 test <- get.cohort(dats_long |> slice_sample(n = 10000), D = "treated",
                                  index = c("uniqueID", "year"),
                                  start0 = TRUE,
-                   drop.always.treat = FALSE,
-                   varname = c("FCohort", "F_TtT", "help", "eek"))
+                   drop.always.treat = FALSE)
 
 
 # 
@@ -202,18 +201,35 @@ We find that there is a meaningful difference between the two estimates
 ```{r}
 
 x <- df.use |>
-  filter(ecoregion == "SierraNevada")
+  filter(ecoregion == "Idaho Batholith")
+
+x <- x |> mutate(cd = case_when(biotic_5_yrs_prior_sum >= 10 & fire == 1 ~ "bf",
+                           biotic_5_yrs_prior_sum < 10 & fire == 1 ~ "f",
+                           fire == 0 ~ "control"))
 
 est_sunab <- feols(
-  rap_TRE ~ sunab(FirstTreat, year, ref.p = -1) | uniqueID + year,
+  rap_tree ~ sunab(FirstTreat, year, ref.p = -1) | uniqueID + year,
   data = x,
   mem.clean = TRUE,
   lean = FALSE
 )
 
 
-ggiplot(sunab, ci_level = 0.95, geom_style = "ribbon", col = "turquoise") +
-  xlim(-10, 20)
+est_sunab2 <- feols(
+  rap_tree ~ i(sunab(FirstTreat, year, ref.p = -1), cd), #| uniqueID + year,
+  data = x,
+  mem.clean = TRUE,
+  lean = FALSE
+)
+
+
+ggiplot(est_sunab, ci_level = 0.95, geom_style = "ribbon", col = "turquoise") +
+  xlim(-10, 20) +
+  ylim(-50, 50)
+
+ggiplot(est_sunab2, ci_level = 0.95, geom_style = "ribbon", group = ":cd") +
+  xlim(-10, 20) +
+  ylim(-50, 50)
 
 est_twfe <- feols(
   rap_TRE ~ i(factor_var = Time_to_Treatment, var = treated, ref = -1) | uniqueID + year,
