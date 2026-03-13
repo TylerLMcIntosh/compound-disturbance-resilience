@@ -374,12 +374,12 @@ run_grid |>
 
 tic()
 dydid_results <- run_dydid_experiment(
-  #analysis_specs = (analysis_specs |> arrange(analysis_id))[1,],
-  analysis_specs = ecoregion_analysis_specs,
-  outcome_specs = outcome_specs,
-  group_specs = group_specs,
+  analysis_specs = (analysis_specs |> arrange(analysis_id))[1,],
+  #analysis_specs = ecoregion_analysis_specs,
+  outcome_specs = outcome_specs[1,],
+  group_specs = group_specs[2,],
   model_specs = model_specs,
-  vcov_specs = ecor_vcov_specs,
+  vcov_specs = ecor_vcov_specs[1,],
   dir_out = dir_results,
   trt_col = "fire",
   ci_level = 0.95,
