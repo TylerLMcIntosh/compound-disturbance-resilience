@@ -342,88 +342,22 @@ fit_subgroup_models <- function(df,
   models
 }
 
-# extract_vcov_table_one_vcov <- function(model,
-#                                         vcov,
-#                                         vcov_id,
-#                                         vcov_label,
-#                                         analysis_id,
-#                                         outcome,
-#                                         group_id,
-#                                         subgroup_col,
-#                                         model_id,
-#                                         formula_template) {
-#   
-#   vc <- stats::vcov(model, vcov = vcov)
-#   vc_mat <- as.matrix(vc)
-#   
-#   if (is.null(rownames(vc_mat)) || is.null(colnames(vc_mat))) {
-#     stop("vcov matrix must have row and column names.")
-#   }
-#   
-#   subgroup <- attr(model, "subgroup")
-#   
-#   expand.grid(
-#     term_i = rownames(vc_mat),
-#     term_j = colnames(vc_mat),
-#     stringsAsFactors = FALSE
-#   ) |>
-#     tibble::as_tibble() |>
-#     dplyr::mutate(
-#       analysis_id = analysis_id,
-#       outcome = outcome,
-#       group_id = group_id,
-#       subgroup_col = subgroup_col,
-#       subgroup = subgroup,
-#       model_id = model_id,
-#       vcov_id = vcov_id,
-#       vcov_label = vcov_label,
-#       formula_template = formula_template,
-#       vcov_value = purrr::map2_dbl(
-#         term_i,
-#         term_j,
-#         \(i, j) vc_mat[i, j]
-#       ),
-#       subgroup_run_id = glue::glue(
-#         "{analysis_id}__{outcome}__{group_id}__{model_id}__{subgroup}"
-#       ),
-#       vcov_run_id = glue::glue(
-#         "{analysis_id}__{outcome}__{group_id}__{model_id}__{subgroup}__{vcov_id}"
-#       )
-#     ) |>
-#     dplyr::select(
-#       analysis_id,
-#       outcome,
-#       group_id,
-#       subgroup_col,
-#       subgroup,
-#       model_id,
-#       vcov_id,
-#       vcov_label,
-#       formula_template,
-#       term_i,
-#       term_j,
-#       vcov_value,
-#       subgroup_run_id,
-#       vcov_run_id
-#     )
-# }
-
-extract_vcov_table_one_vcov_raw <- function(model,
-                                            vcov,
-                                            vcov_id,
-                                            vcov_label,
-                                            analysis_id,
-                                            outcome,
-                                            group_id,
-                                            subgroup_col,
-                                            model_id,
-                                            formula_template) {
+extract_vcov_table_one_vcov <- function(model,
+                                        vcov,
+                                        vcov_id,
+                                        vcov_label,
+                                        analysis_id,
+                                        outcome,
+                                        group_id,
+                                        subgroup_col,
+                                        model_id,
+                                        formula_template) {
   
   vc <- stats::vcov(model, vcov = vcov)
   vc_mat <- as.matrix(vc)
   
   if (is.null(rownames(vc_mat)) || is.null(colnames(vc_mat))) {
-    stop("Raw vcov matrix must have row and column names.")
+    stop("vcov matrix must have row and column names.")
   }
   
   subgroup <- attr(model, "subgroup")
@@ -454,9 +388,6 @@ extract_vcov_table_one_vcov_raw <- function(model,
       ),
       vcov_run_id = glue::glue(
         "{analysis_id}__{outcome}__{group_id}__{model_id}__{subgroup}__{vcov_id}"
-      ),
-      run_id = glue::glue(
-        "{analysis_id}__{outcome}__{group_id}__{model_id}"
       )
     ) |>
     dplyr::select(
@@ -473,258 +404,13 @@ extract_vcov_table_one_vcov_raw <- function(model,
       term_j,
       vcov_value,
       subgroup_run_id,
-      vcov_run_id,
-      run_id
+      vcov_run_id
     )
 }
 
-extract_vcov_table_one_vcov <- function(model_summary,
-                                        vcov_id,
-                                        vcov_label,
-                                        analysis_id,
-                                        outcome,
-                                        group_id,
-                                        subgroup_col,
-                                        model_id,
-                                        formula_template) {
-  
-  vc_mat <- as.matrix(model_summary$cov.scaled)
-  
-  if (is.null(rownames(vc_mat)) || is.null(colnames(vc_mat))) {
-    stop("Aggregated vcov matrix must have row and column names.")
-  }
-  
-  subgroup <- attr(model_summary, "subgroup")
-  
-  expand.grid(
-    term_i = rownames(vc_mat),
-    term_j = colnames(vc_mat),
-    stringsAsFactors = FALSE
-  ) |>
-    tibble::as_tibble() |>
-    dplyr::mutate(
-      analysis_id = analysis_id,
-      outcome = outcome,
-      group_id = group_id,
-      subgroup_col = subgroup_col,
-      subgroup = subgroup,
-      model_id = model_id,
-      vcov_id = vcov_id,
-      vcov_label = vcov_label,
-      formula_template = formula_template,
-      vcov_value = purrr::map2_dbl(
-        term_i,
-        term_j,
-        \(i, j) vc_mat[i, j]
-      ),
-      subgroup_run_id = glue::glue(
-        "{analysis_id}__{outcome}__{group_id}__{model_id}__{subgroup}"
-      ),
-      vcov_run_id = glue::glue(
-        "{analysis_id}__{outcome}__{group_id}__{model_id}__{subgroup}__{vcov_id}"
-      ),
-      run_id = glue::glue(
-        "{analysis_id}__{outcome}__{group_id}__{model_id}"
-      )
-    ) |>
-    dplyr::select(
-      analysis_id,
-      outcome,
-      group_id,
-      subgroup_col,
-      subgroup,
-      model_id,
-      vcov_id,
-      vcov_label,
-      formula_template,
-      term_i,
-      term_j,
-      vcov_value,
-      subgroup_run_id,
-      vcov_run_id,
-      run_id
-    )
-}
 
-summarize_model_one_vcov <- function(model, vcov) {
-  
-  smry <- summary(
-    model,
-    vcov = vcov,
-    agg = "period"
-  )
-  
-  ct_tbl <- tibble::as_tibble(
-    as.data.frame(fixest::coeftable(smry)),
-    rownames = "term"
-  )
-  
-  V <- smry$cov.scaled
-  
-  if (is.null(V)) {
-    stop("summary(model, vcov = ..., agg = 'period') did not return cov.scaled.")
-  }
-  
-  V <- as.matrix(V)
-  
-  if (is.null(rownames(V)) || is.null(colnames(V))) {
-    stop("Aggregated vcov matrix has no row/column names.")
-  }
-  
-  coef_terms <- ct_tbl$term
-  vcov_terms <- rownames(V)
-  
-  if (!setequal(coef_terms, vcov_terms)) {
-    missing_in_vcov <- setdiff(coef_terms, vcov_terms)
-    missing_in_coef <- setdiff(vcov_terms, coef_terms)
-    
-    stop(
-      paste0(
-        "Coefficient terms and aggregated vcov terms do not match.\n",
-        if (length(missing_in_vcov) > 0) {
-          paste0("Missing in vcov: ", paste(missing_in_vcov, collapse = ", "), "\n")
-        } else "",
-        if (length(missing_in_coef) > 0) {
-          paste0("Missing in coef table: ", paste(missing_in_coef, collapse = ", "), "\n")
-        } else ""
-      )
-    )
-  }
-  
-  attr(smry, "coef_table_aligned") <- ct_tbl
-  
-  smry
-}
-
-
-# extract_coef_table_one_vcov <- function(model,
-#                                         vcov,
-#                                         vcov_id,
-#                                         vcov_label,
-#                                         analysis_id,
-#                                         outcome,
-#                                         group_id,
-#                                         subgroup_col,
-#                                         model_id,
-#                                         formula_template,
-#                                         term_pattern = ".*",
-#                                         ci_level = 0.95,
-#                                         group_palette = NULL) {
-#   tic(glue::glue("VCOV: {vcov_label}"))
-#   ct <- fixest::coeftable(model, vcov = vcov)
-#   ct_tbl <- tibble::as_tibble(as.data.frame(ct), rownames = "term")
-#   
-#   se_col <- if ("Std. Error" %in% names(ct_tbl)) "Std. Error" else names(ct_tbl)[3]
-#   t_col <- names(ct_tbl)[stringr::str_detect(names(ct_tbl), "^t value$|^t-value$")]
-#   p_col <- names(ct_tbl)[stringr::str_detect(names(ct_tbl), "^Pr\\(>\\|t\\|\\)$|^p-value$")]
-#   
-#   z_val <- stats::qnorm(1 - (1 - ci_level) / 2)
-#   
-#   subgroup <- attr(model, "subgroup")
-#   n_treated_units <- attr(model, "n_treated_units")
-#   n_treated_events <- attr(model, "n_treated_events")
-#   n_control_units <- attr(model, "n_control_units")
-#   n_total_units <- attr(model, "n_total_units")
-#   n_rows_model_data <- attr(model, "n_rows_model_data")
-#   event_time_support <- attr(model, "event_time_support")
-#   
-#   subgroup_color <- NA_character_
-#   if (!is.null(group_palette) && subgroup %in% names(group_palette)) {
-#     subgroup_color <- unname(group_palette[[subgroup]])
-#   }
-#   
-#   out <- ct_tbl |>
-#     dplyr::mutate(
-#       analysis_id = analysis_id,
-#       outcome = outcome,
-#       group_id = group_id,
-#       subgroup_col = subgroup_col,
-#       subgroup = subgroup,
-#       model_id = model_id,
-#       vcov_id = vcov_id,
-#       vcov_label = vcov_label,
-#       formula_template = formula_template,
-#       estimate = .data[["Estimate"]],
-#       std_error = .data[[se_col]],
-#       ci_lower = estimate - z_val * std_error,
-#       ci_upper = estimate + z_val * std_error,
-#       term_matches_pattern = stringr::str_detect(term, term_pattern),
-#       term_value = extract_first_number(term),
-#       n_treated_units = n_treated_units,
-#       n_treated_events = n_treated_events,
-#       n_control_units = n_control_units,
-#       n_total_units = n_total_units,
-#       n_rows_model_data = n_rows_model_data,
-#       subgroup_color = subgroup_color,
-#       subgroup_run_id = glue::glue("{analysis_id}__{outcome}__{group_id}__{model_id}__{subgroup}"),
-#       coef_run_id = glue::glue("{analysis_id}__{outcome}__{group_id}__{model_id}__{subgroup}__{vcov_id}")
-#     )
-#   
-#   if (length(t_col) == 1) {
-#     out$t_value <- ct_tbl[[t_col]]
-#   } else {
-#     out$t_value <- NA_real_
-#   }
-#   
-#   if (length(p_col) == 1) {
-#     out$p_value <- ct_tbl[[p_col]]
-#   } else {
-#     out$p_value <- NA_real_
-#   }
-#   
-#   if (!is.null(event_time_support) && nrow(event_time_support) > 0) {
-#     out <- out |>
-#       dplyr::left_join(
-#         event_time_support |>
-#           dplyr::rename(term_value = event_time),
-#         by = "term_value"
-#       )
-#   } else {
-#     out <- out |>
-#       dplyr::mutate(
-#         n_ptids = NA_integer_,
-#         n_fireids = NA_integer_,
-#         n_rows_treated = NA_integer_
-#       )
-#   }
-#   
-#   toc()
-#   
-#   out |>
-#     dplyr::select(
-#       analysis_id,
-#       outcome,
-#       group_id,
-#       subgroup_col,
-#       subgroup,
-#       model_id,
-#       vcov_id,
-#       vcov_label,
-#       formula_template,
-#       term,
-#       estimate,
-#       std_error,
-#       t_value,
-#       p_value,
-#       ci_lower,
-#       ci_upper,
-#       term_matches_pattern,
-#       term_value,
-#       n_ptids,
-#       n_fireids,
-#       n_rows_treated,
-#       n_treated_units,
-#       n_treated_events,
-#       n_control_units,
-#       n_total_units,
-#       n_rows_model_data,
-#       subgroup_color,
-#       subgroup_run_id,
-#       coef_run_id
-#     )
-# }
-
-extract_coef_table_one_vcov <- function(model_summary,
+extract_coef_table_one_vcov <- function(model,
+                                        vcov,
                                         vcov_id,
                                         vcov_label,
                                         analysis_id,
@@ -736,21 +422,28 @@ extract_coef_table_one_vcov <- function(model_summary,
                                         term_pattern = ".*",
                                         ci_level = 0.95,
                                         group_palette = NULL) {
-  
-  ct_tbl <- attr(model_summary, "coef_table_aligned")
-  
-  if (is.null(ct_tbl)) {
-    ct_tbl <- tibble::as_tibble(
-      as.data.frame(fixest::coeftable(model_summary)),
-      rownames = "term"
-    )
-  }
+  tic(glue::glue("VCOV: {vcov_label}"))
+  ct <- fixest::coeftable(model, vcov = vcov)
+  ct_tbl <- tibble::as_tibble(as.data.frame(ct), rownames = "term")
   
   se_col <- if ("Std. Error" %in% names(ct_tbl)) "Std. Error" else names(ct_tbl)[3]
+  t_col <- names(ct_tbl)[stringr::str_detect(names(ct_tbl), "^t value$|^t-value$")]
+  p_col <- names(ct_tbl)[stringr::str_detect(names(ct_tbl), "^Pr\\(>\\|t\\|\\)$|^p-value$")]
   
   z_val <- stats::qnorm(1 - (1 - ci_level) / 2)
   
-  subgroup <- attr(model_summary, "subgroup")
+  subgroup <- attr(model, "subgroup")
+  n_treated_units <- attr(model, "n_treated_units")
+  n_treated_events <- attr(model, "n_treated_events")
+  n_control_units <- attr(model, "n_control_units")
+  n_total_units <- attr(model, "n_total_units")
+  n_rows_model_data <- attr(model, "n_rows_model_data")
+  event_time_support <- attr(model, "event_time_support")
+  
+  subgroup_color <- NA_character_
+  if (!is.null(group_palette) && subgroup %in% names(group_palette)) {
+    subgroup_color <- unname(group_palette[[subgroup]])
+  }
   
   out <- ct_tbl |>
     dplyr::mutate(
@@ -769,13 +462,80 @@ extract_coef_table_one_vcov <- function(model_summary,
       ci_upper = estimate + z_val * std_error,
       term_matches_pattern = stringr::str_detect(term, term_pattern),
       term_value = extract_first_number(term),
+      n_treated_units = n_treated_units,
+      n_treated_events = n_treated_events,
+      n_control_units = n_control_units,
+      n_total_units = n_total_units,
+      n_rows_model_data = n_rows_model_data,
+      subgroup_color = subgroup_color,
       subgroup_run_id = glue::glue("{analysis_id}__{outcome}__{group_id}__{model_id}__{subgroup}"),
-      coef_run_id = glue::glue("{analysis_id}__{outcome}__{group_id}__{model_id}__{subgroup}__{vcov_id}"),
-      run_id = glue::glue("{analysis_id}__{outcome}__{group_id}__{model_id}")
+      coef_run_id = glue::glue("{analysis_id}__{outcome}__{group_id}__{model_id}__{subgroup}__{vcov_id}")
     )
   
-  out
+  if (length(t_col) == 1) {
+    out$t_value <- ct_tbl[[t_col]]
+  } else {
+    out$t_value <- NA_real_
+  }
+  
+  if (length(p_col) == 1) {
+    out$p_value <- ct_tbl[[p_col]]
+  } else {
+    out$p_value <- NA_real_
+  }
+  
+  if (!is.null(event_time_support) && nrow(event_time_support) > 0) {
+    out <- out |>
+      dplyr::left_join(
+        event_time_support |>
+          dplyr::rename(term_value = event_time),
+        by = "term_value"
+      )
+  } else {
+    out <- out |>
+      dplyr::mutate(
+        n_ptids = NA_integer_,
+        n_fireids = NA_integer_,
+        n_rows_treated = NA_integer_
+      )
+  }
+  
+  toc()
+  
+  out |>
+    dplyr::select(
+      analysis_id,
+      outcome,
+      group_id,
+      subgroup_col,
+      subgroup,
+      model_id,
+      vcov_id,
+      vcov_label,
+      formula_template,
+      term,
+      estimate,
+      std_error,
+      t_value,
+      p_value,
+      ci_lower,
+      ci_upper,
+      term_matches_pattern,
+      term_value,
+      n_ptids,
+      n_fireids,
+      n_rows_treated,
+      n_treated_units,
+      n_treated_events,
+      n_control_units,
+      n_total_units,
+      n_rows_model_data,
+      subgroup_color,
+      subgroup_run_id,
+      coef_run_id
+    )
 }
+
 
 make_subgroup_run_summary <- function(models,
                                       analysis_id,
@@ -993,27 +753,9 @@ run_one_dydid_spec <- function(parquet_files,
           vcov_label = vcov_specs$vcov_label
         ),
         \(vcov, vcov_id, vcov_label) {
-          
-          smry <- summarize_model_one_vcov(
-            model = model,
-            vcov = vcov
-          )
-          
-          attr(smry, "subgroup") <- attr(model, "subgroup")
-          attr(smry, "subgroup_col") <- attr(model, "subgroup_col")
-          attr(smry, "unit_id") <- attr(model, "unit_id")
-          attr(smry, "event_id") <- attr(model, "event_id")
-          attr(smry, "cohort_var") <- attr(model, "cohort_var")
-          attr(smry, "time_var") <- attr(model, "time_var")
-          attr(smry, "event_time_support") <- attr(model, "event_time_support")
-          attr(smry, "n_treated_units") <- attr(model, "n_treated_units")
-          attr(smry, "n_treated_events") <- attr(model, "n_treated_events")
-          attr(smry, "n_control_units") <- attr(model, "n_control_units")
-          attr(smry, "n_total_units") <- attr(model, "n_total_units")
-          attr(smry, "n_rows_model_data") <- attr(model, "n_rows_model_data")
-          
           extract_coef_table_one_vcov(
-            model_summary = smry,
+            model = model,
+            vcov = vcov,
             vcov_id = vcov_id,
             vcov_label = vcov_label,
             analysis_id = analysis_id,
@@ -1042,16 +784,9 @@ run_one_dydid_spec <- function(parquet_files,
           vcov_label = vcov_specs$vcov_label
         ),
         \(vcov, vcov_id, vcov_label) {
-          
-          smry <- summarize_model_one_vcov(
-            model = model,
-            vcov = vcov
-          )
-          
-          attr(smry, "subgroup") <- attr(model, "subgroup")
-          
           extract_vcov_table_one_vcov(
-            model_summary = smry,
+            model = model,
+            vcov = vcov,
             vcov_id = vcov_id,
             vcov_label = vcov_label,
             analysis_id = analysis_id,

@@ -1348,7 +1348,7 @@ compute_pretrend_joint_test <- function(run_id,
 
 
 pretrend_tests <- purrr::map_dfr(
-  unique(coef_tbl$run_id)[1],
+  unique(coef_tbl$run_id),
   compute_pretrend_joint_test,
   coef_tbl = coef_tbl,
   registry_tbl = registry_tbl,
@@ -1362,10 +1362,6 @@ n_min_ptids_event <- 20
 n_min_fireids_event <- 2
 n_min_ptids_subgroup <- 50
 n_min_fireids_subgroup <- 5
-
-vc <- arrow::read_parquet(registry_tbl$vcov_file[[1]])
-
-glimpse(vc)
 
 
 ```
