@@ -29,7 +29,8 @@ install_load_packages(c(
   "rlang",
   "grid",
   "gridExtra",
-  "ggpmisc"))
+  "ggpmisc",
+  "corrplot"))
 
 gdrive_folder <- "GEE_resilience_v6_operational_ss500_ts50000"
 
@@ -77,209 +78,8 @@ d_l_fire <- d_l |> filter(fire == 1)
 
 ```
 
-# Hist & N for each (burn_year 2005-2020)
 
-```{r}
-
-plot_density_with_deciles <- function(df, var, title, x_label = NULL, log_scale = FALSE) {
-
-  var_quo <- enquo(var)
-  var_name <- as_name(var_quo)
-
-  # Handle log scale
-  if (log_scale) {
-    df_plot <- df |> filter(!!var_quo > 0)
-  } else {
-    df_plot <- df
-  }
-
-  # Compute deciles
-  probs <- seq(0.1, 0.9, by = 0.1)
-  deciles <- quantile(
-    df_plot[[var_name]],
-    probs = probs,
-    na.rm = TRUE
-  )
-
-  caption_text <- paste0(
-    "Deciles (10–90%): ",
-    paste0(
-      names(deciles),
-      " = ",
-      round(deciles, 3),
-      collapse = " | "
-    )
-  )
-
-  p <- ggplot(df_plot, aes(x = !!var_quo)) +
-    geom_density() +
-    geom_vline(
-      xintercept = deciles,
-      linetype = "dotted",
-      color = "red"
-    ) +
-    labs(
-      x = ifelse(is.null(x_label), var_name, x_label),
-      y = "Density",
-      caption = caption_text,
-      title = title
-    ) +
-    theme_minimal()
-
-  if (log_scale) {
-    p <- p + scale_x_log10(labels = label_number())
-  }
-
-  p
-}
-
-
-
-
-
-compare_densities_with_deciles <- function(
-    df1,
-    df2,
-    var,
-    title,
-    x_label = NULL,
-    log_scale = FALSE,
-    df1_name = deparse(substitute(df1)),
-    df2_name = deparse(substitute(df2))
-) {
-
-  var_quo <- rlang::enquo(var)
-  var_name <- rlang::as_name(var_quo)
-
-  prep_one <- function(df, name) {
-    x <- dplyr::pull(df, !!var_quo)
-
-    if (log_scale) {
-      keep <- !is.na(x) & x > 0
-      x <- x[keep]
-      df <- df[keep, , drop = FALSE]
-    } else {
-      x <- x[!is.na(x)]
-    }
-
-    probs <- seq(0.1, 0.9, by = 0.1)
-    dec <- stats::quantile(x, probs = probs, na.rm = TRUE, names = TRUE)
-
-    list(
-      df = df,
-      name = name,
-      deciles = dec
-    )
-  }
-
-  a <- prep_one(df1, df1_name)
-  b <- prep_one(df2, df2_name)
-
-  df_plot <- dplyr::bind_rows(
-    dplyr::mutate(a$df, .which_df = a$name),
-    dplyr::mutate(b$df, .which_df = b$name)
-  )
-
-  caption_text <- paste0(
-    a$name, " deciles: ",
-    paste0(names(a$deciles), "=", round(a$deciles, 3), collapse = " | "),
-    "\n",
-    b$name, " deciles: ",
-    paste0(names(b$deciles), "=", round(b$deciles, 3), collapse = " | ")
-  )
-
-  p <- ggplot2::ggplot(
-    df_plot,
-    ggplot2::aes(x = !!var_quo, color = .data[[".which_df"]])
-  ) +
-    ggplot2::geom_density() +
-    ggplot2::geom_vline(
-      xintercept = unname(a$deciles),
-      linetype = "dotted",
-      color = "red"
-    ) +
-    ggplot2::geom_vline(
-      xintercept = unname(b$deciles),
-      linetype = "dotted",
-      color = "blue"
-    ) +
-    ggplot2::annotate(
-      "text",
-      x = unname(a$deciles),
-      y = 0,
-      label = names(a$deciles),
-      color = "red",
-      vjust = 0.3,
-      size = 3
-    ) +
-    ggplot2::annotate(
-      "text",
-      x = unname(b$deciles),
-      y = 0,
-      label = names(b$deciles),
-      color = "blue",
-      vjust = 1.2,
-      size = 3
-    ) +
-    ggplot2::scale_color_manual(
-      values = stats::setNames(c("red", "blue"), c(a$name, b$name)),
-      breaks = c(a$name, b$name)
-    ) +
-    ggplot2::labs(
-      x = ifelse(is.null(x_label), var_name, x_label),
-      y = "Density",
-      caption = caption_text,
-      title = title,
-      color = NULL
-    ) +
-    ggplot2::theme_minimal() +
-    theme(
-      plot.caption = element_text(size = 8)
-  )
-
-  if (log_scale) {
-    p <- p + ggplot2::scale_x_log10(labels = scales::label_number())
-  }
-
-  p
-}
-
-compare_densities_with_deciles(
-  d_s_fire,
-  d_s_nfire,
-  biotic_relaxedforestnorm_5_yrs_prior_sum_yot,
-  title = "Biotic prior sum: fire-only vs no fire",
-  x_label = "Biotic 5-yr prior sum",
-  log_scale = TRUE
-)
-ggsave(here(dir_figs, "density_biotic_prior.png"))
-
-compare_densities_with_deciles(
-  d_s_fire,
-  d_s_nfire,
-  biotic_6roll_max,
-  title = "Biotic roll max : fire-only vs no fire",
-  x_label = "Biotic 5-yr roll max",
-  log_scale = TRUE
-)
-ggsave(here(dir_figs, "density_biotic_rollmax.png"))
-
-
-compare_densities_with_deciles(
-  d_s_fire,
-  d_s_nfire,
-  pdsi_annual_5_yrs_prior_sum_yot,
-  title = "PDSI sum prior : fire-only vs no fire",
-  x_label = "PDSI 5-yr sum",
-  log_scale = FALSE
-)
-ggsave(here(dir_figs, "density_pdsi_prior.png"))
-
-
- # histograms for thresholded data?
-
-
-```
+# Set CD groups
 
 ```{r}
 
@@ -314,8 +114,12 @@ set_cd_groups <- function(df,
     )
     
   }
-
   
+    df_new <- df_new |>
+    dplyr::mutate(
+      "{cd_nm}" := forcats::fct_relevel(.data[[cd_nm]], "f")
+    )
+
   return(df_new)
 }
 
@@ -520,20 +324,894 @@ d_s <- set_cd_groups(df = d_s,
 
 d_s <- set_cd_groups(df = d_s,
                    b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
-                   d_nm = "pdsi_annual_5_yrs_prior_threshold_n3_yot",
-                   cd_nm = "cd_group_b10_pdsin4t3",
-                   b_threshold = 10,
-                   d_threshold = 3)
-
-d_s <- set_cd_groups(df = d_s,
-                   b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
                    d_nm = "pdsi_annual_5_yrs_prior_sum_yot",
                    cd_nm = "cd_group_b10_pdsisumn10",
                    b_threshold = 10,
                    d_threshold = -10)
 
 
+```
 
+# Hist & N for each (burn_year 2005-2020)
+
+```{r}
+
+plot_density_with_deciles <- function(df, var, title, x_label = NULL, log_scale = FALSE) {
+
+  var_quo <- enquo(var)
+  var_name <- as_name(var_quo)
+
+  # Handle log scale
+  if (log_scale) {
+    df_plot <- df |> filter(!!var_quo > 0)
+  } else {
+    df_plot <- df
+  }
+
+  # Compute deciles
+  probs <- seq(0.1, 0.9, by = 0.1)
+  deciles <- quantile(
+    df_plot[[var_name]],
+    probs = probs,
+    na.rm = TRUE
+  )
+
+  caption_text <- paste0(
+    "Deciles (10–90%): ",
+    paste0(
+      names(deciles),
+      " = ",
+      round(deciles, 3),
+      collapse = " | "
+    )
+  )
+
+  p <- ggplot(df_plot, aes(x = !!var_quo)) +
+    geom_density() +
+    geom_vline(
+      xintercept = deciles,
+      linetype = "dotted",
+      color = "red"
+    ) +
+    labs(
+      x = ifelse(is.null(x_label), var_name, x_label),
+      y = "Density",
+      caption = caption_text,
+      title = title
+    ) +
+    theme_minimal()
+
+  if (log_scale) {
+    p <- p + scale_x_log10(labels = label_number())
+  }
+
+  p
+}
+
+
+
+
+
+compare_densities_with_deciles <- function(
+    df1,
+    df2,
+    var,
+    title,
+    x_label = NULL,
+    log_scale = FALSE,
+    df1_name = deparse(substitute(df1)),
+    df2_name = deparse(substitute(df2))
+) {
+
+  var_quo <- rlang::enquo(var)
+  var_name <- rlang::as_name(var_quo)
+
+  prep_one <- function(df, name) {
+    x <- dplyr::pull(df, !!var_quo)
+
+    if (log_scale) {
+      keep <- !is.na(x) & x > 0
+      x <- x[keep]
+      df <- df[keep, , drop = FALSE]
+    } else {
+      x <- x[!is.na(x)]
+    }
+
+    probs <- seq(0.1, 0.9, by = 0.1)
+    dec <- stats::quantile(x, probs = probs, na.rm = TRUE, names = TRUE)
+
+    list(
+      df = df,
+      name = name,
+      deciles = dec
+    )
+  }
+
+  a <- prep_one(df1, df1_name)
+  b <- prep_one(df2, df2_name)
+
+  df_plot <- dplyr::bind_rows(
+    dplyr::mutate(a$df, .which_df = a$name),
+    dplyr::mutate(b$df, .which_df = b$name)
+  )
+
+  caption_text <- paste0(
+    a$name, " deciles: ",
+    paste0(names(a$deciles), "=", round(a$deciles, 3), collapse = " | "),
+    "\n",
+    b$name, " deciles: ",
+    paste0(names(b$deciles), "=", round(b$deciles, 3), collapse = " | ")
+  )
+
+  p <- ggplot2::ggplot(
+    df_plot,
+    ggplot2::aes(x = !!var_quo, color = .data[[".which_df"]])
+  ) +
+    ggplot2::geom_density() +
+    ggplot2::geom_vline(
+      xintercept = unname(a$deciles),
+      linetype = "dotted",
+      color = "red"
+    ) +
+    ggplot2::geom_vline(
+      xintercept = unname(b$deciles),
+      linetype = "dotted",
+      color = "blue"
+    ) +
+    ggplot2::annotate(
+      "text",
+      x = unname(a$deciles),
+      y = 0,
+      label = names(a$deciles),
+      color = "red",
+      vjust = 0.3,
+      size = 3
+    ) +
+    ggplot2::annotate(
+      "text",
+      x = unname(b$deciles),
+      y = 0,
+      label = names(b$deciles),
+      color = "blue",
+      vjust = 1.2,
+      size = 3
+    ) +
+    ggplot2::scale_color_manual(
+      values = stats::setNames(c("red", "blue"), c(a$name, b$name)),
+      breaks = c(a$name, b$name)
+    ) +
+    ggplot2::labs(
+      x = ifelse(is.null(x_label), var_name, x_label),
+      y = "Density",
+      caption = caption_text,
+      title = title,
+      color = NULL
+    ) +
+    ggplot2::theme_minimal() +
+    theme(
+      plot.caption = element_text(size = 8)
+  )
+
+  if (log_scale) {
+    p <- p + ggplot2::scale_x_log10(labels = scales::label_number())
+  }
+
+  p
+}
+
+compare_densities_with_deciles(
+  d_s_fire,
+  d_s_nfire,
+  biotic_relaxedforestnorm_5_yrs_prior_sum_yot,
+  title = "Biotic prior sum: fire-only vs no fire",
+  x_label = "Biotic 5-yr prior sum",
+  log_scale = TRUE
+)
+ggsave(here(dir_figs, "density_biotic_prior.png"))
+
+compare_densities_with_deciles(
+  d_s_fire,
+  d_s_nfire,
+  biotic_6roll_max,
+  title = "Biotic roll max : fire-only vs no fire",
+  x_label = "Biotic 5-yr roll max",
+  log_scale = TRUE
+)
+ggsave(here(dir_figs, "density_biotic_rollmax.png"))
+
+
+compare_densities_with_deciles(
+  d_s_fire,
+  d_s_nfire,
+  pdsi_annual_5_yrs_prior_sum_yot,
+  title = "PDSI sum prior : fire-only vs no fire",
+  x_label = "PDSI 5-yr sum",
+  log_scale = FALSE
+)
+ggsave(here(dir_figs, "density_pdsi_prior.png"))
+
+compare_densities_with_deciles(
+  d_s_fire,
+  d_s_nfire,
+  pdsi_annual_year_of,
+  title = "PDSI year of : fire-only vs no fire",
+  x_label = "PDSI",
+  log_scale = FALSE
+)
+ggsave(here(dir_figs, "density_pdsi_yo.png"))
+
+
+
+
+
+plot_group_prop <- function(df, x_var) {
+  d_plot <- df |>
+    dplyr::filter(!is.na(.data[[x_var]]), !is.na(fire)) |>
+    dplyr::count(fire, value = .data[[x_var]], name = "n") |>
+    dplyr::group_by(fire) |>
+    dplyr::mutate(prop = n / sum(n)) |>
+    dplyr::ungroup()
+  
+  ggplot(
+    d_plot,
+    aes(
+      x = factor(value),
+      y = prop,
+      fill = factor(fire)
+    )
+  ) +
+    geom_col(position = "dodge") +
+    scale_y_continuous(labels = scales::percent) +
+    labs(
+      x = x_var,
+      y = "Proportion within fire group",
+      fill = "fire"
+    ) +
+    theme_minimal()
+}
+
+p1 <- plot_group_prop(d_s, "pdsi_annual_5_yrs_prior_threshold_n3_yot")
+p2 <- plot_group_prop(d_s, "pdsi_annual_5_yrs_prior_threshold_n4_yot")
+p3 <- plot_group_prop(d_s, "hd_fingerprint_5_yrs_prior_threshold_6_yot")
+p4 <- plot_group_prop(d_s, "hd_fingerprint_year_of")
+
+ggsave(here(dir_figs, "pdsin3t_prior.png"), plot = p1)
+ggsave(here(dir_figs, "pdsin4t_prior.png"), plot = p2)
+ggsave(here(dir_figs, "hd6t_prior.png"), plot = p3)
+ggsave(here(dir_figs, "hd_yo.png"), plot = p4)
+
+
+
+
+
+# Burn severity
+
+ggplot(d_s |> filter(fire == 1)) +
+  geom_density(aes(x = burn_cbi, color = cd_group_b10_pdsisumn10))
+ggsave(here(dir_figs, "cbi_by_cd_group_b10_pdsisumn10.png"))
+
+ggplot(d_s |> filter(fire == 1)) +
+  geom_density(aes(x = burn_cbi, color = cd_group_b10_pdsin3t1))
+ggsave(here(dir_figs, "cbi_by_cd_group_b10_pdsin3t1.png"))
+
+ggplot(d_s |> filter(fire == 1)) +
+  geom_density(aes(x = burn_cbi, color = cd_group_b10_pdsin4t1))
+ggsave(here(dir_figs, "cbi_by_cd_group_b10_pdsin4t1.png"))
+
+
+
+
+d_plot <- d_s_fire |>
+  dplyr::filter(burn_cbi >= 0 & biotic_relaxedforestnorm_5_yrs_prior_sum_yot <= 100 & !is.na(biotic_relaxedforestnorm_5_yrs_prior_sum_yot)) |>
+  dplyr::mutate(
+    biotic_bin = cut(
+      biotic_relaxedforestnorm_5_yrs_prior_sum_yot,
+      breaks = 10
+    )
+  )
+
+ggplot(d_plot, aes(x = biotic_bin, y = burn_cbi)) +
+  geom_boxplot() +
+  theme_minimal()
+ggsave(here(dir_figs, "cbi_by_biotic_bin.png"))
+
+
+
+
+d_plot <- d_s_fire |>
+  dplyr::filter(burn_cbi >= 0 & !is.na(pdsi_annual_5_yrs_prior_sum_yot)) |>
+  dplyr::mutate(
+    pdsi_bin = cut(
+      pdsi_annual_5_yrs_prior_sum_yot,
+      breaks = 10
+    )
+  )
+
+ggplot(d_plot, aes(x = pdsi_bin, y = burn_cbi)) +
+  geom_boxplot() +
+  theme_minimal()
+ggsave(here(dir_figs, "cbi_by_pdsisumprior_bin.png"))
+
+
+d_plot <- d_s_fire |>
+  dplyr::filter(burn_cbi >= 0 & !is.na(pdsi_annual_year_of)) |>
+  dplyr::mutate(
+    pdsiyo_bin = cut(
+      pdsi_annual_year_of,
+      breaks = 10
+    )
+  )
+
+ggplot(d_plot, aes(x = pdsiyo_bin, y = burn_cbi)) +
+  geom_boxplot() +
+  theme_minimal()
+ggsave(here(dir_figs, "cbi_by_pdsiyo_bin.png"))
+
+
+
+ggplot(d_s_fire, aes(x = as.character(hd_fingerprint_year_of), y = burn_cbi)) +
+  geom_boxplot() +
+  theme_minimal()
+ggsave(here(dir_figs, "cbi_by_hdyo_bin.png"))
+
+
+```
+
+
+
+
+# Outcomes
+
+```{r}
+ggplot(d_s |> filter(fire == 1 & !is.na(cd_group_b10_pdsisumn10))) +
+  geom_density(aes(x = raw_post_fire_rap_tree_difference_n6_3_yr, color = cd_group_b10_pdsisumn10))
+
+
+
+ggplot(d_s |> filter(fire == 1)) +
+  geom_point(aes(x = burn_cbi,
+                 y = raw_post_fire_rap_tree_difference_n6_3_yr),
+             alpha = 0.2) +
+  geom_smooth(aes(x = burn_cbi,
+                 y = raw_post_fire_rap_tree_difference_n6_3_yr))
+
+
+```
+
+
+# correlations
+```{r}
+
+dir_correlations <- here::here(dir_figs, "correlations")
+dir_ensure(dir_correlations)
+
+# Correlation matrix
+correlations <- d_s |>
+  select(aet, def, gam_rap_tree_pre6_fit, srtm, tpi, chili) |>
+  cor(use = "pairwise.complete.obs")
+png(here(dir_correlations, glue('corr_plot_1_all.png')), width = 400, height = 400)
+corrplot(correlations, method = 'number', type = "lower", diag = FALSE, use = 'pairwise.complete.obs') 
+dev.off()
+
+
+
+drought_correlations <- d_s |>
+  select(hd_fingerprint_year_of, pdsi_annual_year_of, pdsi_annual_5_yrs_prior_sum_yot, pdsi_annual_5_yrs_prior_threshold_n4_yot, pdsi_annual_5_yrs_prior_threshold_n3_yot, hd_fingerprint_5_yrs_prior_threshold_6_yot) |>
+  cor(use = "pairwise.complete.obs")
+png(here(dir_correlations, glue('corr_plot_2_all.png')), width = 800, height = 800)
+corrplot(drought_correlations, method = 'number', type = "lower", diag = FALSE, use = 'pairwise.complete.obs') 
+dev.off()
+
+
+for(ecor in unique(d_s$ecoregion_code_name)) {
+  
+  correlations <- d_s |>
+    filter(ecoregion_code_name == ecor) |>
+    select(aet, def, gam_rap_tree_pre6_fit, srtm, tpi, chili) |>
+    cor(use = "pairwise.complete.obs")
+  png(here(dir_correlations, glue('corr_plot_1_{ecor}.png')), width = 400, height = 400)
+  corrplot(correlations, method = 'number', type = "lower", diag = FALSE, use = 'pairwise.complete.obs') 
+  dev.off()
+  
+  
+  
+  drought_correlations <- d_s |>
+    filter(ecoregion_code_name == ecor) |>
+    select(hd_fingerprint_year_of, pdsi_annual_year_of, pdsi_annual_5_yrs_prior_sum_yot, pdsi_annual_5_yrs_prior_threshold_n4_yot, pdsi_annual_5_yrs_prior_threshold_n3_yot, hd_fingerprint_5_yrs_prior_threshold_6_yot) |>
+    cor(use = "pairwise.complete.obs")
+  png(here(dir_correlations, glue('corr_plot_2_{ecor}.png')), width = 800, height = 800)
+  corrplot(drought_correlations, method = 'number', type = "lower", diag = FALSE, use = 'pairwise.complete.obs') 
+  dev.off()
+
+}
+
+
+
+
+```
+      
+
+
+# Extend covariate distributions to add quant
+
+```{r}
+
+library(ggplot2)
+library(dplyr)
+library(purrr)
+library(patchwork)
+library(rlang)
+library(forcats)
+library(readr)
+library(stringr)
+library(tidyr)
+
+dir_density_assessment <- here(dir_figs, "density_assessment")
+dir_ensure(dir_density_assessment)
+
+safe_filename <- function(x) {
+  x |>
+    stringr::str_replace_all("[^[:alnum:]_ -]", "_") |>
+    stringr::str_replace_all("[ /]+", "_") |>
+    stringr::str_replace_all("_+", "_") |>
+    stringr::str_trim(side = "both")
+}
+compute_density_overlap_metrics <- function(df,
+                                            x_var,
+                                            group_var,
+                                            n_grid = 512,
+                                            min_n_group = 20) {
+  
+  d <- tibble::tibble(
+    x = df[[x_var]],
+    group = df[[group_var]]
+  ) |>
+    dplyr::filter(
+      !is.na(x),
+      !is.na(group)
+    ) |>
+    dplyr::mutate(group = as.character(group))
+  
+  if (nrow(d) == 0) {
+    return(tibble::tibble(
+      n = 0L,
+      n_groups = 0L,
+      groups_used = NA_character_,
+      multigroup_overlap = NA_real_,
+      min_pairwise_overlap = NA_real_,
+      mean_pairwise_overlap = NA_real_
+    ))
+  }
+  
+  group_counts <- d |>
+    dplyr::count(group, name = "n_group") |>
+    dplyr::filter(n_group >= min_n_group)
+  
+  d <- d |>
+    dplyr::semi_join(group_counts, by = "group")
+  
+  if (nrow(d) == 0) {
+    return(tibble::tibble(
+      n = 0L,
+      n_groups = 0L,
+      groups_used = NA_character_,
+      multigroup_overlap = NA_real_,
+      min_pairwise_overlap = NA_real_,
+      mean_pairwise_overlap = NA_real_
+    ))
+  }
+  
+  groups <- sort(unique(d$group))
+  
+  if (length(groups) < 2) {
+    return(tibble::tibble(
+      n = nrow(d),
+      n_groups = length(groups),
+      groups_used = paste(groups, collapse = ", "),
+      multigroup_overlap = NA_real_,
+      min_pairwise_overlap = NA_real_,
+      mean_pairwise_overlap = NA_real_
+    ))
+  }
+  
+  x_range <- range(d$x, na.rm = TRUE)
+  
+  if (!is.finite(x_range[1]) || !is.finite(x_range[2]) || x_range[1] == x_range[2]) {
+    return(tibble::tibble(
+      n = nrow(d),
+      n_groups = length(groups),
+      groups_used = paste(groups, collapse = ", "),
+      multigroup_overlap = NA_real_,
+      min_pairwise_overlap = NA_real_,
+      mean_pairwise_overlap = NA_real_
+    ))
+  }
+  
+  dens_list <- purrr::map(
+    groups,
+    function(gr) {
+      xg <- d |>
+        dplyr::filter(group == gr) |>
+        dplyr::pull(x)
+      
+      stats::density(
+        x = xg,
+        from = x_range[1],
+        to = x_range[2],
+        n = n_grid,
+        na.rm = TRUE
+      )
+    }
+  )
+  
+  x_grid <- dens_list[[1]]$x
+  dx <- x_grid[2] - x_grid[1]
+  
+  y_mat <- do.call(
+    cbind,
+    purrr::map(dens_list, \(dd) dd$y)
+  )
+  
+  multigroup_overlap <- sum(apply(y_mat, 1, min)) * dx
+  
+  pair_idx <- utils::combn(seq_along(groups), 2, simplify = FALSE)
+  
+  pairwise_tbl <- purrr::map_dfr(
+    pair_idx,
+    function(idx) {
+      ovl <- sum(pmin(y_mat[, idx[1]], y_mat[, idx[2]])) * dx
+      
+      tibble::tibble(
+        group_1 = groups[idx[1]],
+        group_2 = groups[idx[2]],
+        pairwise_overlap = ovl
+      )
+    }
+  )
+  
+  tibble::tibble(
+    n = nrow(d),
+    n_groups = length(groups),
+    groups_used = paste(groups, collapse = ", "),
+    multigroup_overlap = multigroup_overlap,
+    min_pairwise_overlap = min(pairwise_tbl$pairwise_overlap, na.rm = TRUE),
+    mean_pairwise_overlap = mean(pairwise_tbl$pairwise_overlap, na.rm = TRUE)
+  )
+}
+
+plot_density_triplets <- function(df,
+                                  x_vars = c(
+                                    "aet",
+                                    "def",
+                                    "gam_rap_tree_pre6_fit",
+                                    "srtm",
+                                    "chili",
+                                    "tpi"
+                                  ),
+                                  group_vars = c(
+                                    "cd_group_b10_pdsisumn10",
+                                    "cd_group_b10_pdsin3t1",
+                                    "cd_group_b10_pdsin4t1"
+                                  ),
+                                  n_grid = 512,
+                                  min_n_group = 20,
+                                  plot_title_prefix = NULL) {
+  
+  metrics_tbl <- tidyr::expand_grid(
+    x_var = x_vars,
+    group_var = group_vars
+  ) |>
+    dplyr::mutate(
+      metrics = purrr::map2(
+        x_var,
+        group_var,
+        ~ compute_density_overlap_metrics(
+          df = df,
+          x_var = .x,
+          group_var = .y,
+          n_grid = n_grid,
+          min_n_group = min_n_group
+        )
+      )
+    ) |>
+    tidyr::unnest(metrics)
+  
+  make_one_plot <- function(x_var, group_var) {
+    
+    metrics_row <- metrics_tbl |>
+      dplyr::filter(
+        x_var == !!x_var,
+        group_var == !!group_var
+      )
+    
+    label_txt <- paste0(
+      "OVL(all): ",
+      ifelse(is.na(metrics_row$multigroup_overlap), "NA",
+             sprintf("%.3f", metrics_row$multigroup_overlap)),
+      "\nMin pair: ",
+      ifelse(is.na(metrics_row$min_pairwise_overlap), "NA",
+             sprintf("%.3f", metrics_row$min_pairwise_overlap)),
+      "\nMean pair: ",
+      ifelse(is.na(metrics_row$mean_pairwise_overlap), "NA",
+             sprintf("%.3f", metrics_row$mean_pairwise_overlap)),
+      "\nN: ",
+      metrics_row$n,
+      "\nGroups: ",
+      metrics_row$n_groups
+    )
+    
+    d_plot <- tibble::tibble(
+      x = df[[x_var]],
+      group = df[[group_var]]
+    ) |>
+      dplyr::filter(
+        !is.na(x),
+        !is.na(group)
+      ) |>
+      dplyr::mutate(group = as.character(group)) |>
+      dplyr::add_count(group, name = "n_group") |>
+      dplyr::filter(n_group >= min_n_group)
+    
+    ggplot(
+      data = d_plot,
+      aes(
+        x = x,
+        color = group
+      )
+    ) +
+      geom_density(linewidth = 0.7) +
+      annotate(
+        geom = "text",
+        x = Inf,
+        y = Inf,
+        label = label_txt,
+        hjust = 1.05,
+        vjust = 1.1,
+        size = 3.2
+      ) +
+      theme_minimal() +
+      labs(
+        x = x_var,
+        y = "Density",
+        color = group_var,
+        title = group_var
+      )
+  }
+  
+  plot_list <- purrr::map(
+    x_vars,
+    function(x_var) {
+      purrr::map(
+        group_vars,
+        ~ make_one_plot(x_var = x_var, group_var = .x)
+      ) |>
+        patchwork::wrap_plots(nrow = 1) +
+        patchwork::plot_annotation(
+          title = if (is.null(plot_title_prefix)) {
+            x_var
+          } else {
+            paste0(plot_title_prefix, " - ", x_var)
+          }
+        )
+    }
+  ) |>
+    rlang::set_names(x_vars)
+  
+  list(
+    plots = plot_list,
+    metrics = metrics_tbl
+  )
+}
+
+save_density_plot_set <- function(plot_list, out_dir, prefix) {
+  dir_ensure(out_dir)
+  
+  purrr::iwalk(
+    plot_list,
+    ~ ggplot2::ggsave(
+      filename = file.path(out_dir, paste0(prefix, .y, "_density_triplet.png")),
+      plot = .x,
+      width = 12,
+      height = 4,
+      dpi = 300
+    )
+  )
+}
+
+save_density_metrics_table <- function(metrics_tbl, out_dir, filename) {
+  dir_ensure(out_dir)
+  
+  readr::write_csv(
+    metrics_tbl,
+    file.path(out_dir, filename)
+  )
+}
+
+
+# all-data plots + summary table
+density_all <- plot_density_triplets(
+  df = d_s,
+  plot_title_prefix = "All",
+  min_n_group = 20
+)
+
+save_density_plot_set(
+  plot_list = density_all$plots,
+  out_dir = dir_density_assessment,
+  prefix = "all_"
+)
+
+save_density_metrics_table(
+  metrics_tbl = density_all$metrics |>
+    dplyr::mutate(ecoregion_code_name = "All") |>
+    dplyr::relocate(ecoregion_code_name),
+  out_dir = dir_density_assessment,
+  filename = "all_density_overlap_metrics.csv"
+)
+
+ecoregions <- d_s |>
+  dplyr::distinct(ecoregion_code_name) |>
+  dplyr::pull(ecoregion_code_name) |>
+  stats::na.omit() |>
+  as.character() |>
+  sort()
+
+purrr::walk(
+  ecoregions,
+  function(ecoregion_i) {
+    
+    ecoregion_dir <- file.path(
+      dir_density_assessment,
+      safe_filename(ecoregion_i)
+    )
+    dir_ensure(ecoregion_dir)
+    
+    d_eco <- d_s |>
+      dplyr::filter(ecoregion_code_name == ecoregion_i)
+    
+    density_eco <- plot_density_triplets(
+      df = d_eco,
+      plot_title_prefix = ecoregion_i,
+      min_n_group = 20
+    )
+    
+    save_density_plot_set(
+      plot_list = density_eco$plots,
+      out_dir = ecoregion_dir,
+      prefix = paste0(safe_filename(ecoregion_i), "_")
+    )
+    
+    save_density_metrics_table(
+      metrics_tbl = density_eco$metrics |>
+        dplyr::mutate(ecoregion_code_name = ecoregion_i) |>
+        dplyr::relocate(ecoregion_code_name),
+      out_dir = ecoregion_dir,
+      filename = paste0(safe_filename(ecoregion_i), "_density_overlap_metrics.csv")
+    )
+  }
+)
+
+density_metrics_by_ecoregion <- purrr::map_dfr(
+  ecoregions,
+  function(ecoregion_i) {
+    d_s |>
+      dplyr::filter(ecoregion_code_name == ecoregion_i) |>
+      plot_density_triplets(
+        plot_title_prefix = ecoregion_i,
+        min_n_group = 20
+      ) |>
+      purrr::pluck("metrics") |>
+      dplyr::mutate(ecoregion_code_name = ecoregion_i) |>
+      dplyr::relocate(ecoregion_code_name)
+  }
+) |>
+  dplyr::mutate(
+    x_var = factor(x_var, levels = c("aet", "def", "chili", "tpi", "srtm", "gam_rap_tree_pre6_fit"))
+  )
+
+
+
+readr::write_csv(
+  density_metrics_by_ecoregion,
+  file.path(dir_density_assessment, "density_overlap_metrics_by_ecoregion.csv")
+)
+
+```
+
+# assess density overlap metrics
+```{r}
+
+ggplot(data = density_metrics_by_ecoregion) +
+  geom_density(aes(x = multigroup_overlap, color = x_var)) +
+  facet_wrap(~group_var)
+
+ggplot(data = density_metrics_by_ecoregion) +
+  geom_density(aes(x = multigroup_overlap, color = ecoregion_code_name)) +
+  facet_wrap(~group_var)
+
+
+ggplot(data = density_metrics_by_ecoregion |>
+  dplyr::filter(!stringr::str_starts(x_var, "tt_")) |>
+    dplyr::filter(group_var == "cd_group_b10_pdsin3t1")) +
+  geom_col(aes(x = x_var, y = multigroup_overlap)) +
+  facet_wrap(~ecoregion_code_name) +
+  labs(title = "Multigroup overlap for all ecoregions for key covariates: cd_group_b10_pdsin3t1") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      vjust = 1
+    )
+  ) +
+  geom_hline(aes(yintercept = 0.3), color = "red") +
+  geom_hline(aes(yintercept = 0.6))
+
+ggsave(filename = here(dir_density_assessment, "multigroup_overlap.png"))
+
+```
+
+# Assess standardized mean difference (SMD) using cobalt
+
+```{r}
+
+
+library(cobalt)
+   
+cobalt::bal.tab(x = cd_group_b10_pdsisumn10 ~ aet + def + srtm + tpi + chili + gam_rap_tree_pre6_fit + tt_change_aet + tt_change_def, 
+                data = d_s |> filter(fire == 1 & !is.na(cd_group_b10_pdsisumn10)))
+
+png(here(dir_figs, glue("love_plot_fire_cd_group_b10_pdsisumn10.png")))
+cobalt::love.plot(x = cd_group_b10_pdsisumn10 ~ aet + def + srtm + tpi + chili + gam_rap_tree_pre6_fit + tt_change_aet + tt_change_def, 
+                data = d_s |> filter(fire == 1 & !is.na(cd_group_b10_pdsisumn10)),
+                stats = c("mean.diffs", "ks.statistics"),
+                stars = "raw",
+                position = "bottom",
+                threshold = c(m = .1, ks = .05),
+                limits = list(c(-1, 1), c(0, 0.6)),
+                title = glue("Covariate balance love plot for CD treatment: cd_group_b10_pdsisumn10"))
+dev.off()
+
+
+
+library(cobalt)
+library(dplyr)
+library(glue)
+
+d_plot <- d_s |>
+  filter(fire == 1, !is.na(cd_group_b10_pdsisumn10)) |>
+  mutate(
+    cd_group_b10_pdsisumn10 = factor(cd_group_b10_pdsisumn10)
+  )
+
+bal_out <- cobalt::bal.tab(
+  cd_group_b10_pdsisumn10 ~ aet + def + srtm + tpi + chili +
+    gam_rap_tree_pre6_fit + tt_change_aet + tt_change_def,
+  data = d_plot,
+  pairwise = TRUE,
+  stats = c("mean.diffs", "ks.statistics")
+)
+
+png(
+  here::here(dir_figs, "love_plot_fire_cd_group_b10_pdsisumn10_smd.png"),
+  width = 1400, height = 1000, res = 150
+)
+
+cobalt::love.plot(
+  bal_out,
+  stat = "mean.diffs",
+  abs = TRUE,
+  agg.fun = NULL,
+  facet = "contrast",   # <-- separates pairs
+  thresholds = c(m = .1)
+)
+
+dev.off()
+
+```
+
+
+```{r}
 
 
 # GAM METRIC DISTRIBUTIONS

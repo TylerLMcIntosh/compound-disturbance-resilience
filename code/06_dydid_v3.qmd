@@ -1,0 +1,1714 @@
+---
+title: "06_dydid"
+author: Tyler L. McIntosh
+date: last-modified
+format:
+  html:
+    embed-resources: true
+    html-math-method: katex
+    css: styles.css
+    toc: true
+    toc-depth: 1
+    toc-title: Contents
+    toc-location: right
+    code-fold: true
+    code-summary: "Show the code"
+---
+
+
+# Setup for analysis
+
+``` {r setupchunk}
+#| echo: true
+#| message: false
+#| warning: false
+#| results: 'hide'
+
+rm(list = ls())
+
+if(!requireNamespace("here", quietly = TRUE)) {
+  install.packages("here")
+}
+library(here)
+
+source(here::here("utils", "functions.R"))
+
+# install_load_packages(c(
+#   "tidyverse",
+#   "tictoc",
+#   "hstats",
+#   "glue",
+#   "shapviz",
+#   #"patchwork",
+#   #"cobalt",
+#   #"corrplot",
+#   #"gridExtra",
+#   "fect",
+#   "fixest",
+#   "did",
+#   "arrow",
+#   "panelView",
+#   "PanelMatch",
+#   "didimputation",
+#   "doParallel",
+#   "HonestDid",
+#   "HonestDidFEct",
+#   "DIDmultiplegtDYN",
+#   "sf",
+#   "spdep",
+#   "gstat",
+#   "scales",
+#   "broom",
+#   "ggfixest"))
+
+install_load_packages(c(
+  "tidyverse",
+  "tictoc",
+  "glue",
+  "fixest",
+  "arrow"
+))
+
+dir_figs <- here::here('figs', "GEE_resilience_v6_operational_ss500_ts50000")
+dir_derived <- here::here('data', 'derived', 'GEE_resilience_v6_operational_ss500_ts50000')
+#dir_derived <- here::here('data', 'derived', 'idb_500_20251130')
+dir_raw <- here::here('data', 'raw')
+dir_manual <- here::here('data', 'manual')
+dir_ensure(c(dir_figs,
+             dir_derived,
+             dir_manual,
+             dir_raw))
+
+seed = 1234
+set.seed(seed)
+
+
+```
+
+#
+
+```{r}
+
+
+
+forested_ecoregions <- tibble(
+  na_l3name = c(
+    "Blue Mountains",
+    "Cascades",
+    "Coast Range",
+    "Eastern Cascades Slopes and Foothills",
+    "Klamath Mountains",
+    "North Cascades",
+    "Straight of Georgia/Puget Lowland",
+    "Willamette Valley",
+    "California Coastal Sage, Chaparral, and Oak Woodlands",
+    "Sierra Nevada",
+    "Southern and Baja California Pine-Oak Mountains",
+    "Canadian Rockies",
+    "Idaho Batholith",
+    "Middle Rockies",
+    "Columbia Mountains/Northern Rockies",
+    "Southern Rockies",
+    "Wasatch and Uinta Mountains",
+    "Arizona/New Mexico Mountains",
+    "Colorado Plateaus"
+  ),
+  na_l3code = c(
+    "6.2.9", "6.2.7", "7.1.8", "6.2.8", "6.2.11", "6.2.5", "7.1.7",
+    "7.1.9", "11.1.1", "6.2.12", "11.1.3", "6.2.4", "6.2.15",
+    "6.2.10", "6.2.3", "6.2.14", "6.2.13", "13.1.1", "10.1.6"
+  ),
+  short_name = c(
+    "Blue Mtns", "Cascades", "Coast Range", "Eastern Cascades",
+    "Klamath Mtns", "North Cascades", "Puget Lowland",
+    "Willamette Valley", "Central California Mtns", "Sierra Nevada",
+    "Southern California Mtns", "Canadian Rockies", "Idaho Batholith",
+    "Middle Rockies", "Northern Rockies", "Southern Rockies",
+    "Wasatch Uinta Mtns", "AZ/NM Mtns", "Colorado Plateaus"
+  ),
+  region = c(
+    "Pacific Northwest", "Pacific Northwest", "Pacific Northwest",
+    "Pacific Northwest", "Pacific Northwest", "Pacific Northwest",
+    "Pacific Northwest", "Pacific Northwest",
+    "California", "California", "California",
+    "Upper Rockies", "Upper Rockies", "Upper Rockies", "Upper Rockies",
+    "Lower Rockies", "Lower Rockies",
+    "Southwest", "Southwest"
+  ),
+  code_name = c(
+    "bluemtns", "cascades", "coastrange", "eastcascades",
+    "klamathmtns", "northcascades", "pugetlowland",
+    "willamettevalley", "centralcaliforniamtns", "sierranevada",
+    "southerncaliforniamtns", "canadianrockies", "idahobatholith",
+    "middlerockies", "northernrockies", "southernrockies",
+    "wasatchuintamtns", "aznmmtns", "coloradoplateaus"
+  ),
+  us_l3code = c(
+    "11", "4", "1", "9", "78", "77", "2", "3", "6", "5", "8",
+    "41", "16", "17", "15", "21", "19", "23", "20"
+  )
+)
+
+# Remove ecoregions with <30% USFS forested land coverage
+forested_ecoregions <- forested_ecoregions |> filter(code_name != "coastrange" &
+                                code_name != "pugetlowland" & 
+                                code_name != "willamettevalley" &
+                                code_name != "coloradoplateaus" &
+                                code_name != "centralcaliforniamtns")
+
+
+```
+
+
+
+
+# code for setting groups
+
+```{r}
+
+set_cd_groups <- function(df,
+                          b_nm,
+                          d_nm,
+                          cd_nm,
+                          b_threshold,
+                          d_threshold) {
+  
+  if(d_threshold < 0) {
+    df_new <- df |>
+    dplyr::mutate(
+      "{cd_nm}" := dplyr::case_when(
+        .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] >  d_threshold ~ "f",
+        .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] >  d_threshold ~ "bf",
+        .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] <= d_threshold ~ "df",
+        .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] <= d_threshold ~ "bdf",
+        TRUE ~ NA_character_
+      )
+    )
+  } else {
+    df_new <- df |>
+    dplyr::mutate(
+      "{cd_nm}" := dplyr::case_when(
+        .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] <  d_threshold ~ "f",
+        .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] <  d_threshold ~ "bf",
+        .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] >= d_threshold ~ "df",
+        .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] >= d_threshold ~ "bdf",
+        TRUE ~ NA_character_
+      )
+    )
+    
+  }
+
+  
+  return(df_new)
+}
+
+
+```
+
+
+
+
+# Test spatial cutoffs - LATER
+
+```{}
+
+
+```
+
+
+# Wrapper functions
+```{r}
+
+# This function runs a feols analysis on dataframe df using ref_period.
+# It will compute the model using all 0 values in trt_col (treatment column) as the control and all 1 values in trt_col with grp in subgrp_col as the estimating group 
+feols_trt_subg <- function(subgrp_col,
+                              grp,
+                              trt_col = "fire",
+                              df,
+                              ...) {
+  # Convert string to symbol
+  col_sym <- sym(subgrp_col)
+  trt_col_sym <- sym(trt_col)
+  
+  df_never_trt <- df |>
+    filter(!!trt_col_sym == 0)
+  
+  df_subset <- df |>
+    filter(!!trt_col_sym == 1 & !!col_sym == grp)
+  
+  df_use <- bind_rows(df_never_trt, df_subset)
+
+  model <- feols(
+    data = df_use,
+    ...
+  )
+  
+  n_treated_subgroup_units <- length(unique(df_subset$pt_id))
+  n_never_treated_units <- length(unique(df_never_trt$pt_id))
+  attr(model, "n_treated_subgroup_units") <- n_treated_subgroup_units
+  attr(model, "n_never_treated_units") <- n_never_treated_units
+  
+  return(model)
+}
+
+
+feols_multi_trt <- function(subgrp_col,
+                            df,
+                            groups = NULL,
+                            trt_col,
+                            ...) {
+
+  if (is.null(groups)) {
+    groups <- sort(unique(df[[subgrp_col]]))
+    groups <- groups[!is.na(groups)]
+  }
+
+  models <- purrr::map(groups, \(g) {
+    feols_trt_subg(subgrp_col = subgrp_col, grp = g, df = df, trt_col = trt_col, ...)
+  })
+
+  names(models) <- groups
+
+  models
+}
+
+
+# Model list and model_labels should be the same length!
+# If item in model_list contains attribute "n_treated_subgroup_units", the attribute will be appended to the model name in the legend
+
+plot_sunab_models <- function(model_list,
+                              model_labels = NULL,
+                              title = "Dynamic-DiD Event-Study Estimates from Multiple Models",
+                              ribbon_type = "ribbon", #either "ribbon" or "dashed",
+                              caption = "95% confidence intervals shown;\nInteraction-weighted (Sun-Abraham) estimates used;\nConley standard errors with 125km cutoff, 20km pixel",
+                              baseline = -1,
+                              xlim = c(-10, 20),
+                              ylim = c(-50, 50)
+                              ) {
+  
+  # If no labels provided, auto-label as Model 1, Model 2, etc.
+  if (is.null(model_labels)) {
+    model_labels <- paste0("Model ", seq_along(model_list))
+  }
+  
+  # Extract coefficients for each model and attach model label
+  plot_data <- map2_dfr(model_list, model_labels, function(model, label) {
+    df <- as.data.frame(as.matrix(model$coeftable))
+    df$term <- rownames(model$coeftable)
+    
+    has_attr <- function(x, attr_name) {
+      !is.null(attr(x, attr_name))
+    }
+    
+    if (has_attr(model, "n_treated_subgroup_units")) {
+      label <- glue("{label} (N = {attr(model, 'n_treated_subgroup_units')})")
+    }
+    
+    df %>%
+      filter(str_detect(term, "^year::")) %>%
+      mutate(
+        Time = as.numeric(str_extract(term, "-?\\d+")),
+        CI_upper = Estimate + 1.96 * `Std. Error`,
+        CI_lower = Estimate - 1.96 * `Std. Error`,
+        Model = label
+      )
+  })
+
+  # Plot
+  if(ribbon_type == "ribbon") {
+    ggplot(plot_data, aes(x = Time, y = Estimate, color = Model, fill = Model)) +
+      geom_line(linewidth = 1) +
+      geom_point(size = 2) +
+      geom_ribbon(aes(ymin = CI_lower, ymax = CI_upper), alpha = 0.2, color = NA) +
+      geom_vline(xintercept = baseline, linetype = "dashed", color = "gray40") +
+      geom_hline(yintercept = 0, color = "black") +
+      labs(
+        x = "Event Time",
+        y = "Treatment Effect",
+        title = title,
+        caption = caption
+      ) +
+      theme_minimal(base_size = 13) +
+      theme(legend.position = "bottom")  +
+      xlim(xlim)+
+      ylim(ylim)
+  } else {
+    ggplot(plot_data, aes(x = Time, y = Estimate, color = Model)) +
+      geom_line(linewidth = 1) +
+      geom_point(size = 2) +
+      
+      # CI as dotted lines instead of ribbon
+      geom_line(aes(y = CI_upper), linetype = "dotted", linewidth = 0.8) +
+      geom_line(aes(y = CI_lower), linetype = "dotted", linewidth = 0.8) +
+      
+      geom_vline(xintercept = baseline, linetype = "dashed", color = "gray40") +
+      geom_hline(yintercept = 0, color = "black") +
+      labs(
+        x = "Event Time",
+        y = "Treatment Effect",
+        title = title,
+        caption = caption
+      ) +
+      theme_minimal(base_size = 13) +
+      theme(legend.position = "bottom") +
+      xlim(xlim) +
+      ylim(ylim)
+  }
+
+}
+
+
+
+run_dydid_model <- function(l3) {
+  
+  print(l3)
+  
+  d_l_f <- list.files(
+    here::here(dir_derived, "parquet"),
+    pattern = glue("dats_long_{l3}.parquet$"),
+    full.names = TRUE
+  )
+  
+  d_l <- open_dataset(d_l_f, format = "parquet") |>
+    collect()
+  # 
+  # d_l <- d_l |> filter(year >= 2000)
+  #   
+  d_l <- set_cd_groups(df = d_l,
+                     b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+                     d_nm = "pdsi_annual_5_yrs_prior_threshold_n4_yot",
+                     cd_nm = "cd_group_b10_pdsin4t1",
+                     b_threshold = 10,
+                     d_threshold = 1)
+  
+  d_l <- set_cd_groups(df = d_l,
+                     b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+                     d_nm = "pdsi_annual_5_yrs_prior_threshold_n3_yot",
+                     cd_nm = "cd_group_b10_pdsin3t1",
+                     b_threshold = 10,
+                     d_threshold = 1)
+  
+
+  
+  d_l <- set_cd_groups(df = d_l,
+                     b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+                     d_nm = "pdsi_annual_5_yrs_prior_sum_yot",
+                     cd_nm = "cd_group_b10_pdsisumn10",
+                     b_threshold = 10,
+                     d_threshold = -10)
+
+  # 
+  # tic("models1")
+  # models1 <- feols_multi_trt(subgrp_col = "cd_group_b10_pdsin4t1",
+  #                               df = d_l,
+  #                               groups = NULL,
+  #                               trt_col = "fire",
+  #                               fml = rap_tree ~ biotic_relaxedforestnorm + pdsi_annual + sunab(FirstTreat, year, ref.p = -6) | pt_id + year,
+  #                               #fml = rap_tree ~ pdsi_annual + sunab(FirstTreat, year, ref.p = -6) | uniqueID + year,
+  #                               mem.clean = TRUE,
+  #                               lean = FALSE,
+  #                               vcov = fixest::vcov_conley(lat = "lat",
+  #                                                          lon = "long",
+  #                                                          cutoff = 125,
+  #                                                          pixel = 20,
+  #                                                          distance = "triangular"
+  #                                                          )
+  #                               )
+  # toc()
+  # tic("plot1")
+  # 
+  # plot_sunab_models(models1,
+  #                   names(models1),
+  #                   title = glue("DyDID analysis for {l3}, cd_group_b10_pdsin4t1"),
+  #                   baseline = -6,
+  #                   xlim = c(-10, 20),
+  #                   ylim = c(-50, 10))
+  # ggsave(here(dir_figs, glue("dydid_cd_group_b10_pdsin4t1_{l3}.png")))
+  # toc()
+  # 
+  # tic("model2")
+  # models2 <- feols_multi_trt(subgrp_col = "cd_group_b10_pdsisumn10",
+  #                               df = d_l,
+  #                               groups = NULL,
+  #                               trt_col = "fire",
+  #                               fml = rap_tree ~ biotic_relaxedforestnorm + pdsi_annual + sunab(FirstTreat, year, ref.p = -6) | pt_id + year,
+  #                               #fml = rap_tree ~ pdsi_annual + sunab(FirstTreat, year, ref.p = -6) | uniqueID + year,
+  #                               mem.clean = TRUE,
+  #                               lean = FALSE,
+  #                               vcov = fixest::vcov_conley(lat = "lat",
+  #                                                          lon = "long",
+  #                                                          cutoff = 125,
+  #                                                          pixel = 20,
+  #                                                          distance = "triangular"
+  #                                                          )
+  #                               )
+  # toc()
+  # 
+  # tic("plot2")
+  # 
+  # plot_sunab_models(models2,
+  #                   names(models2),
+  #                   title = glue("DyDID analysis for {l3}, cd_group_b10_pdsisumn10"),
+  #                   baseline = -6,
+  #                   xlim = c(-10, 20),
+  #                   ylim = c(-50, 10))
+  # 
+  # ggsave(here(dir_figs, glue("dydid_cd_group_b10_pdsisumn10_{l3}.png")))
+  # toc()
+  # 
+  
+  tic("model3")
+  models2 <- feols_multi_trt(subgrp_col = "cd_group_b10_pdsin3t1",
+                                df = d_l,
+                                groups = NULL,
+                                trt_col = "fire",
+                                fml = rap_tree ~ biotic_relaxedforestnorm + pdsi_annual + sunab(FirstTreat, year, ref.p = -6) | pt_id + year,
+                                #fml = rap_tree ~ pdsi_annual + sunab(FirstTreat, year, ref.p = -6) | uniqueID + year,
+                                mem.clean = TRUE,
+                                lean = FALSE,
+                                vcov = fixest::vcov_conley(lat = "lat",
+                                                           lon = "long",
+                                                           cutoff = 125,
+                                                           pixel = 20,
+                                                           distance = "triangular"
+                                                           )
+                                )
+  toc()
+  
+  tic("plot3")
+  
+  plot_sunab_models(models2,
+                    names(models2),
+                    title = glue("DyDID analysis for {l3}, cd_group_b10_pdsin3t1"),
+                    baseline = -6,
+                    xlim = c(-10, 20),
+                    ylim = c(-50, 10))
+  
+  ggsave(here(dir_figs, glue("dydid_cd_group_b10_pdsin3t1_{l3}.png")))
+  toc()
+  
+}
+
+
+
+
+
+  
+
+```
+
+
+
+# Run models
+```{r}
+
+# FOR EACH ECOREGION
+
+tic()
+dats_by_l3 <- purrr::map(
+  forested_ecoregions$code_name,
+  run_dydid_model
+)
+toc()
+
+
+
+
+
+
+
+
+d_l_f <- list.files(
+  here::here(dir_derived, "parquet"),
+  pattern = "dats_long_",
+  full.names = TRUE
+)
+
+d_l <- open_dataset(d_l_f, format = "parquet") |>
+  collect()
+
+# 
+# d_l <- d_l |> filter(year >= 2000)
+#   
+d_l <- set_cd_groups(df = d_l,
+                   b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+                   d_nm = "pdsi_annual_5_yrs_prior_threshold_n4_yot",
+                   cd_nm = "cd_group_b10_pdsin4t1",
+                   b_threshold = 10,
+                   d_threshold = 1)
+
+d_l <- set_cd_groups(df = d_l,
+                   b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+                   d_nm = "pdsi_annual_5_yrs_prior_threshold_n3_yot",
+                   cd_nm = "cd_group_b10_pdsin3t1",
+                   b_threshold = 10,
+                   d_threshold = 1)
+
+
+
+d_l <- set_cd_groups(df = d_l,
+                   b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+                   d_nm = "pdsi_annual_5_yrs_prior_sum_yot",
+                   cd_nm = "cd_group_b10_pdsisumn10",
+                   b_threshold = 10,
+                   d_threshold = -10)
+
+
+d_l <- d_l |>
+  select(pt_id, year, fire, lat, long, FirstTreat, rap_tree, biotic_relaxedforestnorm, pdsi_annual, cd_group_b10_pdsisumn10, cd_group_b10_pdsin4t1) |>
+  filter(year >= 1995)
+
+gc()
+
+tic("models1")
+models1 <- feols_multi_trt(subgrp_col = "cd_group_b10_pdsin4t1",
+                              df = d_l,
+                              groups = NULL,
+                              trt_col = "fire",
+                              fml = rap_tree ~ biotic_relaxedforestnorm + pdsi_annual + sunab(FirstTreat, year, ref.p = -6) | pt_id + year,
+                              #fml = rap_tree ~ pdsi_annual + sunab(FirstTreat, year, ref.p = -6) | uniqueID + year,
+                              mem.clean = TRUE,
+                              lean = FALSE,
+                              vcov = fixest::vcov_conley(lat = "lat",
+                                                         lon = "long",
+                                                         cutoff = 125,
+                                                         pixel = 20,
+                                                         distance = "triangular"
+                                                         )
+                              )
+toc()
+tic("plot1")
+
+plot_sunab_models(models1,
+                  names(models1),
+                  title = glue("DyDID analysis for ALL, cd_group_b10_pdsin4t1"),
+                  baseline = -6,
+                  xlim = c(-10, 20),
+                  ylim = c(-50, 10))
+ggsave(here(dir_figs, glue("dydid_cd_group_b10_pdsin4t1_ALL.png")))
+toc()
+
+
+
+tic("models2")
+models2 <- feols_multi_trt(subgrp_col = "cd_group_b10_pdsisumn10",
+                              df = d_l,
+                              groups = NULL,
+                              trt_col = "fire",
+                              fml = rap_tree ~ biotic_relaxedforestnorm + pdsi_annual + sunab(FirstTreat, year, ref.p = -6) | pt_id + year,
+                              #fml = rap_tree ~ pdsi_annual + sunab(FirstTreat, year, ref.p = -6) | uniqueID + year,
+                              mem.clean = TRUE,
+                              lean = FALSE,
+                              vcov = fixest::vcov_conley(lat = "lat",
+                                                         lon = "long",
+                                                         cutoff = 125,
+                                                         pixel = 20,
+                                                         distance = "triangular"
+                                                         )
+                              )
+toc()
+
+tic("plot2")
+
+plot_sunab_models(models2,
+                  names(models2),
+                  title = glue("DyDID analysis for ALL, cd_group_b10_pdsisumn10"),
+                  baseline = -6,
+                  xlim = c(-10, 20),
+                  ylim = c(-50, 10))
+
+ggsave(here(dir_figs, glue("dydid_cd_group_b10_pdsisumn10_ALL.png")))
+toc()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# 
+# ids_f <- unique(d_l |> filter(fire == 1) |> pull(pt_id)) |> sample(10000)
+# ids_nf <- unique(d_l |> filter(fire == 1) |> pull(pt_id)) |> sample(10000)
+# 
+# dt <- d_l |> filter(pt_id %in% c(ids_f, ids_nf))
+# 
+# models1 <- feols_multi_trt(subgrp_col = "cd_group_b10_pdsisumn10",
+#                               df = dt,
+#                               groups = NULL,
+#                               trt_col = "fire",
+#                               fml = rap_tree ~ biotic_relaxedforestnorm + pdsi_annual + sunab(FirstTreat, year, ref.p = -6) | pt_id + year,
+#                               #fml = rap_tree ~ pdsi_annual + sunab(FirstTreat, year, ref.p = -6) | uniqueID + year,
+#                               mem.clean = TRUE,
+#                               lean = FALSE,
+#                               vcov = fixest::vcov_conley(lat = "lat",
+#                                                          lon = "long",
+#                                                          cutoff = 125,
+#                                                          pixel = 20,
+#                                                          distance = "triangular"
+#                                                          )
+#                               )
+# 
+# 
+# 
+# plot_sunab_models(models1,
+#                   names(models1),
+#                   baseline = -6,
+#                   xlim = c(-10, 20),
+#                   ylim = c(-50, 10))
+# 
+# # 
+# # ggplot(dats_use |> filter(cd_group == "bf" | cd_group == "bdf"), aes(biotic_5_yrs_prior_sum)) +
+# #   geom_histogram(bins = 30) +
+# #   facet_wrap(~ cd_group)
+
+
+```
+
+
+# FUNCTIONS VERSION 2
+
+```{r}
+
+feols_trt_subg <- function(subgrp_col,
+                           grp,
+                           trt_col = "fire",
+                           df,
+                           ...) {
+  
+  col_sym <- rlang::sym(subgrp_col)
+  trt_col_sym <- rlang::sym(trt_col)
+  
+  df_never_trt <- df |>
+    dplyr::filter(!!trt_col_sym == 0)
+  
+  df_subset <- df |>
+    dplyr::filter(!!trt_col_sym == 1 & !!col_sym == grp)
+  
+  df_use <- dplyr::bind_rows(df_never_trt, df_subset)
+  
+  model <- fixest::feols(
+    data = df_use,
+    ...
+  )
+  
+  attr(model, "n_treated_subgroup_units") <- dplyr::n_distinct(df_subset$pt_id)
+  attr(model, "n_never_treated_units") <- dplyr::n_distinct(df_never_trt$pt_id)
+  
+  model
+}
+
+
+feols_multi_trt <- function(subgrp_col,
+                            df,
+                            groups = NULL,
+                            trt_col,
+                            ...) {
+  
+  if (is.null(groups)) {
+    groups <- sort(unique(df[[subgrp_col]]))
+    groups <- groups[!is.na(groups)]
+  }
+  
+  models <- purrr::map(
+    groups,
+    \(g) {
+      feols_trt_subg(
+        subgrp_col = subgrp_col,
+        grp = g,
+        df = df,
+        trt_col = trt_col,
+        ...
+      )
+    }
+  )
+  
+  names(models) <- groups
+  
+  models
+}
+
+
+set_cd_groups <- function(df,
+                          b_nm,
+                          d_nm,
+                          cd_nm,
+                          b_threshold,
+                          d_threshold) {
+  
+  if (d_threshold < 0) {
+    df_new <- df |>
+      dplyr::mutate(
+        "{cd_nm}" := dplyr::case_when(
+          .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] >  d_threshold ~ "f",
+          .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] >  d_threshold ~ "bf",
+          .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] <= d_threshold ~ "df",
+          .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] <= d_threshold ~ "bdf",
+          TRUE ~ NA_character_
+        )
+      )
+  } else {
+    df_new <- df |>
+      dplyr::mutate(
+        "{cd_nm}" := dplyr::case_when(
+          .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] <  d_threshold ~ "f",
+          .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] <  d_threshold ~ "bf",
+          .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] >= d_threshold ~ "df",
+          .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] >= d_threshold ~ "bdf",
+          TRUE ~ NA_character_
+        )
+      )
+  }
+  
+  df_new
+}
+
+
+extract_sunab_plot_data <- function(model_list, model_labels = NULL) {
+  
+  if (is.null(model_labels)) {
+    model_labels <- names(model_list)
+  }
+  
+  if (is.null(model_labels)) {
+    model_labels <- paste0("Model ", seq_along(model_list))
+  }
+  
+  if (length(model_list) != length(model_labels)) {
+    stop("model_list and model_labels must be the same length.")
+  }
+  
+  plot_data <- purrr::map2_dfr(
+    model_list,
+    model_labels,
+    \(model, label) {
+      df <- as.data.frame(as.matrix(model$coeftable))
+      df$term <- rownames(model$coeftable)
+      
+      display_label <- label
+      
+      if (!is.null(attr(model, "n_treated_subgroup_units"))) {
+        display_label <- glue::glue(
+          "{label} (N = {attr(model, 'n_treated_subgroup_units')})"
+        )
+      }
+      
+      df |>
+        dplyr::filter(stringr::str_detect(term, "^year::")) |>
+        dplyr::mutate(
+          Time = as.numeric(stringr::str_extract(term, "-?\\d+")),
+          CI_upper = Estimate + 1.96 * `Std. Error`,
+          CI_lower = Estimate - 1.96 * `Std. Error`,
+          Group = label,
+          Model = display_label
+        )
+    }
+  )
+  
+  if (nrow(plot_data) == 0) {
+    stop("No event-study coefficients found matching '^year::'.")
+  }
+  
+  plot_data |>
+    dplyr::mutate(
+      Group = factor(Group, levels = model_labels),
+      Model = factor(Model, levels = unique(Model))
+    )
+}
+
+
+plot_sunab_models <- function(model_list,
+                              model_labels = NULL,
+                              title = "Dynamic-DiD Event-Study Estimates from Multiple Models",
+                              ribbon_type = "ribbon",
+                              caption = "95% confidence intervals shown",
+                              baseline = -1,
+                              xlim = c(-10, 20),
+                              ylim = c(-50, 50),
+                              palette = NULL,
+                              return_data = FALSE) {
+  
+  plot_data <- extract_sunab_plot_data(
+    model_list = model_list,
+    model_labels = model_labels
+  )
+  
+  breaks_use <- plot_data |>
+    dplyr::distinct(Group, Model) |>
+    dplyr::pull(Group) |>
+    as.character()
+  
+  labels_use <- plot_data |>
+    dplyr::distinct(Group, Model) |>
+    dplyr::pull(Model) |>
+    as.character()
+  
+  if (ribbon_type == "ribbon") {
+    p <- ggplot2::ggplot(
+      plot_data,
+      ggplot2::aes(x = Time, y = Estimate, color = Group, fill = Group)
+    ) +
+      ggplot2::geom_line(linewidth = 1) +
+      ggplot2::geom_point(size = 2) +
+      ggplot2::geom_ribbon(
+        ggplot2::aes(ymin = CI_lower, ymax = CI_upper),
+        alpha = 0.2,
+        color = NA
+      ) +
+      ggplot2::geom_vline(
+        xintercept = baseline,
+        linetype = "dashed",
+        color = "gray40"
+      ) +
+      ggplot2::geom_vline(
+        xintercept = 0,
+        linetype = "dashed",
+        color = "red"
+      ) +
+      ggplot2::geom_hline(yintercept = 0, color = "black") +
+      ggplot2::labs(
+        x = "Event Time",
+        y = "Treatment Effect",
+        title = title,
+        caption = caption,
+        color = NULL,
+        fill = NULL
+      ) +
+      ggplot2::theme_minimal(base_size = 13) +
+      ggplot2::theme(legend.position = "bottom") +
+      ggplot2::coord_cartesian(xlim = xlim, ylim = ylim)
+  } else {
+    p <- ggplot2::ggplot(
+      plot_data,
+      ggplot2::aes(x = Time, y = Estimate, color = Group)
+    ) +
+      ggplot2::geom_line(linewidth = 1) +
+      ggplot2::geom_point(size = 2) +
+      ggplot2::geom_line(
+        ggplot2::aes(y = CI_upper),
+        linetype = "dotted",
+        linewidth = 0.8
+      ) +
+      ggplot2::geom_line(
+        ggplot2::aes(y = CI_lower),
+        linetype = "dotted",
+        linewidth = 0.8
+      ) +
+      ggplot2::geom_vline(
+        xintercept = baseline,
+        linetype = "dashed",
+        color = "gray40"
+      ) +
+      ggplot2::geom_vline(
+        xintercept = 0,
+        linetype = "dashed",
+        color = "red"
+      ) +
+      ggplot2::geom_hline(yintercept = 0, color = "black") +
+      ggplot2::labs(
+        x = "Event Time",
+        y = "Treatment Effect",
+        title = title,
+        caption = caption,
+        color = NULL
+      ) +
+      ggplot2::theme_minimal(base_size = 13) +
+      ggplot2::theme(legend.position = "bottom") +
+      ggplot2::coord_cartesian(xlim = xlim, ylim = ylim)
+  }
+  
+  if (!is.null(palette)) {
+    if (is.null(names(palette))) {
+      stop("palette must be a named character vector.")
+    }
+    
+    palette_use <- palette[intersect(names(palette), breaks_use)]
+    
+    if (length(palette_use) > 0) {
+      p <- p +
+        ggplot2::scale_color_manual(
+          values = palette_use,
+          breaks = names(palette_use),
+          labels = labels_use[match(names(palette_use), breaks_use)],
+          drop = TRUE
+        )
+      
+      if (ribbon_type == "ribbon") {
+        p <- p +
+          ggplot2::scale_fill_manual(
+            values = palette_use,
+            breaks = names(palette_use),
+            labels = labels_use[match(names(palette_use), breaks_use)],
+            drop = TRUE
+          )
+      }
+    }
+  } else {
+    p <- p +
+      ggplot2::scale_color_discrete(
+        breaks = breaks_use,
+        labels = labels_use
+      )
+    
+    if (ribbon_type == "ribbon") {
+      p <- p +
+        ggplot2::scale_fill_discrete(
+          breaks = breaks_use,
+          labels = labels_use
+        )
+    }
+  }
+  
+  if (return_data) {
+    return(list(plot = p, plot_data = plot_data))
+  }
+  
+  p
+}
+
+
+make_analysis_specs_ecoregions <- function(forested_ecoregions,
+                                           dir_data,
+                                           parquet_pattern_prefix = "dats_long_") {
+  
+  if (!"code_name" %in% names(forested_ecoregions)) {
+    stop("forested_ecoregions must contain a 'code_name' column.")
+  }
+  
+  parquet_dir <- file.path(dir_data, "parquet")
+  
+  analysis_specs <- forested_ecoregions |>
+    dplyr::distinct(code_name) |>
+    dplyr::transmute(
+      analysis_id = code_name,
+      parquet_files = purrr::map(
+        code_name,
+        \(x) file.path(parquet_dir, glue::glue("{parquet_pattern_prefix}{x}.parquet"))
+      )
+    )
+  
+  missing_any <- analysis_specs |>
+    dplyr::mutate(
+      missing = purrr::map_lgl(parquet_files, \(x) !all(file.exists(x)))
+    ) |>
+    dplyr::filter(missing)
+  
+  if (nrow(missing_any) > 0) {
+    warning(
+      "Some parquet files listed in analysis_specs do not exist yet: ",
+      paste(missing_any$analysis_id, collapse = ", ")
+    )
+  }
+  
+  analysis_specs
+}
+
+
+run_dydid_model_on_df <- function(df,
+                                  analysis_id,
+                                  outcome,
+                                  vcov,
+                                  vcov_id,
+                                  vcov_label = vcov_id,
+                                  dir_out,
+                                  group_fun = set_cd_groups,
+                                  group_args,
+                                  palette = NULL,
+                                  baseline = -6,
+                                  xlim = c(-10, 20),
+                                  ylim = c(-50, 10),
+                                  ribbon_type = "ribbon",
+                                  width = 10,
+                                  height = 7,
+                                  dpi = 300,
+                                  trt_col = "fire") {
+  
+  strip_fixest_model <- function(model) {
+    out <- list(
+      coeftable = model$coeftable
+    )
+    
+    attr(out, "n_treated_subgroup_units") <- attr(model, "n_treated_subgroup_units")
+    attr(out, "n_never_treated_units") <- attr(model, "n_never_treated_units")
+    
+    out
+  }
+  
+  if (!is.data.frame(df)) {
+    stop("df must be a data frame or tibble.")
+  }
+  
+  if (missing(group_args) || !is.list(group_args)) {
+    stop("group_args must be supplied as a named list.")
+  }
+  
+  if (is.null(group_args$cd_nm)) {
+    stop("group_args must include cd_nm.")
+  }
+  
+  if (!outcome %in% names(df)) {
+    stop(glue::glue("Outcome column '{outcome}' not found in df."))
+  }
+  
+  cd_nm <- group_args$cd_nm
+  
+  safe_analysis_id <- gsub("[^[:alnum:]_\\-]+", "_", analysis_id)
+  safe_vcov_id <- gsub("[^[:alnum:]_\\-]+", "_", vcov_id)
+  
+  out_dir_model <- file.path(
+    dir_out,
+    paste0(outcome, "_", cd_nm, "_", safe_vcov_id)
+  )
+  dir.create(out_dir_model, recursive = TRUE, showWarnings = FALSE)
+  
+  df_grouped <- do.call(
+    group_fun,
+    c(list(df = df), group_args)
+  )
+  
+  if (!cd_nm %in% names(df_grouped)) {
+    stop(glue::glue("Grouping function did not create column '{cd_nm}'."))
+  }
+  
+  groups_present <- df_grouped |>
+    dplyr::filter(!is.na(.data[[cd_nm]])) |>
+    dplyr::distinct(.data[[cd_nm]]) |>
+    dplyr::pull(.data[[cd_nm]]) |>
+    as.character() |>
+    sort()
+  
+  if (length(groups_present) == 0) {
+    stop(glue::glue("No non-missing groups found in column '{cd_nm}'."))
+  }
+  
+  fml <- stats::as.formula(
+    glue::glue(
+      "{outcome} ~ biotic_relaxedforestnorm + pdsi_annual + ",
+      "sunab(FirstTreat, year, ref.p = {baseline}) | pt_id + year"
+    )
+  )
+  
+  tictoc::tic(
+    glue::glue("model: {analysis_id} | {outcome} | {cd_nm} | {vcov_id}")
+  )
+  
+  model_full <- feols_multi_trt(
+    subgrp_col = cd_nm,
+    df = df_grouped,
+    groups = groups_present,
+    trt_col = trt_col,
+    fml = fml,
+    mem.clean = TRUE,
+    lean = FALSE,
+    vcov = vcov
+  )
+  
+  tictoc::toc()
+  
+  tictoc::tic(
+    glue::glue("strip model: {analysis_id} | {outcome} | {cd_nm} | {vcov_id}")
+  )
+  
+  model <- purrr::map(model_full, strip_fixest_model)
+  names(model) <- names(model_full)
+  
+  rm(model_full)
+  gc()
+  
+  tictoc::toc()
+  
+  tictoc::tic(
+    glue::glue("plot: {analysis_id} | {outcome} | {cd_nm} | {vcov_id}")
+  )
+  
+  plot_out <- plot_sunab_models(
+    model_list = model,
+    model_labels = names(model),
+    title = glue::glue("DyDID analysis for {analysis_id}, {cd_nm}, {vcov_label}"),
+    ribbon_type = ribbon_type,
+    caption = glue::glue(
+      "95% confidence intervals shown;\n",
+      "Interaction-weighted (Sun-Abraham) estimates used;\n",
+      "{vcov_label}"
+    ),
+    baseline = baseline,
+    xlim = xlim,
+    ylim = ylim,
+    palette = palette,
+    return_data = TRUE
+  )
+  
+  tictoc::toc()
+  
+  p <- plot_out$plot
+  plot_data <- plot_out$plot_data
+  
+  plot_file <- file.path(
+    out_dir_model,
+    glue::glue("{outcome}_{cd_nm}_{safe_analysis_id}_{safe_vcov_id}.png")
+  )
+  
+  model_file <- file.path(
+    out_dir_model,
+    glue::glue("model_{outcome}_{cd_nm}_{safe_analysis_id}_{safe_vcov_id}.rds")
+  )
+  
+  plot_obj_file <- file.path(
+    out_dir_model,
+    glue::glue("plot_object_{outcome}_{cd_nm}_{safe_analysis_id}_{safe_vcov_id}.rds")
+  )
+  
+  plot_data_file <- file.path(
+    out_dir_model,
+    glue::glue("plot_data_{outcome}_{cd_nm}_{safe_analysis_id}_{safe_vcov_id}.rds")
+  )
+  
+  info_file <- file.path(
+    out_dir_model,
+    glue::glue("run_info_{outcome}_{cd_nm}_{safe_analysis_id}_{safe_vcov_id}.rds")
+  )
+  
+  tictoc::tic(
+    glue::glue("save png: {analysis_id} | {outcome} | {cd_nm} | {vcov_id}")
+  )
+  
+  ggplot2::ggsave(
+    filename = plot_file,
+    plot = p,
+    width = width,
+    height = height,
+    dpi = dpi
+  )
+  
+  tictoc::toc()
+  
+  run_info <- list(
+    analysis_id = analysis_id,
+    outcome = outcome,
+    cd_nm = cd_nm,
+    vcov_id = vcov_id,
+    vcov_label = vcov_label,
+    groups_present = groups_present,
+    baseline = baseline,
+    xlim = xlim,
+    ylim = ylim,
+    ribbon_type = ribbon_type,
+    group_args = group_args,
+    palette = palette,
+    formula = fml,
+    vcov = vcov,
+    output_dir = out_dir_model,
+    files = list(
+      plot_file = plot_file,
+      model_file = model_file,
+      plot_obj_file = plot_obj_file,
+      plot_data_file = plot_data_file,
+      info_file = info_file
+    )
+  )
+  
+  tictoc::tic(
+    glue::glue("save model: {analysis_id} | {outcome} | {cd_nm} | {vcov_id}")
+  )
+  saveRDS(model, model_file)
+  tictoc::toc()
+  
+  tictoc::tic(
+    glue::glue("save plot object: {analysis_id} | {outcome} | {cd_nm} | {vcov_id}")
+  )
+  saveRDS(p, plot_obj_file)
+  tictoc::toc()
+  
+  tictoc::tic(
+    glue::glue("save plot data: {analysis_id} | {outcome} | {cd_nm} | {vcov_id}")
+  )
+  saveRDS(plot_data, plot_data_file)
+  tictoc::toc()
+  
+  tictoc::tic(
+    glue::glue("save run info: {analysis_id} | {outcome} | {cd_nm} | {vcov_id}")
+  )
+  saveRDS(run_info, info_file)
+  tictoc::toc()
+  
+  invisible(
+    list(
+      model = model,
+      plot = p,
+      plot_data = plot_data,
+      run_info = run_info
+    )
+  )
+}
+
+
+run_dydid_model_from_parquet <- function(parquet_files,
+                                         analysis_id,
+                                         outcome,
+                                         vcov,
+                                         vcov_id,
+                                         vcov_label = vcov_id,
+                                         dir_out,
+                                         group_fun = set_cd_groups,
+                                         group_args,
+                                         palette = NULL,
+                                         baseline = -6,
+                                         xlim = c(-10, 20),
+                                         ylim = c(-50, 10),
+                                         ribbon_type = "ribbon",
+                                         width = 10,
+                                         height = 7,
+                                         dpi = 300,
+                                         trt_col = "fire") {
+  
+  if (length(parquet_files) == 0) {
+    stop("parquet_files is empty.")
+  }
+  
+  if (!all(file.exists(parquet_files))) {
+    missing_files <- parquet_files[!file.exists(parquet_files)]
+    stop(
+      glue::glue(
+        "These parquet files do not exist:\n{paste(missing_files, collapse = '\n')}"
+      )
+    )
+  }
+  
+  df <- arrow::open_dataset(parquet_files, format = "parquet") |>
+    dplyr::collect()
+  
+  run_dydid_model_on_df(
+    df = df,
+    analysis_id = analysis_id,
+    outcome = outcome,
+    vcov = vcov,
+    vcov_id = vcov_id,
+    vcov_label = vcov_label,
+    dir_out = dir_out,
+    group_fun = group_fun,
+    group_args = group_args,
+    palette = palette,
+    baseline = baseline,
+    xlim = xlim,
+    ylim = ylim,
+    ribbon_type = ribbon_type,
+    width = width,
+    height = height,
+    dpi = dpi,
+    trt_col = trt_col
+  )
+}
+
+
+run_dydid_experiment <- function(analysis_specs,
+                                 outcome_specs,
+                                 group_specs,
+                                 vcov_specs,
+                                 dir_out,
+                                 palette = NULL,
+                                 baseline = -6,
+                                 xlim = c(-10, 20),
+                                 ylim = c(-50, 10),
+                                 ribbon_type = "ribbon",
+                                 width = 10,
+                                 height = 7,
+                                 dpi = 300,
+                                 trt_col = "fire",
+                                 .progress = FALSE) {
+  
+  required_analysis_cols <- c("analysis_id", "parquet_files")
+  required_outcome_cols <- c("outcome")
+  required_group_cols <- c("group_id", "group_fun", "group_args")
+  required_vcov_cols <- c("vcov_id", "vcov", "vcov_label")
+  
+  if (!all(required_analysis_cols %in% names(analysis_specs))) {
+    stop("analysis_specs must contain: analysis_id, parquet_files")
+  }
+  
+  if (!all(required_outcome_cols %in% names(outcome_specs))) {
+    stop("outcome_specs must contain: outcome")
+  }
+  
+  if (!all(required_group_cols %in% names(group_specs))) {
+    stop("group_specs must contain: group_id, group_fun, group_args")
+  }
+  
+  if (!all(required_vcov_cols %in% names(vcov_specs))) {
+    stop("vcov_specs must contain: vcov_id, vcov, vcov_label")
+  }
+  
+  run_grid <- tidyr::crossing(
+    analysis_specs,
+    outcome_specs,
+    group_specs,
+    vcov_specs
+  ) |>
+    dplyr::mutate(
+      run_id = glue::glue("{analysis_id}_{outcome}_{group_id}_{vcov_id}")
+    )
+  
+  results <- purrr::pmap(
+    list(
+      parquet_files = run_grid$parquet_files,
+      analysis_id = run_grid$analysis_id,
+      outcome = run_grid$outcome,
+      group_fun = run_grid$group_fun,
+      group_args = run_grid$group_args,
+      vcov = run_grid$vcov,
+      vcov_id = run_grid$vcov_id,
+      vcov_label = run_grid$vcov_label
+    ),
+    \(parquet_files,
+      analysis_id,
+      outcome,
+      group_fun,
+      group_args,
+      vcov,
+      vcov_id,
+      vcov_label) {
+      run_dydid_model_from_parquet(
+        parquet_files = parquet_files,
+        analysis_id = analysis_id,
+        outcome = outcome,
+        vcov = vcov,
+        vcov_id = vcov_id,
+        vcov_label = vcov_label,
+        dir_out = dir_out,
+        group_fun = group_fun,
+        group_args = group_args,
+        palette = palette,
+        baseline = baseline,
+        xlim = xlim,
+        ylim = ylim,
+        ribbon_type = ribbon_type,
+        width = width,
+        height = height,
+        dpi = dpi,
+        trt_col = trt_col
+      )
+    },
+    .progress = .progress
+  )
+  
+  names(results) <- run_grid$run_id
+  
+  list(
+    run_grid = run_grid,
+    results = results
+  )
+}
+
+
+assess_dydid_experiment <- function(analysis_specs,
+                                    outcome_specs = NULL,
+                                    group_specs,
+                                    dir_out,
+                                    n_min,
+                                    ne_min,
+                                    unit_id = "pt_id",
+                                    event_id = "fireid",
+                                    trt_col = "fire",
+                                    file_name = "dydid_preanalysis_assessment.csv") {
+  
+  required_analysis_cols <- c("analysis_id", "parquet_files")
+  required_group_cols <- c("group_id", "group_fun", "group_args")
+  
+  if (!all(required_analysis_cols %in% names(analysis_specs))) {
+    stop("analysis_specs must contain: analysis_id, parquet_files")
+  }
+  
+  if (!all(required_group_cols %in% names(group_specs))) {
+    stop("group_specs must contain: group_id, group_fun, group_args")
+  }
+  
+  if (!dir.exists(dir_out)) {
+    dir.create(dir_out, recursive = TRUE, showWarnings = FALSE)
+  }
+  
+  summarize_subgroups <- function(df_grouped,
+                                  analysis_id,
+                                  group_id,
+                                  group_args,
+                                  unit_id,
+                                  event_id,
+                                  trt_col,
+                                  n_min,
+                                  ne_min) {
+    
+    if (!unit_id %in% names(df_grouped)) {
+      stop(glue::glue("Column '{unit_id}' not found in data."))
+    }
+    
+    if (!event_id %in% names(df_grouped)) {
+      stop(glue::glue("Column '{event_id}' not found in data."))
+    }
+    
+    if (!trt_col %in% names(df_grouped)) {
+      stop(glue::glue("Column '{trt_col}' not found in data."))
+    }
+    
+    cd_nm <- group_args$cd_nm
+    
+    if (!cd_nm %in% names(df_grouped)) {
+      stop(glue::glue("Grouping function did not create column '{cd_nm}'."))
+    }
+    
+    subgroup_levels <- c("f", "bf", "df", "bdf")
+    
+    counts <- purrr::map_dfr(
+      subgroup_levels,
+      \(g) {
+        d_sub <- df_grouped |>
+          dplyr::filter(.data[[trt_col]] == 1, .data[[cd_nm]] == g)
+        
+        tibble::tibble(
+          group = g,
+          n = dplyr::n_distinct(d_sub[[unit_id]]),
+          ne = dplyr::n_distinct(stats::na.omit(d_sub[[event_id]]))
+        )
+      }
+    )
+    
+    out <- tibble::tibble(
+      analysis_id = analysis_id,
+      group_id = group_id,
+      cd_nm = cd_nm,
+      b_threshold = group_args$b_threshold,
+      d_threshold = group_args$d_threshold,
+      d_nm = group_args$d_nm
+    )
+    
+    for (g in subgroup_levels) {
+      out[[paste0(g, "_n")]] <- counts$n[counts$group == g]
+      out[[paste0(g, "_ne")]] <- counts$ne[counts$group == g]
+    }
+    
+    out |>
+      dplyr::mutate(
+        any_n_below_min = dplyr::if_any(
+          dplyr::all_of(c("f_n", "bf_n", "df_n", "bdf_n")),
+          \(x) x < n_min
+        ),
+        any_ne_below_min = dplyr::if_any(
+          dplyr::all_of(c("f_ne", "bf_ne", "df_ne", "bdf_ne")),
+          \(x) x < ne_min
+        )
+      )
+  }
+  
+  assess_one_analysis_group <- function(parquet_files,
+                                        analysis_id,
+                                        group_id,
+                                        group_fun,
+                                        group_args,
+                                        unit_id,
+                                        event_id,
+                                        trt_col,
+                                        n_min,
+                                        ne_min) {
+    
+    if (length(parquet_files) == 0) {
+      stop(glue::glue("No parquet files supplied for analysis_id = '{analysis_id}'"))
+    }
+    
+    if (!all(file.exists(parquet_files))) {
+      missing_files <- parquet_files[!file.exists(parquet_files)]
+      stop(
+        glue::glue(
+          "These parquet files do not exist for analysis_id = '{analysis_id}':\n{paste(missing_files, collapse = '\n')}"
+        )
+      )
+    }
+    
+    df <- arrow::open_dataset(parquet_files, format = "parquet") |>
+      dplyr::collect()
+    
+    df_grouped <- do.call(
+      group_fun,
+      c(list(df = df), group_args)
+    )
+    
+    summarize_subgroups(
+      df_grouped = df_grouped,
+      analysis_id = analysis_id,
+      group_id = group_id,
+      group_args = group_args,
+      unit_id = unit_id,
+      event_id = event_id,
+      trt_col = trt_col,
+      n_min = n_min,
+      ne_min = ne_min
+    )
+  }
+  
+  run_grid <- tidyr::crossing(
+    analysis_specs |>
+      dplyr::select(analysis_id, parquet_files),
+    group_specs
+  )
+  
+  assessment_tbl <- purrr::pmap_dfr(
+    list(
+      parquet_files = run_grid$parquet_files,
+      analysis_id = run_grid$analysis_id,
+      group_id = run_grid$group_id,
+      group_fun = run_grid$group_fun,
+      group_args = run_grid$group_args
+    ),
+    \(parquet_files, analysis_id, group_id, group_fun, group_args) {
+      assess_one_analysis_group(
+        parquet_files = parquet_files,
+        analysis_id = analysis_id,
+        group_id = group_id,
+        group_fun = group_fun,
+        group_args = group_args,
+        unit_id = unit_id,
+        event_id = event_id,
+        trt_col = trt_col,
+        n_min = n_min,
+        ne_min = ne_min
+      )
+    }
+  ) |>
+    dplyr::arrange(analysis_id, group_id)
+  
+  output_file <- file.path(dir_out, file_name)
+  readr::write_csv(assessment_tbl, output_file)
+  
+  assessment_tbl
+}
+
+```
+
+# Run models v2
+
+```{r}
+analysis_specs <- make_analysis_specs_ecoregions(
+  forested_ecoregions = forested_ecoregions,
+  dir_data = dir_derived
+)
+
+outcome_specs <- tibble::tibble(
+  outcome = c("rap_tree", "vcf_tree")
+)
+
+group_specs <- tibble::tibble(
+  group_id = c(
+    "b10_pdsin4t1",
+    "b10_pdsin3t1",
+    "b10_pdsisumn10"
+  ),
+  group_fun = list(
+    set_cd_groups,
+    set_cd_groups,
+    set_cd_groups
+  ),
+  group_args = list(
+    list(
+      b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+      d_nm = "pdsi_annual_5_yrs_prior_threshold_n4_yot",
+      cd_nm = "b10_pdsin4t1",
+      b_threshold = 10,
+      d_threshold = 1
+    ),
+    list(
+      b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+      d_nm = "pdsi_annual_5_yrs_prior_threshold_n3_yot",
+      cd_nm = "b10_pdsin3t1",
+      b_threshold = 10,
+      d_threshold = 1
+    ),
+    list(
+      b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+      d_nm = "pdsi_annual_5_yrs_prior_sum_yot",
+      cd_nm = "b10_pdsisumn10",
+      b_threshold = 10,
+      d_threshold = -10
+    )
+  )
+)
+
+vcov_specs <- tibble::tibble(
+  vcov_id = c(
+    "conley_125km_20km",
+    "cluster_fireid"
+  ),
+  vcov_label = c(
+    "Conley standard errors: 125 km cutoff, 20 km pixel",
+    "Clustered standard errors: fireid"
+  ),
+  vcov = list(
+    fixest::vcov_conley(
+      lat = "lat",
+      lon = "long",
+      cutoff = 125,
+      pixel = 20,
+      distance = "triangular"
+    ),
+    stats::as.formula("~fireid")
+  )
+)
+
+group_palette <- c(
+  f = "red3",
+  df = "goldenrod",
+  bf = "darkgreen",
+  bdf = "dodgerblue3"
+)
+
+assessment_tbl <- assess_dydid_experiment(
+  analysis_specs = analysis_specs,
+  outcome_specs = outcome_specs,
+  group_specs = group_specs,
+  dir_out = dir_figs,
+  n_min = 100,
+  ne_min = 5
+)
+
+tictoc::tic()
+
+dydid_experiment <- run_dydid_experiment(
+  analysis_specs = analysis_specs,
+  outcome_specs = outcome_specs,
+  group_specs = group_specs,
+  vcov_specs = vcov_specs,
+  dir_out = dir_figs,
+  palette = group_palette,
+  baseline = -6,
+  xlim = c(-10, 20),
+  ylim = c(-50, 10),
+  ribbon_type = "ribbon"
+)
+
+tictoc::toc()
+
+
+```
+
+
+
+
+<button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne" >Click to see Session Information</button><div id="collapseOne" class="accordion-collapse collapse"><div>
+
+```{r sessionInfo}
+sessionInfo()
+```
+
