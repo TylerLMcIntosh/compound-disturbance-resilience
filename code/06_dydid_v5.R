@@ -20,7 +20,8 @@ install_load_packages(c(
   "tictoc",
   "glue",
   "fixest",
-  "arrow"
+  "arrow",
+  "did"
 ))
 
 source(here::here("code", "portable_sunab2.R"))
@@ -158,12 +159,20 @@ set_cd_groups <- function(df,
     
   }
   
+  df_new <- df_new |>
+    dplyr::mutate(
+      "{cd_nm}" := forcats::fct_relevel(.data[[cd_nm]], "f")
+    )
   
   return(df_new)
 }
 
-# Specs ----
 
+
+
+
+
+# Specs ----
 
 make_analysis_specs_ecoregions <- function(forested_ecoregions,
                                            dir_data,

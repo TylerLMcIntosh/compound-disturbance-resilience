@@ -115,7 +115,7 @@ set_cd_groups <- function(df,
     
   }
   
-    df_new <- df_new |>
+  df_new <- df_new |>
     dplyr::mutate(
       "{cd_nm}" := forcats::fct_relevel(.data[[cd_nm]], "f")
     )

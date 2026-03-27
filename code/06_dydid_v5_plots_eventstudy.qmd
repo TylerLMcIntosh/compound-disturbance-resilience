@@ -1357,12 +1357,6 @@ pretrend_tests <- purrr::map_dfr(
 
 
 
-I also need to filter out any coefficients that don't have adequate sample size. the compute_pretrend_joint_test should also accept parameters like this, and then only do the computations on the coefficients and subgroups that pass the thresholds for support:
-n_min_ptids_event <- 20
-n_min_fireids_event <- 2
-n_min_ptids_subgroup <- 50
-n_min_fireids_subgroup <- 5
-
 
 ```
 
