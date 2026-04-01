@@ -68,7 +68,7 @@ if(cyverse) {
   dir_raw <- file.path("~/data-store/data/iplant/home/shared/earthlab/macrosystems/tlm", run, "data/raw")
   dir_results <- file.path("~/data-store/data/iplant/home/shared/earthlab/macrosystems/tlm", run, "results")
 } else {
-  dir_figs <- here::here('figs')
+  dir_figs <- here::here('figs', run)
   dir_derived <- here::here('data', 'derived', run)
   dir_parquet <- here::here(dir_derived, 'parquet')
   dir_raw <- here::here('data', 'raw')
@@ -125,193 +125,238 @@ set_cd_groups <- function(df,
   
   df_new <- df_new |>
     dplyr::mutate(
-      "{cd_nm}" := forcats::fct_relevel(.data[[cd_nm]], "f")
+      "{cd_nm}" := forcats::fct_relevel(.data[[cd_nm]], c("f", "bf", "df", "bdf"))
     )
   
   return(df_new)
 }
 
+
+set_cd_groups_with_control <- function(df,
+                          b_nm,
+                          d_nm,
+                          cd_nm,
+                          b_threshold,
+                          d_threshold) {
+  
+  if(d_threshold < 0) {
+    df_new <- df |>
+      dplyr::mutate(
+        "{cd_nm}" := dplyr::case_when(
+          .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] >  d_threshold ~ "f",
+          .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] >  d_threshold ~ "bf",
+          .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] <= d_threshold ~ "df",
+          .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] <= d_threshold ~ "bdf",
+          fire == 0 ~ "control",
+          TRUE ~ NA_character_
+        )
+      )
+  } else {
+    df_new <- df |>
+      dplyr::mutate(
+        "{cd_nm}" := dplyr::case_when(
+          .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] <  d_threshold ~ "f",
+          .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] <  d_threshold ~ "bf",
+          .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] >= d_threshold ~ "df",
+          .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] >= d_threshold ~ "bdf",
+          fire == 0 ~ "control",
+          TRUE ~ NA_character_
+        )
+      )
+    
+  }
+  
+  df_new <- df_new |>
+    dplyr::mutate(
+      "{cd_nm}" := forcats::fct_relevel(.data[[cd_nm]], c("control", "f", "bf", "df", "bdf"))
+    )
+  
+  return(df_new)
+}
+
+
+
 ```
 
 # Sunab functions
 ```{r}
-library(dplyr)
-library(ggplot2)
-library(purrr)
-library(rlang)
-library(stringr)
-library(glue)
-library(fixest)
-
-sunab_estimator_subg <- function(subgrp_col,
-                                 grp,
-                                 df,
-                                 fml,
-                                 trt_col = "fire",
-                                 id_col = "uniqueID",
-                                 model_fun = fixest::feols,
-                                 model_args = list(
-                                   mem.clean = TRUE,
-                                   lean = FALSE
-                                 ),
-                                 vcov = NULL) {
-
-  col_sym <- sym(subgrp_col)
-  trt_col_sym <- sym(trt_col)
-
-  df_never_trt <- df |>
-    filter(!!trt_col_sym == 0)
-
-  df_subset <- df |>
-    filter(!!trt_col_sym == 1, !!col_sym == grp)
-
-  df_use <- bind_rows(df_never_trt, df_subset)
-
-  call_args <- c(
-    list(
-      fml = fml,
-      data = df_use
-    ),
-    model_args
-  )
-
-  if (!is.null(vcov)) {
-    call_args$vcov <- vcov
-  }
-
-  model <- do.call(model_fun, call_args)
-
-  n_treated_subgroup_units <- dplyr::n_distinct(df_subset[[id_col]])
-  n_never_treated_units <- dplyr::n_distinct(df_never_trt[[id_col]])
-
-  attr(model, "n_treated_subgroup_units") <- n_treated_subgroup_units
-  attr(model, "n_never_treated_units") <- n_never_treated_units
-  attr(model, "subgroup_value") <- grp
-  attr(model, "subgroup_column") <- subgrp_col
-
-  model
-}
-
-
-sunab_plot_models <- function(model_list,
-                              model_labels = NULL,
-                              title = "Dynamic-DiD Event-Study Estimates from Multiple Models",
-                              ribbon_type = "ribbon",
-                              caption = NULL) {
-
-  if (is.null(model_labels)) {
-    model_labels <- paste0("Model ", seq_along(model_list))
-  }
-
-  has_attr <- function(x, attr_name) {
-    !is.null(attr(x, attr_name))
-  }
-
-  plot_data <- map2_dfr(model_list, model_labels, function(model, label) {
-    df_coef <- as.data.frame(as.matrix(model$coeftable))
-    df_coef$term <- rownames(model$coeftable)
-
-    # if (has_attr(model, "n_treated_subgroup_units")) {
-    #   label <- glue("{label} (N = {attr(model, 'n_treated_subgroup_units')})")
-    # }
-
-    df_coef |>
-      filter(str_detect(term, "^year::")) |>
-      mutate(
-        Time = as.numeric(str_extract(term, "-?\\d+")),
-        CI_upper = Estimate + 1.96 * `Std. Error`,
-        CI_lower = Estimate - 1.96 * `Std. Error`,
-        Model = label
-      )
-  })
-
-  if (ribbon_type == "ribbon") {
-    ggplot(plot_data, aes(x = Time, y = Estimate, color = Model, fill = Model)) +
-      geom_line(linewidth = 1) +
-      geom_point(size = 2) +
-      geom_ribbon(aes(ymin = CI_lower, ymax = CI_upper), alpha = 0.2, color = NA) +
-      geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
-      geom_vline(xintercept = -6, linetype = "dashed", color = "gray40") +
-      geom_hline(yintercept = 0, color = "black") +
-      labs(
-        x = "Event Time",
-        y = "Treatment effect of fire on forest cover",
-        title = title,
-        caption = caption
-      ) +
-      theme_minimal(base_size = 13) +
-      theme(legend.position = "bottom")
-  } else {
-    ggplot(plot_data, aes(x = Time, y = Estimate, color = Model)) +
-      geom_line(linewidth = 1) +
-      geom_point(size = 2) +
-      geom_line(aes(y = CI_upper), linetype = "dotted", linewidth = 0.8) +
-      geom_line(aes(y = CI_lower), linetype = "dotted", linewidth = 0.8) +
-      geom_vline(xintercept = -1, linetype = "dashed", color = "red") +
-      geom_vline(xintercept = -6, linetype = "dashed", color = "gray40") +   
-      geom_hline(yintercept = 0, color = "black") +
-      labs(
-        x = "Event Time",
-        y = "Treatment effect of fire on forest cover",
-        title = title,
-        caption = caption
-      ) +
-      theme_minimal(base_size = 13) +
-      theme(legend.position = "bottom") +
-      xlim(c(-10, 20))
-  }
-}
-
-
-sunab_plot_all_together_did <- function(subg_col,
-                                        df,
-                                        fml,
-                                        title = NULL,
-                                        trt_col = "fire",
-                                        id_col = "uniqueID",
-                                        model_fun = fixest::feols,
-                                        model_args = list(
-                                          mem.clean = TRUE,
-                                          lean = FALSE
-                                        ),
-                                        vcov = NULL,
-                                        ribbon_type = "ribbon",
-                                        caption = NULL) {
-
-  if (is.null(title)) {
-    title <- glue("Effect estimates by subgroup in column {subg_col}")
-  }
-
-  subgs <- df |>
-    pull(all_of(subg_col)) |>
-    unique()
-
-  subgs <- subgs[!is.na(subgs)]
-
-  iw_results <- subgs |>
-    set_names() |>
-    map(\(x) {
-      sunab_estimator_subg(
-        subgrp_col = subg_col,
-        grp = x,
-        df = df,
-        fml = fml,
-        trt_col = trt_col,
-        id_col = id_col,
-        model_fun = model_fun,
-        model_args = model_args,
-        vcov = vcov
-      )
-    })
-
-  sunab_plot_models(
-    model_list = iw_results,
-    model_labels = subgs,
-    title = title,
-    ribbon_type = ribbon_type,
-    caption = caption
-  )
-}
+# library(dplyr)
+# library(ggplot2)
+# library(purrr)
+# library(rlang)
+# library(stringr)
+# library(glue)
+# library(fixest)
+# 
+# sunab_estimator_subg <- function(subgrp_col,
+#                                  grp,
+#                                  df,
+#                                  fml,
+#                                  trt_col = "fire",
+#                                  id_col = "uniqueID",
+#                                  model_fun = fixest::feols,
+#                                  model_args = list(
+#                                    mem.clean = TRUE,
+#                                    lean = FALSE
+#                                  ),
+#                                  vcov = NULL) {
+# 
+#   col_sym <- sym(subgrp_col)
+#   trt_col_sym <- sym(trt_col)
+# 
+#   df_never_trt <- df |>
+#     filter(!!trt_col_sym == 0)
+# 
+#   df_subset <- df |>
+#     filter(!!trt_col_sym == 1, !!col_sym == grp)
+# 
+#   df_use <- bind_rows(df_never_trt, df_subset)
+# 
+#   call_args <- c(
+#     list(
+#       fml = fml,
+#       data = df_use
+#     ),
+#     model_args
+#   )
+# 
+#   if (!is.null(vcov)) {
+#     call_args$vcov <- vcov
+#   }
+# 
+#   model <- do.call(model_fun, call_args)
+# 
+#   n_treated_subgroup_units <- dplyr::n_distinct(df_subset[[id_col]])
+#   n_never_treated_units <- dplyr::n_distinct(df_never_trt[[id_col]])
+# 
+#   attr(model, "n_treated_subgroup_units") <- n_treated_subgroup_units
+#   attr(model, "n_never_treated_units") <- n_never_treated_units
+#   attr(model, "subgroup_value") <- grp
+#   attr(model, "subgroup_column") <- subgrp_col
+# 
+#   model
+# }
+# 
+# 
+# sunab_plot_models <- function(model_list,
+#                               model_labels = NULL,
+#                               title = "Dynamic-DiD Event-Study Estimates from Multiple Models",
+#                               ribbon_type = "ribbon",
+#                               caption = NULL) {
+# 
+#   if (is.null(model_labels)) {
+#     model_labels <- paste0("Model ", seq_along(model_list))
+#   }
+# 
+#   has_attr <- function(x, attr_name) {
+#     !is.null(attr(x, attr_name))
+#   }
+# 
+#   plot_data <- map2_dfr(model_list, model_labels, function(model, label) {
+#     df_coef <- as.data.frame(as.matrix(model$coeftable))
+#     df_coef$term <- rownames(model$coeftable)
+# 
+#     # if (has_attr(model, "n_treated_subgroup_units")) {
+#     #   label <- glue("{label} (N = {attr(model, 'n_treated_subgroup_units')})")
+#     # }
+# 
+#     df_coef |>
+#       filter(str_detect(term, "^year::")) |>
+#       mutate(
+#         Time = as.numeric(str_extract(term, "-?\\d+")),
+#         CI_upper = Estimate + 1.96 * `Std. Error`,
+#         CI_lower = Estimate - 1.96 * `Std. Error`,
+#         Model = label
+#       )
+#   })
+# 
+#   if (ribbon_type == "ribbon") {
+#     ggplot(plot_data, aes(x = Time, y = Estimate, color = Model, fill = Model)) +
+#       geom_line(linewidth = 1) +
+#       geom_point(size = 2) +
+#       geom_ribbon(aes(ymin = CI_lower, ymax = CI_upper), alpha = 0.2, color = NA) +
+#       geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+#       geom_vline(xintercept = -6, linetype = "dashed", color = "gray40") +
+#       geom_hline(yintercept = 0, color = "black") +
+#       labs(
+#         x = "Event Time",
+#         y = "Treatment effect of fire on forest cover",
+#         title = title,
+#         caption = caption
+#       ) +
+#       theme_minimal(base_size = 13) +
+#       theme(legend.position = "bottom")
+#   } else {
+#     ggplot(plot_data, aes(x = Time, y = Estimate, color = Model)) +
+#       geom_line(linewidth = 1) +
+#       geom_point(size = 2) +
+#       geom_line(aes(y = CI_upper), linetype = "dotted", linewidth = 0.8) +
+#       geom_line(aes(y = CI_lower), linetype = "dotted", linewidth = 0.8) +
+#       geom_vline(xintercept = -1, linetype = "dashed", color = "red") +
+#       geom_vline(xintercept = -6, linetype = "dashed", color = "gray40") +   
+#       geom_hline(yintercept = 0, color = "black") +
+#       labs(
+#         x = "Event Time",
+#         y = "Treatment effect of fire on forest cover",
+#         title = title,
+#         caption = caption
+#       ) +
+#       theme_minimal(base_size = 13) +
+#       theme(legend.position = "bottom") +
+#       xlim(c(-10, 20))
+#   }
+# }
+# 
+# 
+# sunab_plot_all_together_did <- function(subg_col,
+#                                         df,
+#                                         fml,
+#                                         title = NULL,
+#                                         trt_col = "fire",
+#                                         id_col = "uniqueID",
+#                                         model_fun = fixest::feols,
+#                                         model_args = list(
+#                                           mem.clean = TRUE,
+#                                           lean = FALSE
+#                                         ),
+#                                         vcov = NULL,
+#                                         ribbon_type = "ribbon",
+#                                         caption = NULL) {
+# 
+#   if (is.null(title)) {
+#     title <- glue("Effect estimates by subgroup in column {subg_col}")
+#   }
+# 
+#   subgs <- df |>
+#     pull(all_of(subg_col)) |>
+#     unique()
+# 
+#   subgs <- subgs[!is.na(subgs)]
+# 
+#   iw_results <- subgs |>
+#     set_names() |>
+#     map(\(x) {
+#       sunab_estimator_subg(
+#         subgrp_col = subg_col,
+#         grp = x,
+#         df = df,
+#         fml = fml,
+#         trt_col = trt_col,
+#         id_col = id_col,
+#         model_fun = model_fun,
+#         model_args = model_args,
+#         vcov = vcov
+#       )
+#     })
+# 
+#   sunab_plot_models(
+#     model_list = iw_results,
+#     model_labels = subgs,
+#     title = title,
+#     ribbon_type = ribbon_type,
+#     caption = caption
+#   )
+# }
 
 ```
 
@@ -321,10 +366,10 @@ sunab_plot_all_together_did <- function(subg_col,
 ```{r}
 
 test_dats_sn <- arrow::read_parquet(here(dir_derived, "parquet", "dats_long_sierranevada.parquet"))
-
+test_dats_sn_short <- arrow::read_parquet(here(dir_derived, "parquet", "dats_short_sierranevada.parquet"))
 test_dats_nc <- arrow::read_parquet(here(dir_derived, "parquet", "dats_long_northcascades.parquet"))
 
-test_dats_sr <- arrow::read_parquet(here(dir_derived, "parquet", "dats_long_southernrockies.parquet"))
+#test_dats_sr <- arrow::read_parquet(here(dir_derived, "parquet", "dats_long_southernrockies.parquet"))
 
 
 
@@ -336,8 +381,8 @@ test_dats_sn <- test_dats_sn |>
     b_threshold = 10,
     d_threshold = 1
   ) |>
-  filter(year >= 1997) |>
-  mutate(use_tv_covars = ifelse(Time_to_Treatment <= -5 & Time_to_Treatment <= 0, 0, 1))
+  filter(year >= 1997) #|>
+  #mutate(use_tv_covars = ifelse(Time_to_Treatment <= -5 & Time_to_Treatment <= 0, 0, 1))
 
 
 test_dats_nc <- test_dats_nc |>
@@ -348,31 +393,45 @@ test_dats_nc <- test_dats_nc |>
     b_threshold = 10,
     d_threshold = 1
   ) |>
-  filter(year >= 1997) |>
-  mutate(use_tv_covars = ifelse(Time_to_Treatment <= -5 & Time_to_Treatment <= 0, 0, 1))
+  filter(year >= 1997) #|>
+  #mutate(use_tv_covars = ifelse(Time_to_Treatment <= -5 & Time_to_Treatment <= 0, 0, 1))
 
 
+# WHY ARE SOME UNITS NA FOR THE BIOTIC/PDSI SUMS??
+test_dats_sn |> group_by(b10_pdsin3t1) |> summarize(n = n())
+why_na <- test_dats_sn |>
+  filter(is.na(b10_pdsin3t1)) |>
+  select(pdsi_annual_5_yrs_prior_threshold_n3_yot, biotic_relaxedforestnorm_5_yrs_prior_sum_yot, fire, year, pt_id, lat, long)
+length(unique(why_na$pt_id))
+length(unique(test_dats_sn$pt_id))
+why_na_sf <- why_na |>
+  distinct(pt_id, .keep_all = TRUE) |>
+  sf::st_as_sf(coords = c("long", "lat"), crs = 4326)
 
-test_dats_sn_gwf <- test_dats_sn |>
-  mutate(gwf_cat = case_when((frg_reclass == 1 | frg_reclass == 3) & burn_cbi <= 2.25 ~ "LowSevGWF",
-                             (frg_reclass == 2 | frg_reclass == 4) & burn_cbi <= 2.25 ~ "LowSevInReplacement",
-                             (frg_reclass == 2 | frg_reclass == 4) & burn_cbi > 2.25 ~ "HighSevGWF",
-                             (frg_reclass == 1 | frg_reclass == 3) & burn_cbi > 2.25 ~ "HighSevInLow",
-         ))
+mapview::mapview(why_na_sf)
+write_csv(why_na_sf, file = here::here(dir_derived, "sierra_nevada_biotic_or_pdsi_nas_unique_pt_id.csv"))
 
-test_dats_nc_gwf <- test_dats_nc |>
-  mutate(gwf_cat = case_when((frg_reclass == 1 | frg_reclass == 3) & burn_cbi <= 2.25 ~ "LowSevGWF",
-                             (frg_reclass == 2 | frg_reclass == 4) & burn_cbi <= 2.25 ~ "LowSevInReplacement",
-                             (frg_reclass == 2 | frg_reclass == 4) & burn_cbi > 2.25 ~ "HighSevGWF",
-                             (frg_reclass == 1 | frg_reclass == 3) & burn_cbi > 2.25 ~ "HighSevInLow",
-         ))
-
-test_dats_sr_gwf <- test_dats_sr |>
-  mutate(gwf_cat = case_when((frg_reclass == 1 | frg_reclass == 3) & burn_cbi <= 2.25 ~ "LowSevGWF",
-                             (frg_reclass == 2 | frg_reclass == 4) & burn_cbi <= 2.25 ~ "LowSevInReplacement",
-                             (frg_reclass == 2 | frg_reclass == 4) & burn_cbi > 2.25 ~ "HighSevGWF",
-                             (frg_reclass == 1 | frg_reclass == 3) & burn_cbi > 2.25 ~ "HighSevInLow",
-         ))
+# 
+# test_dats_sn_gwf <- test_dats_sn |>
+#   mutate(gwf_cat = case_when((frg_reclass == 1 | frg_reclass == 3) & burn_cbi <= 2.25 ~ "LowSevGWF",
+#                              (frg_reclass == 2 | frg_reclass == 4) & burn_cbi <= 2.25 ~ "LowSevInReplacement",
+#                              (frg_reclass == 2 | frg_reclass == 4) & burn_cbi > 2.25 ~ "HighSevGWF",
+#                              (frg_reclass == 1 | frg_reclass == 3) & burn_cbi > 2.25 ~ "HighSevInLow",
+#          ))
+# 
+# test_dats_nc_gwf <- test_dats_nc |>
+#   mutate(gwf_cat = case_when((frg_reclass == 1 | frg_reclass == 3) & burn_cbi <= 2.25 ~ "LowSevGWF",
+#                              (frg_reclass == 2 | frg_reclass == 4) & burn_cbi <= 2.25 ~ "LowSevInReplacement",
+#                              (frg_reclass == 2 | frg_reclass == 4) & burn_cbi > 2.25 ~ "HighSevGWF",
+#                              (frg_reclass == 1 | frg_reclass == 3) & burn_cbi > 2.25 ~ "HighSevInLow",
+#          ))
+# 
+# test_dats_sr_gwf <- test_dats_sr |>
+#   mutate(gwf_cat = case_when((frg_reclass == 1 | frg_reclass == 3) & burn_cbi <= 2.25 ~ "LowSevGWF",
+#                              (frg_reclass == 2 | frg_reclass == 4) & burn_cbi <= 2.25 ~ "LowSevInReplacement",
+#                              (frg_reclass == 2 | frg_reclass == 4) & burn_cbi > 2.25 ~ "HighSevGWF",
+#                              (frg_reclass == 1 | frg_reclass == 3) & burn_cbi > 2.25 ~ "HighSevInLow",
+#          ))
 
 ```
 
@@ -380,55 +439,55 @@ test_dats_sr_gwf <- test_dats_sr |>
 # Quick GWF test
 ```{r}
 
-
-sunab_gwf_fml <- rap_tree ~ sunab(FirstTreat, year, ref.p = -1) + pdsi_annual | pt_id + year
-
-
-sunab_gwf_args <- list(
-  fml = sunab_gwf_fml,
-  vcov = ~ us_l4code,
-  model_fun = fixest::feols,
-  model_args = list(
-    mem.clean = TRUE,
-    lean = FALSE
-  ),
-  term_pattern = "^year::",
-  time_extract_regex = "-?\\d+",
-  treatment_time = 0,
-  ref_line = -1,
-  caption = deparse(sunab_gwf_fml)
-)
-
-sunab_gwf_p1 <- plot_all_together_did(
-  subg_col = "gwf_cat",
-  df = test_dats_sn_gwf,
-  backend = "sunab",
-  backend_args = sunab_gwf_args,
-  title = "Sierra Nevada test: Sun-Ab, GWF"
-)
-
-
-sunab_gwf_p2 <- plot_all_together_did(
-  subg_col = "gwf_cat",
-  df = test_dats_nc_gwf,
-  backend = "sunab",
-  backend_args = sunab_gwf_args,
-  title = "North Cascades test: Sun-Ab, GWF"
-)
-
-
-sunab_gwf_p3 <- plot_all_together_did(
-  subg_col = "gwf_cat",
-  df = test_dats_sr_gwf,
-  backend = "sunab",
-  backend_args = sunab_gwf_args,
-  title = "Southern Rockies test: Sun-Ab, GWF"
-)
-
-
-sunab_gwf_p1 + xlim(-5, 25)
-sunab_gwf_p2 + xlim(-5, 25)
-sunab_gwf_p3 + xlim(-5, 25)
+# 
+# sunab_gwf_fml <- rap_tree ~ sunab(FirstTreat, year, ref.p = -1) + pdsi_annual | pt_id + year
+# 
+# 
+# sunab_gwf_args <- list(
+#   fml = sunab_gwf_fml,
+#   vcov = ~ us_l4code,
+#   model_fun = fixest::feols,
+#   model_args = list(
+#     mem.clean = TRUE,
+#     lean = FALSE
+#   ),
+#   term_pattern = "^year::",
+#   time_extract_regex = "-?\\d+",
+#   treatment_time = 0,
+#   ref_line = -1,
+#   caption = deparse(sunab_gwf_fml)
+# )
+# 
+# sunab_gwf_p1 <- plot_all_together_did(
+#   subg_col = "gwf_cat",
+#   df = test_dats_sn_gwf,
+#   backend = "sunab",
+#   backend_args = sunab_gwf_args,
+#   title = "Sierra Nevada test: Sun-Ab, GWF"
+# )
+# 
+# 
+# sunab_gwf_p2 <- plot_all_together_did(
+#   subg_col = "gwf_cat",
+#   df = test_dats_nc_gwf,
+#   backend = "sunab",
+#   backend_args = sunab_gwf_args,
+#   title = "North Cascades test: Sun-Ab, GWF"
+# )
+# 
+# 
+# sunab_gwf_p3 <- plot_all_together_did(
+#   subg_col = "gwf_cat",
+#   df = test_dats_sr_gwf,
+#   backend = "sunab",
+#   backend_args = sunab_gwf_args,
+#   title = "Southern Rockies test: Sun-Ab, GWF"
+# )
+# 
+# 
+# sunab_gwf_p1 + xlim(-5, 25)
+# sunab_gwf_p2 + xlim(-5, 25)
+# sunab_gwf_p3 + xlim(-5, 25)
 
 ```
 
@@ -469,77 +528,81 @@ est_twfe <- feols(
 
 
 
-est_sunab_together_f <- feols(
-  rap_tree ~ sunab(FirstTreat, year, ref.p = -6):b10_pdsin3t1 | pt_id + year,
-  data = td_sn_1 |> mutate(b10_pdsin3t1 = ifelse(is.na(b10_pdsin3t1), "none", b10_pdsin3t1)),
-  mem.clean = TRUE,
-  lean = FALSE,
-  cluster = ~ us_l4code
-)
+# est_sunab_together_f <- feols(
+#   rap_tree ~ sunab(FirstTreat, year, ref.p = -6):b10_pdsin3t1 | pt_id + year,
+#   data = td_sn_1 |> mutate(b10_pdsin3t1 = ifelse(is.na(b10_pdsin3t1), "none", b10_pdsin3t1)),
+#   mem.clean = TRUE,
+#   lean = FALSE,
+#   cluster = ~ us_l4code
+# )
 
-
-test_dats_sn_simple <- test_dats_sn |> select(b10_pdsin3t1, FirstTreat, year, pt_id, fire) |>
-    mutate(
-      b10_pdsin3t1 = forcats::fct_na_value_to_level(b10_pdsin3t1, level = "control")
-    ) 
-test_sample <- test_dats_sn_simple |>
-    distinct(pt_id) |>
-    slice_sample(n = 10000) |>
-    inner_join(test_dats_sn, by = "pt_id")
+# 
+# test_dats_sn_simple <- test_dats_sn |> select(b10_pdsin3t1, FirstTreat, year, pt_id, fire) |>
+#     mutate(
+#       b10_pdsin3t1 = forcats::fct_na_value_to_level(b10_pdsin3t1, level = "control")
+#     ) 
+# test_sample <- test_dats_sn_simple |>
+#     distinct(pt_id) |>
+#     slice_sample(n = 10000) |>
+#     inner_join(test_dats_sn, by = "pt_id")
   
-  
-est_sunab_together <- feols(
-  rap_tree ~ sunab(FirstTreat, year, ref.p = -6):b10_pdsin3t1 | pt_id + year,
-  data = test_sample,
-  mem.clean = TRUE,
-  lean = FALSE,
-  cluster = NULL #~ us_l4code
-)
 
-est_sunab_together$coeftable
 
-iplot(est_sunab_together, sep = TRUE)
-fixest::iplot(
-  est_sunab_together,
-  group = list(
-    f   = "b10_pdsin3t1f$",
-    bf  = "b10_pdsin3t1bf$",
-    df  = "b10_pdsin3t1df$",
-    bdf = "b10_pdsin3t1bdf$"
-  )
-)
 
-dyn_custom <- aggregate(
-  est_sunab_together,
-  agg = "(year::-?[0-9]+):cohort::[0-9]+:(b10_pdsin3t1[a-z]+)"
-)
-
-dyn_df <- as.data.frame(dyn_custom) |>
-  rownames_to_column("term")
-
-names(dyn_df) <- c("term", "estimate", "std_error", "stat", "p_value")
-
-dyn_df <- dyn_df |>
-  mutate(
-    event_time = as.numeric(str_match(term, "year::(-?\\d+)")[, 2]),
-    subgroup = str_match(term, "(b10_pdsin3t1[a-z]+)$|(b10_pdsin3t1[a-z]+)$")[, 1],
-    conf_low = estimate - 1.96 * std_error,
-    conf_high = estimate + 1.96 * std_error
-  )
-
-dyn_df <- dyn_df |>
-  mutate(
-    subgroup = sub("^b10_pdsin3t1", "", subgroup)
-  )
-
-ggplot(dyn_df, aes(x = event_time, y = estimate, color = subgroup, fill = subgroup)) +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  geom_vline(xintercept = -6, linetype = "dotted") +
-  geom_ribbon(aes(ymin = conf_low, ymax = conf_high), alpha = 0.15, color = NA) +
-  geom_line() +
-  geom_point() +
-  theme_minimal() +
-  ylim(-40, 50)
+# 
+# # Try to run sunab interaction models; CODE DOESN"T WORK
+# est_sunab_together <- feols(
+#   rap_tree ~ sunab(FirstTreat, year, ref.p = -6):b10_pdsin3t1 | pt_id + year,
+#   data = test_sample,
+#   mem.clean = TRUE,
+#   lean = FALSE,
+#   cluster = NULL #~ us_l4code
+# )
+# 
+# est_sunab_together$coeftable
+# 
+# iplot(est_sunab_together, sep = TRUE)
+# fixest::iplot(
+#   est_sunab_together,
+#   group = list(
+#     f   = "b10_pdsin3t1f$",
+#     bf  = "b10_pdsin3t1bf$",
+#     df  = "b10_pdsin3t1df$",
+#     bdf = "b10_pdsin3t1bdf$"
+#   )
+# )
+# 
+# dyn_custom <- aggregate(
+#   est_sunab_together,
+#   agg = "(year::-?[0-9]+):cohort::[0-9]+:(b10_pdsin3t1[a-z]+)"
+# )
+# 
+# dyn_df <- as.data.frame(dyn_custom) |>
+#   rownames_to_column("term")
+# 
+# names(dyn_df) <- c("term", "estimate", "std_error", "stat", "p_value")
+# 
+# dyn_df <- dyn_df |>
+#   mutate(
+#     event_time = as.numeric(str_match(term, "year::(-?\\d+)")[, 2]),
+#     subgroup = str_match(term, "(b10_pdsin3t1[a-z]+)$|(b10_pdsin3t1[a-z]+)$")[, 1],
+#     conf_low = estimate - 1.96 * std_error,
+#     conf_high = estimate + 1.96 * std_error
+#   )
+# 
+# dyn_df <- dyn_df |>
+#   mutate(
+#     subgroup = sub("^b10_pdsin3t1", "", subgroup)
+#   )
+# 
+# ggplot(dyn_df, aes(x = event_time, y = estimate, color = subgroup, fill = subgroup)) +
+#   geom_hline(yintercept = 0, linetype = "dashed") +
+#   geom_vline(xintercept = -6, linetype = "dotted") +
+#   geom_ribbon(aes(ymin = conf_low, ymax = conf_high), alpha = 0.15, color = NA) +
+#   geom_line() +
+#   geom_point() +
+#   theme_minimal() +
+#   ylim(-40, 50)
 
 
 
@@ -573,6 +636,10 @@ es_cs <- aggte(
 
 summary(es_cs)
 
+
+
+
+
 #BJS model
 est_bjs <- did_imputation(
   data = td_sn_1 |>
@@ -594,10 +661,10 @@ sn_f_cs_p <- did::ggdid(es_cs) +
   xlim(-10, 20) +
   labs(title = "Callaway Sant'Anna F, Sierra Nevada")
 
-sn_f_twfe_p <- ggfixest::ggiplot(list('Sunab' = est_sunab, 'TWFE' = est_twfe, 'Sunab2' = est_sunab2, 'Sunab-together-f' = est_sunab_together_f),
+sn_f_twfe_p <- ggfixest::ggiplot(list('Sunab' = est_sunab, 'TWFE' = est_twfe, 'Sunab2' = est_sunab2),
         ci_level = 0.95,
         #geom_style = "ribbon",
-        col = c("turquoise", "pink", "yellow", 'purple')) +
+        col = c("turquoise", "pink", "yellow")) +
   xlim(-10, 20) +
   ylim(-30, 20) +
   labs(title = "Sun-Ab & TWFE, F, Sierra Nevada")
@@ -975,9 +1042,9 @@ extract_fixest_event_study <- function(model,
     label <- attr(model, "subgroup_value") %||% "model"
   }
 
-  if (!is.null(attr(model, "n_treated_subgroup_units"))) {
-    label <- glue("{label} (N = {attr(model, 'n_treated_subgroup_units')})")
-  }
+  # if (!is.null(attr(model, "n_treated_subgroup_units"))) {
+  #   label <- glue("{label} (N = {attr(model, 'n_treated_subgroup_units')})")
+  # }
 
   coef_df |>
     filter(str_detect(term, term_pattern)) |>
@@ -1062,6 +1129,16 @@ plot_event_study_models <- function(model_list,
   }
 
   plot_data <- map2_dfr(model_list, model_labels, extract_event_study_data)
+  
+  ##
+  all_models <- unique(model_labels)
+
+  plot_data <- plot_data |>
+    mutate(Model = factor(Model, levels = all_models))
+  
+  palette_vals <- scales::hue_pal()(length(all_models))
+  names(palette_vals) <- all_models
+  ##
 
   treatment_time <- treatment_time %||%
     attr(model_list[[1]], "treatment_time")
@@ -1111,7 +1188,13 @@ plot_event_study_models <- function(model_list,
   if (!is.null(xlim)) {
     p <- p + coord_cartesian(xlim = xlim)
   }
-
+  
+  ##
+  p <- p +
+    scale_color_manual(values = palette_vals) +
+    scale_fill_manual(values = palette_vals)
+  ##
+  
   p
 }
 
@@ -1227,6 +1310,7 @@ sunab_args3 <- list(
 
 
 
+
 # TWFE
 
 twfe_fml1 <- rap_tree ~ i(Time_to_Treatment, fire, ref = -6) | pt_id + year
@@ -1315,7 +1399,7 @@ cs_args2 <- list(
   caption = "did::att_gt(..., xformla = ~ biotic_relaxedforestnorm + pdsi_annual)"
 )
 
-cs_args3 <- list(
+cs_args2_nyt <- list(
   att_gt_args = list(
     yname = "rap_tree",
     tname = "year",
@@ -1338,9 +1422,10 @@ cs_args3 <- list(
   caption = "did::att_gt(..., xformla = ~ biotic_relaxedforestnorm + pdsi_annual), notyettreated"
 )
 
+
 ```
 
-
+# use code
 
 
 ```{r}
@@ -1419,7 +1504,7 @@ sn_cs_p2 <- plot_all_together_did(
   title = "Sierra Nevada test: Callaway-Sant'Anna + covars"
 )
 
-sn_cs_p3 <- plot_all_together_did(
+sn_cs_p2_nyt <- plot_all_together_did(
   subg_col = "b10_pdsin3t1",
   df = test_dats_sn |>
     mutate(
@@ -1428,7 +1513,7 @@ sn_cs_p3 <- plot_all_together_did(
       FirstTreat = ifelse(FirstTreat == 995, 0, FirstTreat)
     ),
   backend = "cs",
-  backend_args = cs_args3,
+  backend_args = cs_args2_nyt,
   title = "Sierra Nevada test: Callaway-Sant'Anna + covars, notyettreated"
 )
 
@@ -1436,26 +1521,7 @@ sn_cs_p3 <- plot_all_together_did(
 ```
 
 
-# Compare plots
 
-```{r}
-
-sn_sunab_p1 + ylim(-50, 20)
-sn_sunab_p2 + ylim(-50, 20)
-sn_sunab_p3 + ylim(-50, 20)
-
-sn_twfe_p1 + ylim(-50, 20)
-sn_twfe_p3 + ylim(-50, 20)
-
-sn_cs_p1 + ylim(-50, 20)
-sn_cs_p2 + ylim(-50, 20)
-sn_cs_p3 + ylim(-50, 20)
-
-sn_f_cs_p + ylim(-50, 20)
-sn_f_twfe_p + ylim(-50, 20)
-sn_bf_cs_p + ylim(-50, 20)
-sn_bf_twfe_p + ylim(-50, 20)
-```
 
 
 ```{r}
@@ -1545,6 +1611,763 @@ nc_twfe_p3
 nc_cs_p1 + ylim(-40, 20)
 nc_cs_p2 + ylim(-40, 20)
 nc_cs_p3 + ylim(-40, 20)
+
+```
+
+
+# Test weighting
+
+```{r}
+
+dir_weight_test <- here::here(dir_figs, "weighting_test")
+dir_ensure(dir_weight_test)
+
+library(WeightIt)
+library(cobalt)
+
+pre_cd_cover <- test_dats_sn_short |> select(pt_id, gam_rap_tree_pre6_fit)
+
+
+weight_test_sn <- test_dats_sn |>
+  set_cd_groups_with_control(
+    b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+    d_nm = "pdsi_annual_5_yrs_prior_threshold_n3_yot",
+    cd_nm = "b10_pdsin3t1_control",
+    b_threshold = 10,
+    d_threshold = 1
+  ) |>
+  distinct(pt_id, .keep_all = TRUE) |>
+  filter(!is.na(b10_pdsin3t1_control)) |>
+  left_join(pre_cd_cover)
+
+
+
+
+# generalized overlap weighting via multinomial propensity scores
+w_out_glm <- weightit(
+  b10_pdsin3t1_control ~ chili + def + aet + srtm + tpi + nfg_factor,
+  data = weight_test_sn,
+  method = "glm",
+  estimand = "ATO"
+)
+
+summary(w_out_glm)
+
+
+w_out_glm_ate <- weightit(
+  b10_pdsin3t1_control ~ chili + def + aet + srtm + tpi + nfg_factor,
+  data = weight_test_sn,
+  method = "glm",
+  estimand = "ATE"
+)
+
+summary(w_out_glm_ate)
+
+
+w_out_glm_precov <- weightit(
+  b10_pdsin3t1_control ~ chili + def + aet + srtm + tpi + nfg_factor + gam_rap_tree_pre6_fit,
+  data = weight_test_sn,
+  method = "glm",
+  estimand = "ATO"
+)
+
+summary(w_out_glm_precov)
+
+
+
+
+# not well-balanced yet, try GBM
+
+w_out_gbm <- weightit(
+  b10_pdsin3t1_control ~ chili + def + aet + srtm + tpi + nfg_factor,
+  data = weight_test_sn,
+  method = "gbm",
+  estimand = "ATO"
+)
+
+summary(w_out_gbm)
+
+
+w_out_gbm_precov <- weightit(
+  b10_pdsin3t1_control ~ chili + def + aet + srtm + tpi + nfg_factor + gam_rap_tree_pre6_fit,
+  data = weight_test_sn,
+  method = "gbm",
+  estimand = "ATO"
+)
+
+summary(w_out_gbm_precov)
+
+
+weight_test_sn <- weight_test_sn |>
+  mutate(glm_weights = w_out_glm$weights,
+         gbm_weights = w_out_gbm$weights,
+         glm_weights_precov = w_out_glm_precov$weights,
+         gbm_weights_precov = w_out_gbm_precov$weights,
+         glm_weights_ate = w_out_glm_ate$weights)
+
+
+test_dats_sn_withweights <- test_dats_sn |>
+  left_join(weight_test_sn |>
+              select(pt_id, glm_weights, gbm_weights, glm_weights_precov, gbm_weights_precov, glm_weights_ate), by = c("pt_id"))
+
+
+
+
+# balance tables
+
+bal_glm <- bal.tab(
+  w_out_glm,
+  un = TRUE,
+  pairwise = TRUE,
+  abs = TRUE,
+  stats = c("mean.diffs", "variance.ratios"),
+  thresholds = c(m = .1, v = 2)
+)
+
+print(bal_glm)
+
+# For all pairwise data
+bal_glm$Pair.Balance
+
+
+bal_gbm <- bal.tab(
+  w_out_gbm,
+  un = TRUE,
+  pairwise = TRUE,
+  abs = TRUE,
+  stats = c("mean.diffs", "variance.ratios"),
+  thresholds = c(m = .1, v = 2)
+)
+
+print(bal_gbm)
+
+bal_glm_precov <- bal.tab(
+  w_out_glm_precov,
+  un = TRUE,
+  pairwise = TRUE,
+  abs = TRUE,
+  stats = c("mean.diffs", "variance.ratios"),
+  thresholds = c(m = .1, v = 2)
+)
+
+print(bal_glm_precov)
+
+
+bal_gbm_precov <- bal.tab(
+  w_out_gbm_precov,
+  un = TRUE,
+  pairwise = TRUE,
+  abs = TRUE,
+  stats = c("mean.diffs", "variance.ratios"),
+  thresholds = c(m = .1, v = 2)
+)
+
+print(bal_gbm_precov)
+
+
+bal_sn_test_obs <- bal_glm$Observations |> 
+  mutate(weights = "glm") |> 
+  rbind(bal_gbm$Observations |> 
+          mutate(weights = "gbm")) |>
+  rbind(bal_glm_precov$Observations |>
+          mutate(weights = "glm_precov")) |>
+  rbind(bal_gbm_precov$Observations |>
+          mutate(weights = "gbm_precov")) %>%
+  mutate(adjustment = rownames(.))
+
+write_csv(bal_sn_test_obs, file = here(dir_weight_test, "obs_counts_sn_test.csv"))
+
+
+plot_df <- bal_sn_test_obs |>
+  pivot_longer(
+    cols = c(control, f, bf, df, bdf),
+    names_to = "group",
+    values_to = "n"
+  ) |>
+  mutate(
+    model = case_when(
+      weights == "glm" & adjustment == "Unadjusted" ~ "Unadjusted",
+      weights == "glm" & adjustment == "Adjusted"   ~ "GLM adjusted",
+      #weights == "glm_precov" & grepl("Adjusted", adjustment)  ~ "GLM_precov adjusted",
+      weights == "gbm" & grepl("Adjusted", adjustment) ~ "GBM adjusted",
+      #weights == "gbm_precov" & grepl("Adjusted", adjustment) ~ "GBM_precov adjusted",
+      TRUE ~ NA_character_
+    )
+  ) |>
+  filter(!is.na(model))
+
+ggplot(plot_df, aes(x = model, y = n, fill = model)) +
+  geom_col(width = 0.7) +
+  facet_wrap(~ group, scales = "free_y") +
+  labs(x = NULL, y = "Count") +
+  theme_bw() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  labs(title = "Sierra Nevada effective sample size with weighting")
+
+ggsave(filename = here(dir_weight_test, "sn_sample_size_weighted.png"))
+
+# Love plots
+
+love.plot(
+  w_out_glm,
+  stats = "mean.diffs",
+  abs = TRUE,
+  pairwise = TRUE,
+  thresholds = c(m = .1),
+  var.order = "unadjusted",
+  which.treat = .all
+) +
+  labs(title = "GLM-weighted Sierra Nevada, pairwise\n Weighted for Average Treatment Effect in the Overlap (ATO)")
+
+ggsave(filename = here(dir_weight_test, "love_plot_glm_pairwise.png"),
+       units = "px",
+       width = 5000,
+       height = 2000,
+       bg = "white")
+
+love.plot(
+  w_out_glm,
+  stats = "mean.diffs",
+  abs = TRUE,
+  pairwise = TRUE,
+  thresholds = c(m = .1),
+  var.order = "unadjusted"
+) +
+  labs(title = "GLM-weighted Sierra Nevada, max\n Weighted for Average Treatment Effect in the Overlap (ATO)")
+
+ggsave(filename = here(dir_weight_test, "love_plot_glm_max.png"),
+       units = "px",
+       width = 2000,
+       height = 2000,
+       bg = "white")
+
+
+love.plot(
+  w_out_glm_ate,
+  stats = "mean.diffs",
+  abs = TRUE,
+  pairwise = TRUE,
+  thresholds = c(m = .1),
+  var.order = "unadjusted"
+) +
+  labs(title = "GLM-weighted Sierra Nevada, max\n Weighted for Average Treatment Effect (ATE)")
+
+ggsave(filename = here(dir_weight_test, "love_plot_glm_ate_max.png"),
+       units = "px",
+       width = 2000,
+       height = 2000,
+       bg = "white")
+
+love.plot(
+  w_out_gbm,
+  stats = "mean.diffs",
+  abs = TRUE,
+  pairwise = TRUE,
+  thresholds = c(m = .1),
+  var.order = "unadjusted"
+)+
+  labs(title = "GBM-weighted Sierra Nevada, max\n Weighted for Average Treatment Effect in the Overlap (ATO)")
+
+ggsave(filename = here(dir_weight_test, "love_plot_gbm_max.png"),
+       units = "px",
+       width = 2000,
+       height = 2000,
+       bg = "white")
+
+
+
+love.plot(
+  w_out_glm_precov,
+  stats = "mean.diffs",
+  abs = TRUE,
+  pairwise = TRUE,
+  thresholds = c(m = .1),
+  var.order = "unadjusted"
+)+
+  labs(title = "GLM-weighted Sierra Nevada - with pre-cover, max\n Weighted for Average Treatment Effect in the Overlap (ATO)")
+
+ggsave(filename = here(dir_weight_test, "love_plot_glm_precov_max.png"),
+       units = "px",
+       width = 2000,
+       height = 2000,
+       bg = "white")
+
+love.plot(
+  w_out_gbm_precov,
+  stats = "mean.diffs",
+  abs = TRUE,
+  pairwise = TRUE,
+  thresholds = c(m = .1),
+  var.order = "unadjusted"
+)+
+  labs(title = "GBM-weighted Sierra Nevada - with pre-cover, max\n Weighted for Average Treatment Effect in the Overlap (ATO)")
+
+ggsave(filename = here(dir_weight_test, "love_plot_gbm_precov_max.png"),
+       units = "px",
+       width = 2000,
+       height = 2000,
+       bg = "white")
+
+
+
+# Weighted distributions
+
+
+# ATE
+
+ggplot(weight_test_sn |> filter(!is.na(b10_pdsin3t1)), aes(x = aet,
+                          color = b10_pdsin3t1)) +
+  geom_density() +
+  labs(title = "Raw distribution of AET")
+
+ggplot(weight_test_sn |> filter(!is.na(b10_pdsin3t1)), aes(x = aet,
+                          color = b10_pdsin3t1,
+                          weight = glm_weights )) +
+  geom_density() +
+  labs(title = "Weighted distribution of AET (overlap region using GLM) - ATO")
+
+
+ggplot(weight_test_sn |> filter(!is.na(b10_pdsin3t1)), aes(x = aet,
+                          color = b10_pdsin3t1,
+                          weight = gbm_weights)) +
+  geom_density() +
+  labs(title = "Weighted distribution of AET (overlap region using GBM) - ATO")
+
+
+ggplot(weight_test_sn |> filter(!is.na(b10_pdsin3t1)), aes(x = aet,
+                          color = b10_pdsin3t1,
+                          weight = glm_weights_ate)) +
+  geom_density() +
+  labs(title = "Weighted distribution of ATE (overlap region using GLM) - ATE")
+
+
+
+
+# SRTM
+ggplot(weight_test_sn |> filter(!is.na(b10_pdsin3t1)), aes(x = srtm,
+                          color = b10_pdsin3t1)) +
+  geom_density() +
+  labs(title = "Raw distribution of SRTM")
+
+ggplot(weight_test_sn |> filter(!is.na(b10_pdsin3t1)), aes(x = srtm,
+                          color = b10_pdsin3t1,
+                          weight = glm_weights)) +
+  geom_density() +
+  labs(title = "Weighted distribution of SRTM (overlap region using GLM) - ATO")
+
+
+ggplot(weight_test_sn |> filter(!is.na(b10_pdsin3t1)), aes(x = srtm,
+                          color = b10_pdsin3t1,
+                          weight = gbm_weights)) +
+  geom_density() +
+  labs(title = "Weighted distribution of SRTM (overlap region using GBM) - ATO")
+
+ggplot(weight_test_sn |> filter(!is.na(b10_pdsin3t1)), aes(x = srtm,
+                          color = b10_pdsin3t1,
+                          weight = glm_weights_ate)) +
+  geom_density() +
+  labs(title = "Weighted distribution of SRTM (overlap region using GLM) - ATE")
+
+
+
+plot_df <- bind_rows(
+  weight_test_sn |> 
+    filter(!is.na(b10_pdsin3t1)) |>
+    mutate(type = "Unweighted",
+           w = 1),
+  
+  weight_test_sn |> 
+    filter(!is.na(b10_pdsin3t1)) |>
+    mutate(type = "GLM Weighted",
+           w = glm_weights),
+  
+  weight_test_sn |> 
+    filter(!is.na(b10_pdsin3t1)) |>
+    mutate(type = "GBM Weighted",
+           w = gbm_weights)
+)
+
+ggplot(plot_df, aes(x = srtm,
+                    color = b10_pdsin3t1,
+                    linetype = type,
+                    weight = w)) +
+  geom_density() +
+  labs(title = "Distribution of SRTM: Weighted vs Unweighted",
+       linetype = "Type",
+       color = "Group")
+
+```
+
+
+# Weighted CS-A estimator
+
+```{r}
+# without pre-cover
+
+cs_args_weighted_glm <- list(
+  att_gt_args = list(
+    yname = "rap_tree",
+    tname = "year",
+    idname = "pt_id_num",
+    gname = "FirstTreat",
+    xformla = ~ biotic_relaxedforestnorm + pdsi_annual,
+    panel = TRUE,
+    control_group = "notyettreated",
+    est_method = "dr",
+    clustervars = "us_l4code",
+    faster_mode = TRUE,
+    bstrap = FALSE,
+    cband = FALSE,
+    weightsname = "glm_weights"
+  ),
+  aggte_args = list(
+    type = "dynamic"
+  ),
+  treatment_time = 0,
+  ref_line = -1,
+  caption = "did::att_gt(..., xformla = ~ biotic_relaxedforestnorm + pdsi_annual), notyettreated"
+)
+
+
+cs_args_weighted_gbm <- list(
+  att_gt_args = list(
+    yname = "rap_tree",
+    tname = "year",
+    idname = "pt_id_num",
+    gname = "FirstTreat",
+    xformla = ~ biotic_relaxedforestnorm + pdsi_annual,
+    panel = TRUE,
+    control_group = "notyettreated",
+    est_method = "dr",
+    clustervars = "us_l4code",
+    faster_mode = TRUE,
+    bstrap = FALSE,
+    cband = FALSE,
+    weightsname = "gbm_weights"
+  ),
+  aggte_args = list(
+    type = "dynamic"
+  ),
+  treatment_time = 0,
+  ref_line = -1,
+  caption = "did::att_gt(..., xformla = ~ biotic_relaxedforestnorm + pdsi_annual), notyettreated"
+)
+
+
+
+sn_cs_weighted_covars_glm <- plot_all_together_did(
+  subg_col = "b10_pdsin3t1",
+  df = test_dats_sn_withweights |>
+    mutate(
+      pt_id_num = as.numeric(gsub("\\D", "", pt_id)),
+      FirstTreat = FirstTreat - 5,
+      FirstTreat = ifelse(FirstTreat == 995, 0, FirstTreat)
+    ),
+  backend = "cs",
+  backend_args = cs_args_weighted_glm,
+  title = "Sierra Nevada test: Callaway-Sant'Anna, GLM-weighted"
+)
+
+sn_cs_weighted_covars_gbm <- plot_all_together_did(
+  subg_col = "b10_pdsin3t1",
+  df = test_dats_sn_withweights |>
+    mutate(
+      pt_id_num = as.numeric(gsub("\\D", "", pt_id)),
+      FirstTreat = FirstTreat - 5,
+      FirstTreat = ifelse(FirstTreat == 995, 0, FirstTreat)
+    ),
+  backend = "cs",
+  backend_args = cs_args_weighted_gbm,
+  title = "Sierra Nevada test: Callaway-Sant'Anna, GBM-weighted"
+)
+
+
+# with pre-cover
+
+cs_args_weighted_glm_precov <- list(
+  att_gt_args = list(
+    yname = "rap_tree",
+    tname = "year",
+    idname = "pt_id_num",
+    gname = "FirstTreat",
+    xformla = ~ biotic_relaxedforestnorm + pdsi_annual,
+    panel = TRUE,
+    control_group = "notyettreated",
+    est_method = "dr",
+    clustervars = "us_l4code",
+    faster_mode = TRUE,
+    bstrap = FALSE,
+    cband = FALSE,
+    weightsname = "glm_weights_precov"
+  ),
+  aggte_args = list(
+    type = "dynamic"
+  ),
+  treatment_time = 0,
+  ref_line = -1,
+  caption = "did::att_gt(..., xformla = ~ biotic_relaxedforestnorm + pdsi_annual), notyettreated"
+)
+
+
+cs_args_weighted_gbm_precov <- list(
+  att_gt_args = list(
+    yname = "rap_tree",
+    tname = "year",
+    idname = "pt_id_num",
+    gname = "FirstTreat",
+    xformla = ~ biotic_relaxedforestnorm + pdsi_annual,
+    panel = TRUE,
+    control_group = "notyettreated",
+    est_method = "dr",
+    clustervars = "us_l4code",
+    faster_mode = TRUE,
+    bstrap = FALSE,
+    cband = FALSE,
+    weightsname = "gbm_weights_precov"
+  ),
+  aggte_args = list(
+    type = "dynamic"
+  ),
+  treatment_time = 0,
+  ref_line = -1,
+  caption = "did::att_gt(..., xformla = ~ biotic_relaxedforestnorm + pdsi_annual), notyettreated"
+)
+
+
+
+sn_cs_weighted_covars_glm_precov <- plot_all_together_did(
+  subg_col = "b10_pdsin3t1",
+  df = test_dats_sn_withweights |>
+    mutate(
+      pt_id_num = as.numeric(gsub("\\D", "", pt_id)),
+      FirstTreat = FirstTreat - 5,
+      FirstTreat = ifelse(FirstTreat == 995, 0, FirstTreat)
+    ),
+  backend = "cs",
+  backend_args = cs_args_weighted_glm_precov,
+  title = "Sierra Nevada test: Callaway-Sant'Anna, GLM-weighted"
+)
+
+sn_cs_weighted_covars_gbm_precov <- plot_all_together_did(
+  subg_col = "b10_pdsin3t1",
+  df = test_dats_sn_withweights |>
+    mutate(
+      pt_id_num = as.numeric(gsub("\\D", "", pt_id)),
+      FirstTreat = FirstTreat - 5,
+      FirstTreat = ifelse(FirstTreat == 995, 0, FirstTreat)
+    ),
+  backend = "cs",
+  backend_args = cs_args_weighted_gbm_precov,
+  title = "Sierra Nevada test: Callaway-Sant'Anna, GBM-weighted"
+)
+
+
+# ATE
+
+
+cs_args_weighted_glm_ate <- list(
+  att_gt_args = list(
+    yname = "rap_tree",
+    tname = "year",
+    idname = "pt_id_num",
+    gname = "FirstTreat",
+    xformla = ~ biotic_relaxedforestnorm + pdsi_annual,
+    panel = TRUE,
+    control_group = "notyettreated",
+    est_method = "dr",
+    clustervars = "us_l4code",
+    faster_mode = TRUE,
+    bstrap = FALSE,
+    cband = FALSE,
+    weightsname = "glm_weights_ate"
+  ),
+  aggte_args = list(
+    type = "dynamic"
+  ),
+  treatment_time = 0,
+  ref_line = -1,
+  caption = "did::att_gt(..., xformla = ~ biotic_relaxedforestnorm + pdsi_annual), notyettreated"
+)
+
+
+sn_cs_weighted_covars_glm_precov <- plot_all_together_did(
+  subg_col = "b10_pdsin3t1",
+  df = test_dats_sn_withweights |>
+    mutate(
+      pt_id_num = as.numeric(gsub("\\D", "", pt_id)),
+      FirstTreat = FirstTreat - 5,
+      FirstTreat = ifelse(FirstTreat == 995, 0, FirstTreat)
+    ),
+  backend = "cs",
+  backend_args = cs_args_weighted_glm_precov,
+  title = "Sierra Nevada test: Callaway-Sant'Anna, GLM-weighted"
+)
+
+```
+
+# Weighted Sun-Abraham estimator???
+
+```{r}
+
+sunab_args3_glmweights <- list(
+  fml = sunab_fml3,
+  vcov = ~ us_l4code,
+  model_fun = fixest::feols,
+  model_args = list(
+    mem.clean = TRUE,
+    lean = FALSE,
+    weights = ~ glm_weights
+  ),
+  term_pattern = "^year::",
+  time_extract_regex = "-?\\d+",
+  treatment_time = 0,
+  ref_line = -6,
+  caption = deparse(sunab_fml3)
+)
+
+
+sunab_args3_gbmweights <- list(
+  fml = sunab_fml3,
+  vcov = ~ us_l4code,
+  model_fun = fixest::feols,
+  model_args = list(
+    mem.clean = TRUE,
+    lean = FALSE,
+    weights = ~ gbm_weights
+  ),
+  term_pattern = "^year::",
+  time_extract_regex = "-?\\d+",
+  treatment_time = 0,
+  ref_line = -6,
+  caption = deparse(sunab_fml3)
+)
+
+
+sn_sunab_covars_glmweights <- plot_all_together_did(
+  subg_col = "b10_pdsin3t1",
+  df = test_dats_sn_withweights,
+  backend = "sunab",
+  backend_args = sunab_args3_glmweights,
+  title = "Sierra Nevada test: Sun-Ab, twfe + covars, GLM weights"
+)
+
+
+sn_sunab_covars_gbmweights <- plot_all_together_did(
+  subg_col = "b10_pdsin3t1",
+  df = test_dats_sn_withweights,
+  backend = "sunab",
+  backend_args = sunab_args3_gbmweights,
+  title = "Sierra Nevada test: Sun-Ab, twfe + covars, GBM weights"
+)
+
+
+
+
+# No covars
+sunab_args2_glmweights <- list(
+  fml = sunab_fml2,
+  vcov = ~ us_l4code,
+  model_fun = fixest::feols,
+  model_args = list(
+    mem.clean = TRUE,
+    lean = FALSE,
+    weights = ~ glm_weights
+  ),
+  term_pattern = "^year::",
+  time_extract_regex = "-?\\d+",
+  treatment_time = 0,
+  ref_line = -6,
+  caption = deparse(sunab_fml2)
+)
+
+
+sn_sunab_nocovars_glmweights <- plot_all_together_did(
+  subg_col = "b10_pdsin3t1",
+  df = test_dats_sn_withweights,
+  backend = "sunab",
+  backend_args = sunab_args2_glmweights,
+  title = "Sierra Nevada test: Sun-Ab, twfe, GLM weights"
+)
+
+
+
+sunab_args2_gbmweights <- list(
+  fml = sunab_fml2,
+  vcov = ~ us_l4code,
+  model_fun = fixest::feols,
+  model_args = list(
+    mem.clean = TRUE,
+    lean = FALSE,
+    weights = ~ gbm_weights
+  ),
+  term_pattern = "^year::",
+  time_extract_regex = "-?\\d+",
+  treatment_time = 0,
+  ref_line = -6,
+  caption = deparse(sunab_fml2)
+)
+
+
+sn_sunab_nocovars_gbmweights <- plot_all_together_did(
+  subg_col = "b10_pdsin3t1",
+  df = test_dats_sn_withweights,
+  backend = "sunab",
+  backend_args = sunab_args2_gbmweights,
+  title = "Sierra Nevada test: Sun-Ab, twfe, GBM weights"
+)
+
+
+```
+
+
+
+# Compare plots
+
+```{r}
+
+sn_sunab_p1 + ylim(-50, 20)
+sn_sunab_p2 + ylim(-50, 20)
+sn_sunab_p3 + ylim(-50, 20)
+
+sn_twfe_p1 + ylim(-50, 20)
+sn_twfe_p3 + ylim(-50, 20)
+
+sn_cs_p1 + ylim(-50, 20)
+sn_cs_p2 + ylim(-50, 20)
+sn_cs_p2_nyt + ylim(-50, 20)
+
+sn_cs_weighted_covars_glm + ylim(-50, 20)
+sn_cs_weighted_covars_gbm + ylim(-50, 20)
+
+sn_sunab_nocovars_glmweights + ylim(-50, 20)
+sn_sunab_nocovars_gbmweights + ylim(-50, 20)
+
+sn_sunab_covars_glmweights + ylim(-50, 20)
+sn_sunab_covars_gbmweights + ylim(-50, 20)
+
+sn_f_cs_p + ylim(-50, 20)
+sn_f_twfe_p + ylim(-50, 20)
+sn_bf_cs_p + ylim(-50, 20)
+sn_bf_twfe_p + ylim(-50, 20)
+
+ggsave(here(dir_weight_test, "sn_cs_weighted_covars_glm.png"), sn_cs_weighted_covars_glm, width = 8, height = 5, dpi = 300)
+ggsave(here(dir_weight_test, "sn_cs_weighted_covars_gbm.png"), sn_cs_weighted_covars_gbm, width = 8, height = 5, dpi = 300)
+
+
+ggsave(here(dir_weight_test, "sn_twfe_nocovars.png"), sn_twfe_p1, width = 8, height = 5, dpi = 300)
+ggsave(here(dir_weight_test, "sn_twfe_covars.png"), sn_twfe_p3, width = 8, height = 5, dpi = 300)
+
+ggsave(here(dir_weight_test, "sn_cs_UNweighted_nocovars.png"), sn_cs_p1, width = 8, height = 5, dpi = 300)
+ggsave(here(dir_weight_test, "sn_cs_UNweighted_covars.png"), sn_cs_p2, width = 8, height = 5, dpi = 300)
+
+ggsave(plot = sn_sunab_p2, here(dir_weight_test, "sn_sunab_nocovars.png"), width = 8, height = 5, dpi = 300)
+ggsave(plot = sn_sunab_p3, here(dir_weight_test, "sn_sunab_covars.png"), width = 8, height = 5, dpi = 300)
+
+ggsave(plot = sn_sunab_covars_glmweights, here(dir_weight_test, "sn_sunab_covars_weighted_glm.png"), width = 8, height = 5, dpi = 300)
+ggsave(plot = sn_sunab_covars_gbmweights, here(dir_weight_test, "sn_sunab_covars_weighted_gbm.png"), width = 8, height = 5, dpi = 300)
 
 ```
 

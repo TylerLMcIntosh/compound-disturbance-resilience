@@ -62,8 +62,7 @@ d_s_f <- list.files(
 d_s <- open_dataset(d_s_f, format = "parquet") |>
   collect()
 
-d_s_fire <- d_s |> filter(fire == 1)
-d_s_nfire <- d_s |> filter(fire == 0)
+
 
 d_l_f <- list.files(
   here::here(dir_derived, "parquet"),
@@ -331,6 +330,77 @@ d_s <- set_cd_groups(df = d_s,
 
 
 ```
+
+# Disturbance over time
+
+```{r}
+d_s_f <- d_s |> filter(fire == 1)
+d_s_nfire <- d_s |> filter(fire == 0)
+
+d_s_f_summary <- d_s_f |>
+  group_by(cd_group_b10_pdsin3t1, cd_group_b10_pdsisumn10, cd_group_b10_pdsin4t1, burn_year) |>
+  summary(count = n())
+
+ggplot(d_s_f, aes(x = burn_year, y = biotic_relaxedforestnorm_5_yrs_prior_sum_yot)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth(method = "lm") +
+  xlim(2000, 2020)
+
+ggplot(d_s_f, aes(x = burn_year, y = pdsi_annual_5_yrs_prior_sum_yot)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth(method = "lm") +
+  xlim(2000, 2020)
+
+
+
+ggplot(d_s_f |> filter(biotic_relaxedforestnorm_5_yrs_prior_sum_yot >= 10), aes(x = burn_year, y = biotic_relaxedforestnorm_5_yrs_prior_sum_yot)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth(method = "lm") +
+  xlim(2000, 2020) +
+  labs(title = "Limited to >= 10")
+
+ggplot(d_s_f |> filter(pdsi_annual_5_yrs_prior_sum_yot <= -10), aes(x = burn_year, y = pdsi_annual_5_yrs_prior_sum_yot)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth(method = "lm") +
+  xlim(2000, 2020) +
+  labs(title = "Limited to <= -10")
+
+
+
+ggplot(d_s_f |> filter(!is.na(cd_group_b10_pdsin3t1))) +
+  geom_bar(aes(x = burn_year), position = "dodge") +
+  facet_wrap(~ cd_group_b10_pdsin3t1, scales = "free_y"
+             ) +
+  #geom_smooth(method = "lm") +
+  xlim(2000, 2020) +
+  labs(title = "cd_group_b10_pdsin3t1")
+
+
+
+
+
+
+ggplot(d_s_f |> filter(!is.na(cd_group_b10_pdsisumn10))) +
+  geom_bar(aes(x = burn_year), position = "dodge") +
+  facet_wrap(~ cd_group_b10_pdsisumn10, scales = "free_y"
+             ) +
+  #geom_smooth(method = "lm") +
+  xlim(2000, 2020) +
+  labs(title = "cd_group_b10_pdsisumn10")
+
+
+
+ggplot(d_s_f |> filter(!is.na(cd_group_b10_pdsin4t1))) +
+  geom_bar(aes(x = burn_year), position = "dodge") +
+  facet_wrap(~ cd_group_b10_pdsin4t1, scales = "free_y"
+             ) +
+  #geom_smooth(method = "lm") +
+  xlim(2000, 2020) +
+  labs(title = "cd_group_b10_pdsin4t1")
+
+
+```
+
 
 # Hist & N for each (burn_year 2005-2020)
 

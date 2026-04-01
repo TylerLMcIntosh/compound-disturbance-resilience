@@ -1,0 +1,79 @@
+---
+title: "06_spatial_figs"
+format: html
+editor: visual
+---
+
+# Setup for analysis
+
+```{r setupchunk}
+#| echo: true
+#| message: false
+#| warning: false
+#| results: 'hide'
+
+rm(list = ls())
+
+if(!requireNamespace("here", quietly = TRUE)) {
+  install.packages("here")
+}
+library(here)
+
+source(here::here("utils", "functions.R"))
+
+install_load_packages(c(
+  "tidyverse",
+  "arrow",
+  "sf",
+  "scales",
+  "rlang",
+  "grid",
+  "gridExtra",
+  "ggpmisc",
+  "corrplot"))
+
+gdrive_folder <- "GEE_resilience_v6_operational_ss500_ts50000"
+
+dir_figs <- here::here('figs', gdrive_folder)
+dir_derived <- here::here('data', 'derived', gdrive_folder)
+dir_raw <- here::here('data', 'raw')
+dir_manual <- here::here('data', 'manual')
+dir_ensure(c(dir_figs,
+             dir_derived,
+             dir_manual,
+             dir_raw))
+
+seed = 1234
+set.seed(seed)
+
+
+```
+
+# Data
+
+```{r}
+
+d_s_f <- list.files(
+  here::here(dir_derived, "parquet"),
+  pattern = "dats_short.*\\.parquet$",
+  full.names = TRUE
+)
+
+
+```
+
+
+
+
+<button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne">
+
+Click to see Session Information
+
+</button>
+
+:::: {#collapseOne .accordion-collapse .collapse}
+<div>
+
+```{r sessionInfo}
+sessionInfo()
+```
