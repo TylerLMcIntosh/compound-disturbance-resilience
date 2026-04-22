@@ -1,0 +1,182 @@
+---
+title: "05_linear_models"
+format: html
+editor: visual
+---
+
+# Setup for analysis
+
+```{r setupchunk}
+#| echo: true
+#| message: false
+#| warning: false
+#| results: 'hide'
+
+rm(list = ls())
+
+if(!requireNamespace("here", quietly = TRUE)) {
+  install.packages("here")
+}
+library(here)
+
+source(here::here("utils", "functions.R"))
+
+install_load_packages(c(
+  "tidyverse",
+  "arrow",
+  "sf",
+  "scales",
+  "rlang",
+  "grid",
+  "gridExtra",
+  "ggpmisc",
+  "corrplot"))
+
+gdrive_folder <- "GEE_resilience_v6_operational_ss500_ts50000"
+
+dir_figs <- here::here('figs', gdrive_folder)
+dir_derived <- here::here('data', 'derived', gdrive_folder)
+dir_raw <- here::here('data', 'raw')
+dir_manual <- here::here('data', 'manual')
+dir_ensure(c(dir_figs,
+             dir_derived,
+             dir_manual,
+             dir_raw))
+
+seed = 1234
+set.seed(seed)
+
+
+```
+
+# Data
+
+```{r}
+
+d_s_f <- list.files(
+  here::here(dir_derived, "parquet"),
+  pattern = "dats_short.*\\.parquet$",
+  full.names = TRUE
+)
+
+d_s <- open_dataset(d_s_f, format = "parquet") |>
+  collect()
+
+d_s_f <- d_s |> filter(fire == 1 & burn_year >= 1997)
+
+```
+
+
+
+```{r}
+set_cd_groups <- function(df,
+                          b_nm,
+                          d_nm,
+                          cd_nm,
+                          b_threshold,
+                          d_threshold) {
+  
+  if(d_threshold < 0) {
+    df_new <- df |>
+    dplyr::mutate(
+      "{cd_nm}" := dplyr::case_when(
+        .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] >  d_threshold ~ "f",
+        .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] >  d_threshold ~ "bf",
+        .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] <= d_threshold ~ "df",
+        .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] <= d_threshold ~ "bdf",
+        TRUE ~ NA_character_
+      )
+    )
+  } else {
+    df_new <- df |>
+    dplyr::mutate(
+      "{cd_nm}" := dplyr::case_when(
+        .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] <  d_threshold ~ "f",
+        .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] <  d_threshold ~ "bf",
+        .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] >= d_threshold ~ "df",
+        .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] >= d_threshold ~ "bdf",
+        TRUE ~ NA_character_
+      )
+    )
+    
+  }
+  
+  df_new <- df_new |>
+    dplyr::mutate(
+      "{cd_nm}" := forcats::fct_relevel(.data[[cd_nm]], "f")
+    )
+
+  return(df_new)
+}
+
+d_s_f <- set_cd_groups(df = d_s_f,
+                   b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+                   d_nm = "pdsi_annual_5_yrs_prior_sum_yot",
+                   cd_nm = "cd_group_b10_pdsisumn10",
+                   b_threshold = 10,
+                   d_threshold = -10)
+
+
+```
+
+
+```{r}
+
+
+lm1 <- lm(raw_post_fire_rap_tree_difference_n6_3_yr ~ cd_group_b10_pdsisumn10,
+          data = d_s_f)
+summary(lm1)
+
+
+lm2 <- lm(raw_post_fire_rap_tree_difference_n6_3_yr ~ cd_group_b10_pdsisumn10 + srtm + tpi + chili,
+          data = d_s_f)
+summary(lm2)
+
+lm3 <- lm(raw_post_fire_rap_tree_difference_n6_3_yr ~ pdsi_annual_5_yrs_prior_sum_yot + biotic_relaxedforestnorm_5_yrs_prior_sum_yot + srtm + tpi + chili,
+          data = d_s_f)
+summary(lm3)
+
+
+
+lm4 <- lm(raw_post_fire_rap_tree_difference_n6_3_yr ~ pdsi_annual_5_yrs_prior_sum_yot + biotic_relaxedforestnorm_5_yrs_prior_sum_yot + srtm + tpi + chili + gam_rap_tree_pre6_fit,
+          data = d_s_f)
+summary(lm4)
+
+lm5 <- lm(raw_post_fire_rap_tree_difference_n6_3_yr ~ pdsi_annual_5_yrs_prior_sum_yot + biotic_relaxedforestnorm_5_yrs_prior_sum_yot + srtm + tpi + chili + pdsi_annual_year_of + hd_fingerprint_year_of,
+          data = d_s_f)
+summary(lm5)
+
+
+lm6 <- lm(raw_post_fire_rap_tree_difference_n6_3_yr ~ pdsi_annual_5_yrs_prior_sum_yot + biotic_relaxedforestnorm_5_yrs_prior_sum_yot + srtm + tpi + chili + pdsi_annual_year_of + hd_fingerprint_year_of + burn_year,
+          data = d_s_f)
+summary(lm6)
+
+lm7 <- lm(raw_post_fire_rap_tree_difference_n6_3_yr ~ pdsi_annual_5_yrs_prior_sum_yot + biotic_relaxedforestnorm_5_yrs_prior_sum_yot + srtm + tpi + chili + pdsi_annual_year_of + hd_fingerprint_year_of + burn_year + tt_normal_aet + tt_normal_def,
+          data = d_s_f)
+summary(lm7)
+
+lm8 <- lm(raw_post_fire_rap_tree_difference_n6_3_yr ~ pdsi_annual_5_yrs_prior_sum_yot + biotic_relaxedforestnorm_5_yrs_prior_sum_yot + srtm + tpi + chili + pdsi_annual_year_of + hd_fingerprint_year_of + burn_year + tt_normal_aet + tt_normal_def + nfg_factor + us_l3code + us_l4code,
+          data = d_s_f)
+summary(lm8)
+
+                            
+                          
+
+```
+
+
+<button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne">
+
+Click to see Session Information
+
+</button>
+
+:::: {#collapseOne .accordion-collapse .collapse}
+<div>
+
+```{r sessionInfo}
+sessionInfo()
+```
+
+</div>
+::::

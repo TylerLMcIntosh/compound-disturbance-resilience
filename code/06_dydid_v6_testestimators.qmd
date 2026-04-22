@@ -397,12 +397,13 @@ test_dats_nc <- test_dats_nc |>
   #mutate(use_tv_covars = ifelse(Time_to_Treatment <= -5 & Time_to_Treatment <= 0, 0, 1))
 
 
-# WHY ARE SOME UNITS NA FOR THE BIOTIC/PDSI SUMS??
+# WHY ARE SOME UNITS NA FOR THE BIOTIC/PDSI SUMS?? - THESE ARE ALL CORRECT, AND SHOULD BE NA
 test_dats_sn |> group_by(b10_pdsin3t1) |> summarize(n = n())
 why_na <- test_dats_sn |>
-  filter(is.na(b10_pdsin3t1)) |>
-  select(pdsi_annual_5_yrs_prior_threshold_n3_yot, biotic_relaxedforestnorm_5_yrs_prior_sum_yot, fire, year, pt_id, lat, long)
+  filter(is.na(b10_pdsin3t1) & fire == 1) |>
+  select(b10_pdsin3t1, pdsi_annual_5_yrs_prior_threshold_n3_yot, biotic_relaxedforestnorm_5_yrs_prior_sum_yot, fire, year, burn_year, pt_id, lat, long)
 length(unique(why_na$pt_id))
+unique(why_na$year)
 length(unique(test_dats_sn$pt_id))
 why_na_sf <- why_na |>
   distinct(pt_id, .keep_all = TRUE) |>
@@ -410,6 +411,8 @@ why_na_sf <- why_na |>
 
 mapview::mapview(why_na_sf)
 write_csv(why_na_sf, file = here::here(dir_derived, "sierra_nevada_biotic_or_pdsi_nas_unique_pt_id.csv"))
+
+hist(why_na$burn_year) # equal representation across years
 
 # 
 # test_dats_sn_gwf <- test_dats_sn |>
@@ -1263,6 +1266,13 @@ sunab_fml2 <- rap_tree ~ sunab(FirstTreat, year, ref.p = -6) | pt_id + year
 sunab_fml3 <- rap_tree ~ sunab(FirstTreat, year, ref.p = -6) +
   biotic_relaxedforestnorm + pdsi_annual | pt_id + year
 
+
+sunab_fml3_bio <- rap_tree ~ sunab(FirstTreat, year, ref.p = -6) +
+  biotic_relaxedforestnorm | pt_id + year
+
+sunab_fml3_pdsi <- rap_tree ~ sunab(FirstTreat, year, ref.p = -6) +
+  pdsi_annual | pt_id + year
+
 sunab_args1 <- list(
   fml = sunab_fml1,
   vcov = ~ us_l4code,
@@ -1423,6 +1433,30 @@ cs_args2_nyt <- list(
 )
 
 
+cs_args3_nyt <- list(
+  att_gt_args = list(
+    yname = "rap_tree",
+    tname = "year",
+    idname = "pt_id_num",
+    gname = "FirstTreat",
+    xformla = ~ tpi + srtm + def + aet + chili,
+    panel = TRUE,
+    control_group = "notyettreated",
+    est_method = "dr",
+    clustervars = "us_l4code",
+    faster_mode = TRUE,
+    bstrap = FALSE,
+    cband = FALSE
+  ),
+  aggte_args = list(
+    type = "dynamic"
+  ),
+  treatment_time = 0,
+  ref_line = -1,
+  caption = "did::att_gt(..., xformla = ~ srtm + def + aet + chili), notyettreated"
+)
+
+
 ```
 
 # use code
@@ -1515,6 +1549,19 @@ sn_cs_p2_nyt <- plot_all_together_did(
   backend = "cs",
   backend_args = cs_args2_nyt,
   title = "Sierra Nevada test: Callaway-Sant'Anna + covars, notyettreated"
+)
+
+sn_cs_p3_nyt <- plot_all_together_did(
+  subg_col = "b10_pdsin3t1",
+  df = test_dats_sn |>
+    mutate(
+      pt_id_num = as.numeric(gsub("\\D", "", pt_id)),
+      FirstTreat = FirstTreat - 5,
+      FirstTreat = ifelse(FirstTreat == 995, 0, FirstTreat)
+    ),
+  backend = "cs",
+  backend_args = cs_args3_nyt,
+  title = "Sierra Nevada test: Callaway-Sant'Anna + stationary covars, notyettreated"
 )
 
 
@@ -1654,24 +1701,24 @@ w_out_glm <- weightit(
 summary(w_out_glm)
 
 
-w_out_glm_ate <- weightit(
-  b10_pdsin3t1_control ~ chili + def + aet + srtm + tpi + nfg_factor,
-  data = weight_test_sn,
-  method = "glm",
-  estimand = "ATE"
-)
-
-summary(w_out_glm_ate)
-
-
-w_out_glm_precov <- weightit(
-  b10_pdsin3t1_control ~ chili + def + aet + srtm + tpi + nfg_factor + gam_rap_tree_pre6_fit,
-  data = weight_test_sn,
-  method = "glm",
-  estimand = "ATO"
-)
-
-summary(w_out_glm_precov)
+# w_out_glm_ate <- weightit(
+#   b10_pdsin3t1_control ~ chili + def + aet + srtm + tpi + nfg_factor,
+#   data = weight_test_sn,
+#   method = "glm",
+#   estimand = "ATE"
+# )
+# 
+# summary(w_out_glm_ate)
+# 
+# 
+# w_out_glm_precov <- weightit(
+#   b10_pdsin3t1_control ~ chili + def + aet + srtm + tpi + nfg_factor + gam_rap_tree_pre6_fit,
+#   data = weight_test_sn,
+#   method = "glm",
+#   estimand = "ATO"
+# )
+# 
+# summary(w_out_glm_precov)
 
 
 
@@ -1687,28 +1734,31 @@ w_out_gbm <- weightit(
 
 summary(w_out_gbm)
 
-
-w_out_gbm_precov <- weightit(
-  b10_pdsin3t1_control ~ chili + def + aet + srtm + tpi + nfg_factor + gam_rap_tree_pre6_fit,
-  data = weight_test_sn,
-  method = "gbm",
-  estimand = "ATO"
-)
-
-summary(w_out_gbm_precov)
+# 
+# w_out_gbm_precov <- weightit(
+#   b10_pdsin3t1_control ~ chili + def + aet + srtm + tpi + nfg_factor + gam_rap_tree_pre6_fit,
+#   data = weight_test_sn,
+#   method = "gbm",
+#   estimand = "ATO"
+# )
+# 
+# summary(w_out_gbm_precov)
 
 
 weight_test_sn <- weight_test_sn |>
   mutate(glm_weights = w_out_glm$weights,
-         gbm_weights = w_out_gbm$weights,
-         glm_weights_precov = w_out_glm_precov$weights,
-         gbm_weights_precov = w_out_gbm_precov$weights,
-         glm_weights_ate = w_out_glm_ate$weights)
+         gbm_weights = w_out_gbm$weights#,
+         #glm_weights_precov = w_out_glm_precov$weights,
+         #gbm_weights_precov = w_out_gbm_precov$weights,
+         #glm_weights_ate = w_out_glm_ate$weights
+         )
 
 
 test_dats_sn_withweights <- test_dats_sn |>
   left_join(weight_test_sn |>
-              select(pt_id, glm_weights, gbm_weights, glm_weights_precov, gbm_weights_precov, glm_weights_ate), by = c("pt_id"))
+              select(pt_id, glm_weights, gbm_weights#,
+                     #glm_weights_precov, gbm_weights_precov, glm_weights_ate
+                     ), by = c("pt_id"))
 
 
 
@@ -2058,6 +2108,59 @@ cs_args_weighted_gbm <- list(
 
 
 
+
+cs_args_weighted_glm_nocovars <- list(
+  att_gt_args = list(
+    yname = "rap_tree",
+    tname = "year",
+    idname = "pt_id_num",
+    gname = "FirstTreat",
+    xformla = ~ 1,
+    panel = TRUE,
+    control_group = "notyettreated",
+    est_method = "dr",
+    clustervars = "us_l4code",
+    faster_mode = TRUE,
+    bstrap = FALSE,
+    cband = FALSE,
+    weightsname = "glm_weights"
+  ),
+  aggte_args = list(
+    type = "dynamic"
+  ),
+  treatment_time = 0,
+  ref_line = -1,
+  caption = "did::att_gt(..., xformla = ~ 1), notyettreated"
+)
+
+
+cs_args_weighted_gbm_nocovars <- list(
+  att_gt_args = list(
+    yname = "rap_tree",
+    tname = "year",
+    idname = "pt_id_num",
+    gname = "FirstTreat",
+    xformla = ~ 1,
+    panel = TRUE,
+    control_group = "notyettreated",
+    est_method = "dr",
+    clustervars = "us_l4code",
+    faster_mode = TRUE,
+    bstrap = FALSE,
+    cband = FALSE,
+    weightsname = "gbm_weights"
+  ),
+  aggte_args = list(
+    type = "dynamic"
+  ),
+  treatment_time = 0,
+  ref_line = -1,
+  caption = "did::att_gt(..., xformla = ~ 1), notyettreated"
+)
+
+
+
+
 sn_cs_weighted_covars_glm <- plot_all_together_did(
   subg_col = "b10_pdsin3t1",
   df = test_dats_sn_withweights |>
@@ -2320,6 +2423,63 @@ sn_sunab_nocovars_gbmweights <- plot_all_together_did(
 )
 
 
+
+
+
+# Single co-vars
+
+sunab_args3_glmweights_bio <- list(
+  fml = sunab_fml3_bio,
+  vcov = ~ us_l4code,
+  model_fun = fixest::feols,
+  model_args = list(
+    mem.clean = TRUE,
+    lean = FALSE,
+    weights = ~ glm_weights
+  ),
+  term_pattern = "^year::",
+  time_extract_regex = "-?\\d+",
+  treatment_time = 0,
+  ref_line = -6,
+  caption = deparse(sunab_fml3_bio)
+)
+
+sn_sunab_glmweights_bio <- plot_all_together_did(
+  subg_col = "b10_pdsin3t1",
+  df = test_dats_sn_withweights,
+  backend = "sunab",
+  backend_args = sunab_args3_glmweights_bio,
+  title = "Sierra Nevada test: Sun-Ab, twfe, GLM weights, biotic-only"
+)
+
+
+
+sunab_args3_glmweights_pdsi <- list(
+  fml = sunab_fml3_pdsi,
+  vcov = ~ us_l4code,
+  model_fun = fixest::feols,
+  model_args = list(
+    mem.clean = TRUE,
+    lean = FALSE,
+    weights = ~ glm_weights
+  ),
+  term_pattern = "^year::",
+  time_extract_regex = "-?\\d+",
+  treatment_time = 0,
+  ref_line = -6,
+  caption = deparse(sunab_fml3_pdsi)
+)
+
+sn_sunab_glmweights_pdsi <- plot_all_together_did(
+  subg_col = "b10_pdsin3t1",
+  df = test_dats_sn_withweights,
+  backend = "sunab",
+  backend_args = sunab_args3_glmweights_pdsi,
+  title = "Sierra Nevada test: Sun-Ab, twfe, GLM weights, pdsi-only"
+)
+
+
+
 ```
 
 
@@ -2339,6 +2499,8 @@ sn_cs_p1 + ylim(-50, 20)
 sn_cs_p2 + ylim(-50, 20)
 sn_cs_p2_nyt + ylim(-50, 20)
 
+sn_cs_p3_nyt + ylim(-50, 20)
+
 sn_cs_weighted_covars_glm + ylim(-50, 20)
 sn_cs_weighted_covars_gbm + ylim(-50, 20)
 
@@ -2347,6 +2509,9 @@ sn_sunab_nocovars_gbmweights + ylim(-50, 20)
 
 sn_sunab_covars_glmweights + ylim(-50, 20)
 sn_sunab_covars_gbmweights + ylim(-50, 20)
+
+sn_sunab_glmweights_pdsi
+sn_sunab_glmweights_bio
 
 sn_f_cs_p + ylim(-50, 20)
 sn_f_twfe_p + ylim(-50, 20)
@@ -2361,6 +2526,7 @@ ggsave(here(dir_weight_test, "sn_twfe_nocovars.png"), sn_twfe_p1, width = 8, hei
 ggsave(here(dir_weight_test, "sn_twfe_covars.png"), sn_twfe_p3, width = 8, height = 5, dpi = 300)
 
 ggsave(here(dir_weight_test, "sn_cs_UNweighted_nocovars.png"), sn_cs_p1, width = 8, height = 5, dpi = 300)
+ggsave(here(dir_weight_test, "sn_cs_UNweighted_stationarycovars.png"), sn_cs_p3_nyt, width = 8, height = 5, dpi = 300)
 ggsave(here(dir_weight_test, "sn_cs_UNweighted_covars.png"), sn_cs_p2, width = 8, height = 5, dpi = 300)
 
 ggsave(plot = sn_sunab_p2, here(dir_weight_test, "sn_sunab_nocovars.png"), width = 8, height = 5, dpi = 300)
@@ -2368,6 +2534,13 @@ ggsave(plot = sn_sunab_p3, here(dir_weight_test, "sn_sunab_covars.png"), width =
 
 ggsave(plot = sn_sunab_covars_glmweights, here(dir_weight_test, "sn_sunab_covars_weighted_glm.png"), width = 8, height = 5, dpi = 300)
 ggsave(plot = sn_sunab_covars_gbmweights, here(dir_weight_test, "sn_sunab_covars_weighted_gbm.png"), width = 8, height = 5, dpi = 300)
+
+ggsave(plot = sn_sunab_nocovars_glmweights, here(dir_weight_test, "sn_sunab_nocovars_weighted_glm.png"), width = 8, height = 5, dpi = 300)
+ggsave(plot = sn_sunab_nocovars_gbmweights, here(dir_weight_test, "sn_sunab_nocovars_weighted_gbm.png"), width = 8, height = 5, dpi = 300)
+
+
+ggsave(plot = sn_sunab_glmweights_pdsi, here(dir_weight_test, "sn_sunab_pdsi_weighted_glm.png"), width = 8, height = 5, dpi = 300)
+ggsave(plot = sn_sunab_glmweights_bio, here(dir_weight_test, "sn_sunab_bio_weighted_glm.png"), width = 8, height = 5, dpi = 300)
 
 ```
 
