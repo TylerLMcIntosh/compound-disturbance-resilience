@@ -1,21 +1,23 @@
 # run_analysis.R
 # Execution script for the portable Sun-Abraham / TWFE DiD pipeline
-# Claude-generated update
 # -------------------------------------------------------
 # This script is the only file that should need to change when adapting the
 # pipeline to a new dataset or new set of research questions. All estimation
 # and output logic lives in portable_sunab.R.
 #
 # Workflow:
-#   1. Environment setup
-#   2. Dataset spec          — what do the columns mean in this dataset?
-#   3. Analysis subset specs — which data slices do we analyse?
-#   4. Outcome specs         — which outcome columns?
-#   5. Treatment group specs — how do we partition treated units?
-#   6. Model specs           — what formula / estimator?
-#   7. Vcov specs            — which standard error estimators?
-#   8. Run experiment
-#   9. Rebuild merged tables
+#   1.  Environment setup
+#   2.  Dataset spec           — what do the columns mean in this dataset?
+#   3.  Analysis subset specs  — which data slices do we analyse?
+#   4.  Outcome specs          — which outcome columns?
+#   5.  Treatment group specs  — how do we partition treated units?
+#   6.  Weighting specs        — which propensity-score weighting approaches?
+#   7.  Model specs            — what formula / estimator / weight column?
+#   8.  Vcov specs             — which standard error estimators?
+#   9.  Preview run grid
+#   10. Run weighting experiment
+#   11. Run estimation experiment
+#   12. Rebuild merged tables
 # -------------------------------------------------------
 
 
@@ -28,20 +30,13 @@ rm(list = ls())
 if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
 library(here)
 
-# Install any missing packages before sourcing the functions file
 required_script_pkgs <- c(
-  "tidyverse",   # dplyr, tidyr, purrr, readr, stringr, etc.
-  "fixest",
-  "arrow",
-  "glue",
-  "here"
+  "tidyverse", "fixest", "arrow", "glue", "here"
 )
 missing_script_pkgs <- required_script_pkgs[
   !vapply(required_script_pkgs, requireNamespace, logical(1), quietly = TRUE)
 ]
-if (length(missing_script_pkgs) > 0) {
-  install.packages(missing_script_pkgs)
-}
+if (length(missing_script_pkgs) > 0) install.packages(missing_script_pkgs)
 
 library(tidyverse)
 
@@ -52,13 +47,12 @@ set.seed(seed)
 
 
 # ── Directory layout ──────────────────────────────────────────────────────────
-# One shared dir_out per project. Multiple run_experiment() calls over time all
-# write into the same directory; rebuild_estimation_tables() merges them later.
+# One shared dir_results per project. Multiple run_experiment() calls over time
+# all write into the same directory; rebuild_*() merges them later.
 
-run_name  <- "GEE_resilience_v6_operational_ss500_ts50000"
-results_version <- "v6"
+run_name <- "GEE_resilience_v6_operational_ss500_ts50000"
+version <- "v6"
 
-# Adapt these paths to your project layout / CyVerse toggle as needed.
 cyverse <- FALSE
 
 if (cyverse) {
@@ -68,76 +62,57 @@ if (cyverse) {
   dir_data    <- file.path(dir_base, "data", "derived")
   dir_raw     <- file.path(dir_base, "data", "raw")
   dir_manual  <- file.path(dir_base, "data", "manual")
-  dir_results <- file.path(dir_base, "results", results_version)
-  dir_figs    <- file.path(dir_base, "figs")
+  dir_results <- file.path(dir_base, "results", version)
+  dir_figs    <- file.path(dir_base, "figs", version)
 } else {
   dir_data    <- here::here("data", "derived", run_name)
   dir_raw     <- here::here("data", "raw")
   dir_manual  <- here::here("data", "manual")
-  dir_results <- here::here("results", results_version)
-  dir_figs    <- here::here("figs")
+  dir_results <- here::here("results", version)
+  dir_figs    <- here::here("figs", version)
 }
 
-# The parquet data lives in a single directory; all filters are pushed to Arrow.
-dir_parquet <- file.path(dir_data, "parquet")
+# Long (panel) data — one row per unit × year, used for estimation
+dir_parquet_long <- file.path(dir_data, "parquet_long_filtered")
 
-dir_ensure_local(c(dir_data, dir_parquet, dir_raw, dir_manual, dir_results, dir_figs))
+# Short (cross-sectional) data — one row per unit, used for weighting.
+# Set to NULL and omit short_data_source in subset specs when not weighting.
+dir_parquet_short <- file.path(dir_data, "parquet_short_filtered")
 
-
+dir_ensure_local(c(dir_data, dir_parquet_long, dir_raw, dir_manual, dir_results, dir_figs))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 2. Dataset spec
 # ══════════════════════════════════════════════════════════════════════════════
-# Captures all column-name mappings that are properties of the DATA, not of
-# any particular model. Change this block when pointing at a new dataset.
 
 dataset_spec <- make_dataset_spec(
-  unit_id    = "pt_id",        # unit (pixel / plot) identifier
-  time_var   = "year",         # calendar time
-  trt_col    = "fire",         # binary treatment indicator (0/1)
-  cohort_var = "FirstTreat",   # treatment cohort fed to sunab(); NA if plain TWFE
-  event_id   = "fireid"        # event identifier; NA if not applicable
+  unit_id    = "pt_id",       # unit (pixel / plot) identifier
+  time_var   = "year",        # calendar time
+  trt_col    = "fire",        # binary treatment indicator (0/1)
+  cohort_var = "FirstTreat",  # treatment cohort for sunab(); NA = plain TWFE
+  event_id   = "fireid"       # event identifier; NA if not applicable
 )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 3. Analysis subset specs
 # ══════════════════════════════════════════════════════════════════════════════
-# Each row = one data slice. Filters are pushed to Arrow before collect().
+# Each row = one data slice. data_filter is pushed to Arrow before collect()
+# for both long and short sources.
 #
-# Three approaches are shown; mix and match as needed.
+# long_data_source  — required; the panel data used for estimation.
+# short_data_source — optional; the cross-sectional data used for weighting.
+#                     Set to NULL (or omit) when not weighting.
+# data_filter       — applied to BOTH sources.
 #
-#   A) Manually specify each subset with a tidy filter expression.
-#   B) Auto-expand by unique values of a categorical column (e.g. ecoregion).
-#   C) A single "all data" subset with only a time filter.
+# Three approaches shown; combine with dplyr::bind_rows().
 #
-# Combine approaches with dplyr::bind_rows().
+#   A) Auto-expand by unique values of a categorical column (ecoregion).
+#   B) Single "all data" subset.
+#   C) Manual subsets (e.g. burn-year windows).
 
-# ── A) Manual subsets — e.g. specific burn-year windows ──────────────────────
-
-manual_subset_specs <- dplyr::bind_rows(
-  make_analysis_subset_spec(
-    subset_id   = "burnyear_2000_2009",
-    data_source = dir_parquet,
-    data_filter = ~ year >= 1997 & burn_year >= 2000 & burn_year < 2010
-  ),
-  make_analysis_subset_spec(
-    subset_id   = "burnyear_2010_2019",
-    data_source = dir_parquet,
-    data_filter = ~ year >= 1997 & burn_year >= 2010 & burn_year < 2020
-  )
-)
-
-# ── B) Auto-expand by ecoregion (or any other categorical column) ─────────────
-# expand_analysis_subset_specs_by_col() reads the unique values of the split
-# column directly from Arrow (no full collect), then builds one spec row per
-# value. Use `values` to restrict to a known list; use `base_filter` to add a
-# time or quality filter on top of each per-value filter.
-#
-# The ecoregion codes we want to include (mirrors the original script's
-# forested_ecoregions tibble, minus those excluded for low USFS coverage):
-
+# Ecoregion codes to include (forested ecoregions with sufficient USFS coverage)
 ecoregion_code_names = c(
   "bluemtns", "cascades", "coastrange", "eastcascades",
   "klamathmtns", "northcascades", "pugetlowland",
@@ -147,42 +122,67 @@ ecoregion_code_names = c(
   "wasatchuintamtns", "aznmmtns", "coloradoplateaus"
 )
 
+
+# ── A) Auto-expand by ecoregion ───────────────────────────────────────────────
+# expand_analysis_subset_specs_by_col() reads unique values from the long data
+# via Arrow (no full collect), then builds one row per value.
+# short_data_source is the same directory for every ecoregion subset.
+
 ecoregion_subset_specs <- expand_analysis_subset_specs_by_col(
-  data_source = dir_parquet,
-  split_col   = "ecoregion_code_name",
-  id_prefix   = "ecor",
-  base_filter = ~ year >= 1997,
-  values      = ecoregion_code_names
+  long_data_source  = dir_parquet_long,
+  split_col         = "ecoregion_code_name",
+  id_prefix         = "ecor",
+  #base_filter       = ~ year >= 1997,
+  values            = ecoregion_code_names,
+  short_data_source = dir_parquet_short   # NULL if no weighting planned
 )
 
-# ── C) Single "all ecoregions pooled" subset ──────────────────────────────────
+# ── B) All ecoregions pooled ──────────────────────────────────────────────────
 
 all_eco_subset_spec <- make_analysis_subset_spec(
-  subset_id   = "all_ecoregions",
-  data_source = dir_parquet,
-  data_filter = ~ year >= 1997
+  subset_id         = "all_ecoregions",
+  long_data_source  = dir_parquet_long,
+  #data_filter       = ~ year >= 1997,
+  short_data_source = dir_parquet_short   # NULL if no weighting planned
 )
 
-# ── Combine into the full analysis_subset_specs table ─────────────────────────
-# Comment out or add rows here to control which subsets are actually run.
+# ── C) Manual subsets — e.g. specific burn-year windows ──────────────────────
+# short_data_source can be NULL here if weighting is not needed for these
+# subsets; they will simply be skipped by run_weighting_experiment().
+
+manual_subset_specs <- dplyr::bind_rows(
+  make_analysis_subset_spec(
+    subset_id        = "burnyear_2000_2009",
+    long_data_source = dir_parquet_long,
+    data_filter      = ~ year >= 1997 & burn_year >= 2000 & burn_year < 2010
+    # short_data_source = NULL  (default — no weighting for these subsets)
+  ),
+  make_analysis_subset_spec(
+    subset_id        = "burnyear_2010_2019",
+    long_data_source = dir_parquet_long,
+    data_filter      = ~ year >= 1997 & burn_year >= 2010 & burn_year < 2020
+  )
+)
+
+# ── Combine ───────────────────────────────────────────────────────────────────
 
 analysis_subset_specs <- dplyr::bind_rows(
-  ecoregion_subset_specs[1,]#,
+  ecoregion_subset_specs,
   #all_eco_subset_spec
   # manual_subset_specs   # uncomment to also run burn-year window subsets
 )
 
-# Quick sanity check — print the run grid size before committing:
 message(glue::glue("Analysis subsets defined: {nrow(analysis_subset_specs)}"))
 
+analysis_subset_specs <- analysis_subset_specs[11,]
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 4. Outcome specs
 # ══════════════════════════════════════════════════════════════════════════════
 
 outcome_specs <- tibble::tibble(
-  outcome = c("rap_tree",
-              "vcf_tree"
+  outcome = c("rap_tree"#,
+              #"vcf_tree"
               )
 )
 
@@ -190,31 +190,30 @@ outcome_specs <- tibble::tibble(
 # ══════════════════════════════════════════════════════════════════════════════
 # 5. Treatment group specs
 # ══════════════════════════════════════════════════════════════════════════════
-# Each row defines one way of partitioning treated units into subgroups.
-#
 # group_fun contract:
-#   - Receives: df (data frame), group_col (string), plus everything in group_args
-#   - Must return: df with a new column named exactly `group_col`
-#   - The reference level ("f") is set inside set_cd_groups via relevel()
-#
-# group_col is specified at the top level (not inside group_args) so the
-# pipeline can read it without knowing the internals of group_fun.
+#   Receives: df, group_col (injected), plus everything in group_args.
+#             When include_control = TRUE (injected by weighting pipeline),
+#             must assign "control" to rows where fire == 0.
+#   Returns:  df with a new column named exactly group_col.
+#   Reference level "f" is set inside set_cd_groups via relevel().
 
 set_cd_groups <- function(df,
-                          group_col,   # injected by the pipeline
+                          group_col,        # injected by pipeline
                           b_nm,
                           d_nm,
                           b_threshold,
-                          d_threshold) {
+                          d_threshold,
+                          include_control = FALSE) {
   
   if (d_threshold < 0) {
     df_new <- df |>
       dplyr::mutate(
         "{group_col}" := dplyr::case_when(
-          .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] >  d_threshold ~ "f",
-          .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] >  d_threshold ~ "bf",
-          .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] <= d_threshold ~ "df",
-          .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] <= d_threshold ~ "bdf",
+          fire == 1 & .data[[b_nm]] <  b_threshold & .data[[d_nm]] >  d_threshold ~ "f",
+          fire == 1 & .data[[b_nm]] >= b_threshold & .data[[d_nm]] >  d_threshold ~ "bf",
+          fire == 1 & .data[[b_nm]] <  b_threshold & .data[[d_nm]] <= d_threshold ~ "df",
+          fire == 1 & .data[[b_nm]] >= b_threshold & .data[[d_nm]] <= d_threshold ~ "bdf",
+          include_control & fire == 0                                               ~ "control",
           TRUE ~ NA_character_
         )
       )
@@ -222,16 +221,19 @@ set_cd_groups <- function(df,
     df_new <- df |>
       dplyr::mutate(
         "{group_col}" := dplyr::case_when(
-          .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] <  d_threshold ~ "f",
-          .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] <  d_threshold ~ "bf",
-          .data[[b_nm]] <  b_threshold & fire == 1 & .data[[d_nm]] >= d_threshold ~ "df",
-          .data[[b_nm]] >= b_threshold & fire == 1 & .data[[d_nm]] >= d_threshold ~ "bdf",
+          fire == 1 & .data[[b_nm]] <  b_threshold & .data[[d_nm]] <  d_threshold ~ "f",
+          fire == 1 & .data[[b_nm]] >= b_threshold & .data[[d_nm]] <  d_threshold ~ "bf",
+          fire == 1 & .data[[b_nm]] <  b_threshold & .data[[d_nm]] >= d_threshold ~ "df",
+          fire == 1 & .data[[b_nm]] >= b_threshold & .data[[d_nm]] >= d_threshold ~ "bdf",
+          include_control & fire == 0                                               ~ "control",
           TRUE ~ NA_character_
         )
       )
   }
   
-  # Set "f" (fire-only, low biotic stress, low drought) as the reference level
+  # Set "f" (fire-only, low biotic stress, low drought) as the reference level.
+  # "control" is not in the reference-level logic because WeightIt uses
+  # group_col as a multi-valued treatment indicator, not for feols().
   df_new <- df_new |>
     dplyr::mutate(
       "{group_col}" := relevel(factor(.data[[group_col]]), ref = "f")
@@ -242,10 +244,11 @@ set_cd_groups <- function(df,
 
 
 treatment_group_specs <- dplyr::bind_rows(
+  
   make_treatment_group_spec(
-    group_id  = "b10_pdsin4t1",
-    group_col = "b10_pdsin4t1",
-    group_fun = set_cd_groups,
+    group_id   = "b10_pdsin4t1",
+    group_col  = "b10_pdsin4t1",
+    group_fun  = set_cd_groups,
     group_args = list(
       b_nm        = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
       d_nm        = "pdsi_annual_5_yrs_prior_threshold_n4_yot",
@@ -253,10 +256,11 @@ treatment_group_specs <- dplyr::bind_rows(
       d_threshold = 1
     )
   ),
+  
   make_treatment_group_spec(
-    group_id  = "b10_pdsin3t1",
-    group_col = "b10_pdsin3t1",
-    group_fun = set_cd_groups,
+    group_id   = "b10_pdsin3t1",
+    group_col  = "b10_pdsin3t1",
+    group_fun  = set_cd_groups,
     group_args = list(
       b_nm        = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
       d_nm        = "pdsi_annual_5_yrs_prior_threshold_n3_yot",
@@ -264,10 +268,11 @@ treatment_group_specs <- dplyr::bind_rows(
       d_threshold = 1
     )
   ),
+  
   make_treatment_group_spec(
-    group_id  = "b10_pdsisumn10",
-    group_col = "b10_pdsisumn10",
-    group_fun = set_cd_groups,
+    group_id   = "b10_pdsisumn10",
+    group_col  = "b10_pdsisumn10",
+    group_fun  = set_cd_groups,
     group_args = list(
       b_nm        = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
       d_nm        = "pdsi_annual_5_yrs_prior_sum_yot",
@@ -275,10 +280,11 @@ treatment_group_specs <- dplyr::bind_rows(
       d_threshold = -10
     )
   ),
+  
   make_treatment_group_spec(
-    group_id  = "b25_pdsisumn10",
-    group_col = "b25_pdsisumn10",
-    group_fun = set_cd_groups,
+    group_id   = "b25_pdsisumn10",
+    group_col  = "b25_pdsisumn10",
+    group_fun  = set_cd_groups,
     group_args = list(
       b_nm        = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
       d_nm        = "pdsi_annual_5_yrs_prior_sum_yot",
@@ -286,24 +292,63 @@ treatment_group_specs <- dplyr::bind_rows(
       d_threshold = -10
     )
   )
+  
+)
+
+treatment_group_specs <- treatment_group_specs[2,]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 6. Weighting specs
+# ══════════════════════════════════════════════════════════════════════════════
+# Defines propensity-score weighting approaches run BEFORE estimation.
+# The weighting pipeline crosses analysis_subset_specs x treatment_group_specs
+# x weighting_specs, producing one weights parquet per combination.
+#
+# Weight column names are constructed automatically:
+#   "{weighting_id}_weights"               when weighting_name is NA (default)
+#   "{weighting_id}_{weighting_name}_weights"  when weighting_name is set
+#
+# Skip this section and leave weighting_specs undefined (or set to NULL) if you
+# are running an unweighted analysis only. In that case also set
+# weights_col = NA in all model_specs (the default).
+
+weighting_specs <- dplyr::bind_rows(
+  
+  # GLM logistic regression, ATO estimand (average treatment in the overlap)
+  make_weighting_spec(
+    weighting_id   = "glm_ato",
+    weight_formula = ~ aet + srtm + tpi + def + chili + nfg_factor,
+    method         = "glm",
+    estimand       = "ATO",
+    weighting_name = "topoclimnfg"
+  )
+  
+  # Add further weighting specs here as needed, e.g.:
+  # make_weighting_spec(
+  #   weighting_id   = "gbm_ate",
+  #   weight_formula = ~ biotic_relaxedforestnorm_5_yrs_prior_sum_yot
+  #                      + pdsi_annual_5_yrs_prior_sum_yot
+  #                      + aet + srtm + tpi,
+  #   method         = "gbm",
+  #   estimand       = "ATE",
+  #   weighting_name = "v2"    # → column "gbm_ate_v2_weights"
+  # )
+  
 )
 
 
-treatment_group_specs <- treatment_group_specs[3,]
-
 # ══════════════════════════════════════════════════════════════════════════════
-# 6. Model specs
+# 7. Model specs
 # ══════════════════════════════════════════════════════════════════════════════
 # formula_template uses {outcome} as the only glue placeholder.
-# estimator_type controls post-processing: "sunab" extracts event-time support;
-# "twfe" skips that step.
-#
-# Both a Sun-Abraham spec and a plain TWFE spec are defined here. Comment out
-# whichever you don't need, or pass just one to run_experiment().
+# weights_col: name of the weight column to pass to feols(). Must match a
+#   column produced by run_weighting_experiment() for the same subset x group
+#   combination. NA_character_ (default) = unweighted.
 
 model_specs <- dplyr::bind_rows(
   
-  # ── Sun-Abraham (preferred for staggered treatment) ────────────────────────
+  # ── Unweighted Sun-Abraham ─────────────────────────────────────────────────
   make_model_spec(
     model_id         = "b_pdsi_sunab_twfe",
     formula_template = paste0(
@@ -312,32 +357,42 @@ model_specs <- dplyr::bind_rows(
       " | pt_id + year"
     ),
     estimator_type   = "sunab",
-    term_pattern     = "^year::"   # regex flagging event-time coefficients
+    term_pattern     = "^year::",
+    weights_col      = NA_character_   # unweighted
   ),
   
-  # ── Plain TWFE (for comparison / robustness checks) ────────────────────────
+  # ── Weighted Sun-Abraham (GLM ATO) ────────────────────────────────────────
   make_model_spec(
-    model_id         = "b_pdsi_twfe",
+    model_id         = "b_pdsi_sunab_twfe_glmatotopoclimnfg",
     formula_template = paste0(
       "{outcome} ~ biotic_relaxedforestnorm + pdsi_annual",
-      " + i(rel_year, ref = -6)",   # assumes a pre-built rel_year column in data
+      " + sunab(FirstTreat, year, ref.p = -6)",
       " | pt_id + year"
     ),
-    estimator_type   = "twfe",
-    term_pattern     = "^rel_year::"
-  )
+    estimator_type   = "sunab",
+    term_pattern     = "^year::",
+    weights_col      = "glm_ato_topoclimnfg_weights"
+  ),
+  
+  # ── Plain TWFE (unweighted, for robustness) ────────────────────────────────
+  # make_model_spec(
+  #   model_id         = "b_pdsi_twfe",
+  #   formula_template = paste0(
+  #     "{outcome} ~ biotic_relaxedforestnorm + pdsi_annual",
+  #     " + i(rel_year, ref = -6)",
+  #     " | pt_id + year"
+  #   ),
+  #   estimator_type   = "twfe",
+  #   term_pattern     = "^rel_year::",
+  #   weights_col      = NA_character_
+  # )
   
 )
 
-model_specs <- model_specs[1,]
-
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 7. Vcov specs
+# 8. Vcov specs
 # ══════════════════════════════════════════════════════════════════════════════
-# vcov_vars lists every column the SE estimator needs (used to ensure those
-# columns are retained before the model is fitted).
-# lat/lon column names stay here (not in dataset_spec) for flexibility.
 
 vcov_specs <- tibble::tibble(
   vcov_id = c(
@@ -374,11 +429,10 @@ vcov_specs <- tibble::tibble(
 
 vcov_specs <- vcov_specs[3,]
 
+
 # ══════════════════════════════════════════════════════════════════════════════
-# 8. Optional: group palette
+# Optional: group palette
 # ══════════════════════════════════════════════════════════════════════════════
-# Named character vector mapping subgroup labels to hex colours used in plots.
-# NULL is fine if you don't use colours downstream.
 
 group_palette <- c(
   "f"   = "#E69F00",   # fire only
@@ -389,93 +443,130 @@ group_palette <- c(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 9. Preview the run grid
+# 9. Preview run grid
 # ══════════════════════════════════════════════════════════════════════════════
-# Inspect what will be run before committing. Nothing is executed here.
 
 preview_grid <- tidyr::crossing(
   analysis_subset_specs |> dplyr::select(subset_id),
   outcome_specs,
   treatment_group_specs |> dplyr::select(group_id),
-  model_specs |> dplyr::select(model_id, estimator_type)
+  model_specs |> dplyr::select(model_id, estimator_type, weights_col)
 ) |>
   dplyr::mutate(
     run_id = glue::glue("{subset_id}__{outcome}__{group_id}__{model_id}")
   )
 
 message(glue::glue("Total runs planned: {nrow(preview_grid)}"))
-print(preview_grid |> dplyr::select(subset_id, outcome, group_id, model_id, estimator_type))
+print(preview_grid |> dplyr::select(subset_id, outcome, group_id, model_id, weights_col))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 10. Run experiment — ecoregion subsets, Sun-Abraham only
+# 10. Run weighting experiment
 # ══════════════════════════════════════════════════════════════════════════════
+# Must run BEFORE run_experiment() for any model_specs rows with weights_col
+# set to a non-NA value.
+#
+# Only subsets with a non-NULL short_data_source are included here. Manual
+# subsets without short_data_source are not passed to this call.
+#
+# Comment out this entire block if running an unweighted-only analysis.
+
+# weighting_subsets <- dplyr::bind_rows(
+#   ecoregion_subset_specs,
+#   all_eco_subset_spec
+# )
+
+
+weighting_subsets <- analysis_subset_specs
+
+results_weighting <- run_weighting_experiment(
+  dataset_spec          = dataset_spec,
+  analysis_subset_specs = weighting_subsets,
+  treatment_group_specs = treatment_group_specs,
+  weighting_specs       = weighting_specs,
+  dir_out               = dir_results,
+  skip_existing         = TRUE,
+  verbose_timing        = TRUE,
+  .progress             = TRUE
+)
+
+failed_weighting <- purrr::keep(results_weighting$run_results, \(r) !is.null(r$error))
+if (length(failed_weighting) > 0) {
+  message("Failed weighting runs:")
+  purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
+}
+
+# Rebuild merged weight registry after weighting is complete:
+rebuild_weighting_tables(dir_out = dir_results, write_csv = TRUE)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 11. Run estimation experiment
+# ══════════════════════════════════════════════════════════════════════════════
+# For weighted model specs, resolve_weights_parquet() (called internally)
+# locates the correct weights parquet from weights/by_run using subset_id x
+# group_id x weights_col. It errors informatively if the weighting step was
+# not run first for a given combination.
+#
 # Split into multiple run_experiment() calls if needed (e.g. different subsets
-# on different days, or a subset of models for a quick robustness check).
-# All calls write into the same dir_results; rebuild() merges them.
+# on different days). All calls write into the same dir_results.
 
 results_sunab <- run_experiment(
-  dataset_spec           = dataset_spec,
-  analysis_subset_specs  = analysis_subset_specs,
-  outcome_specs          = outcome_specs,
-  treatment_group_specs  = treatment_group_specs,
-  model_specs            = model_specs |> dplyr::filter(estimator_type == "sunab"),
-  vcov_specs             = vcov_specs,
-  dir_out                = dir_results,
-  group_palette          = group_palette,
-  ci_level               = 0.95,
-  run_estimation         = TRUE,
-  run_descriptive        = TRUE,
-  descriptive_args       = list(
+  dataset_spec          = dataset_spec,
+  analysis_subset_specs = analysis_subset_specs,
+  outcome_specs         = outcome_specs,
+  treatment_group_specs = treatment_group_specs,
+  model_specs           = model_specs |> dplyr::filter(estimator_type == "sunab"),
+  vcov_specs            = vcov_specs,
+  dir_out               = dir_results,
+  group_palette         = group_palette,
+  ci_level              = 0.95,
+  run_estimation        = TRUE,
+  run_descriptive       = FALSE,
+  descriptive_args      = list(
     treated_year_var = "burn_year",
     control_year_var = "mock_burn_year"
   ),
-  skip_existing          = TRUE,
-  write_vcov             = FALSE,
-  verbose_timing         = TRUE,
-  .progress              = TRUE
+  skip_existing         = TRUE,
+  write_vcov            = FALSE,
+  verbose_timing        = TRUE,
+  .progress             = TRUE
 )
 
-# Inspect which runs failed (if any):
 failed_sunab <- purrr::keep(results_sunab$run_results, \(r) !is.null(r$error))
 if (length(failed_sunab) > 0) {
-  message("Failed runs:")
+  message("Failed estimation runs:")
   purrr::walk(failed_sunab, \(r) message("  ", r$run_id, ": ", r$error))
 }
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 11. Run experiment — burn-year window subsets (manual), both estimators
-# ══════════════════════════════════════════════════════════════════════════════
-# Example of a second experiment call writing into the same dir_results.
-# Uncomment when ready to run.
+# ── Optional second call — burn-year window subsets, both estimators ──────────
+# (unweighted because manual_subset_specs have no short_data_source)
 
 # results_burnyear <- run_experiment(
-#   dataset_spec           = dataset_spec,
-#   analysis_subset_specs  = manual_subset_specs,
-#   outcome_specs          = outcome_specs,
-#   treatment_group_specs  = treatment_group_specs,
-#   model_specs            = model_specs,   # runs both sunab and twfe
-#   vcov_specs             = vcov_specs,
-#   dir_out                = dir_results,
-#   group_palette          = group_palette,
-#   ci_level               = 0.95,
-#   run_estimation         = TRUE,
-#   run_descriptive        = FALSE,
-#   skip_existing          = TRUE,
-#   write_vcov             = FALSE,
-#   verbose_timing         = TRUE,
-#   .progress              = TRUE
+#   dataset_spec          = dataset_spec,
+#   analysis_subset_specs = manual_subset_specs,
+#   outcome_specs         = outcome_specs,
+#   treatment_group_specs = treatment_group_specs,
+#   model_specs           = model_specs,   # runs all models in model_specs
+#   vcov_specs            = vcov_specs,
+#   dir_out               = dir_results,
+#   group_palette         = group_palette,
+#   ci_level              = 0.95,
+#   run_estimation        = TRUE,
+#   run_descriptive       = FALSE,
+#   skip_existing         = TRUE,
+#   write_vcov            = FALSE,
+#   verbose_timing        = TRUE,
+#   .progress             = TRUE
 # )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 12. Rebuild merged output tables
 # ══════════════════════════════════════════════════════════════════════════════
-# Call rebuild at any point after one or more run_experiment() calls.
-# It scans all by_run folders under dir_results, deduplicates on run_id
-# (keeping the most recently written file), and writes merged tables to
-# dir_results/tables/all/ and dir_results/descriptive/all/.
+# Call at any point after one or more run_experiment() calls. Scans all
+# by_run folders under dir_results, deduplicates on run_id (most recent file),
+# writes merged tables to tables/all/ and descriptive/all/.
 
 all_estimation_tables <- rebuild_estimation_tables(
   dir_out   = dir_results,
@@ -487,9 +578,10 @@ all_descriptive_tables <- rebuild_descriptive_tables(
   write_csv = TRUE
 )
 
-# Quick summary of what was rebuilt:
 message(glue::glue(
-  "Estimation table rows: {nrow(all_estimation_tables$coef_expanded_vcov)}\n",
-  "Unique run_ids:        {dplyr::n_distinct(all_estimation_tables$run_registry$run_id)}\n",
-  "Descriptive rows:      {nrow(all_descriptive_tables$event_time_trajectory)}"
+  "Estimation rows:   {nrow(all_estimation_tables$coef_expanded_vcov)}\n",
+  "Unique run_ids:    {dplyr::n_distinct(all_estimation_tables$run_registry$run_id)}\n",
+  "Descriptive rows:  {nrow(all_descriptive_tables$event_time_trajectory)}"
 ))
+
+

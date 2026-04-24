@@ -815,7 +815,67 @@ for (sid in sort(unique(coef_tbl$subset_id))) {
   )
 }
 ```
+compare weighted to non-weighted
 
+```{r outcome-compare}
+#| message: false
+#| warning: false
+#| fig-width: 10
+#| fig-height: 5
+
+dir_outcome_compare <- file.path(dir_figs, "outcome_compare")
+dir_ensure(dir_outcome_compare)
+
+# Iterate over subset_id (replaces analysis_id in old script)
+for (sid in sort(unique(coef_tbl$subset_id))) {
+
+  p <- plot_event_study(
+    coef_tbl  = coef_tbl,
+    filters   = list(
+      subset_id = sid,
+      group_id  = "b10_pdsin3t1",
+      vcov_id   = "cluster_eco4",
+      model_id  = "b_pdsi_sunab_twfe"
+    ),
+    color_var             = "subgroup",
+    color_values          = subgroup_pal,
+    linetype_var          = NULL,
+    facet_var             = "outcome",
+    facet_ncol            = 2,
+    facet_scales          = "fixed",
+    legend_title_color    = "Subgroup",
+    legend_title_linetype = NULL,
+    n_min_ptids_event     = n_min_ptids_event,
+    n_min_fireids_event   = n_min_fireids_event,
+    n_min_ptids_subgroup  = n_min_ptids_subgroup,
+    n_min_fireids_subgroup = n_min_fireids_subgroup,
+    show_ci               = TRUE,
+    ci_style              = "ribbon",
+    title                 = sid,
+    subtitle              = NULL,
+    baseline              = -6,
+    xlim                  = c(-10, 20),
+    ylim                  = c(-50, 10),
+    show_n                = TRUE,
+    n_legend_var          = NULL,
+    line_size             = 1,
+    point_size            = 1.8,
+    ribbon_alpha          = 0.2,
+    ci_line_alpha         = 0.7,
+    ci_level              = 0.95
+  )
+
+  print(p)
+
+  ggplot2::ggsave(
+    file.path(dir_outcome_compare, glue::glue("outcome_compare_{sid}.png")),
+    plot   = p,
+    units  = "px",
+    width  = 4000,
+    height = 2000
+  )
+}
+```
 
 # Grouping scheme comparison plots
 

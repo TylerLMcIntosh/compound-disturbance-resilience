@@ -186,7 +186,7 @@ process_ecoregion <- function(l3, parquet_path, out_dir, utils_path) {
   # Generate and write datasets
   
   # Short data
-  short_fln <- here(out_dir, glue("dats_short_{l3}.parquet"))
+  short_fln <- here(out_dir, "parquet_short", glue("dats_short_{l3}.parquet"))
   d_short <- d |>
     remove_columns_with_prefix(prefixes = c("^pdsi_summer_\\d{4}$",
                                             "^pdsi_annual_\\d{4}$",
@@ -211,7 +211,7 @@ process_ecoregion <- function(l3, parquet_path, out_dir, utils_path) {
   # sf::st_write(gpkg, gpkg_fln, append = FALSE)
   
   # Long data
-  long_fln <- here(out_dir, glue("dats_long_{l3}.parquet"))
+  long_fln <- here(out_dir, "parquet_long", glue("dats_long_{l3}.parquet"))
   
   # Set up for dydid
   d_long <- d |>
