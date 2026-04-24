@@ -16,7 +16,8 @@ required_pkgs <- c(
   "stringr",
   "tibble",
   "tidyr",
-  "jsonlite"
+  "jsonlite",
+  "tictoc"
 )
 
 missing_pkgs <- required_pkgs[!vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)]

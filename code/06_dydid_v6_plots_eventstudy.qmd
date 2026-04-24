@@ -1,0 +1,1006 @@
+---
+title: "06_dydid"
+author: Tyler L. McIntosh
+date: last-modified
+format:
+  html:
+    embed-resources: true
+    html-math-method: katex
+    css: styles.css
+    toc: true
+    toc-depth: 1
+    toc-title: Contents
+    toc-location: right
+    code-fold: true
+    code-summary: "Show the code"
+---
+
+
+# Setup
+
+```{r setupchunk}
+#| echo: true
+#| message: false
+#| warning: false
+#| results: 'hide'
+
+rm(list = ls())
+
+if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
+library(here)
+
+source(here::here("utils", "functions.R"))
+
+install_load_packages(c(
+  "tidyverse",
+  "glue",
+  "arrow",
+  "here"
+))
+
+# ── Directories ───────────────────────────────────────────────────────────────
+# Point these at the same dir_results used in run_analysis.R.
+
+run_name    <- "GEE_resilience_v6_operational_ss500_ts50000"
+version     <- "v6"
+dir_results <- here::here("results", version)   # shared dir_out from run_analysis.R
+dir_figs    <- here::here("figs", run_name, version)
+
+dir_ensure(c(dir_results, dir_figs))
+
+seed <- 1234
+set.seed(seed)
+```
+
+
+# Load results tables
+
+```{r load-tables}
+dir_all <- file.path(dir_results, "tables", "all")
+
+coef_tbl <- arrow::read_parquet(
+  file.path(dir_all, "coef_expanded_vcov.parquet")
+)
+
+subgroup_tbl <- arrow::read_parquet(
+  file.path(dir_all, "subgroup_run_summary.parquet")
+)
+
+support_tbl <- arrow::read_parquet(
+  file.path(dir_all, "event_time_support.parquet")
+)
+
+registry_tbl <- arrow::read_parquet(
+  file.path(dir_all, "run_registry.parquet")
+)
+
+spec_index_tbl <- arrow::read_parquet(
+  file.path(dir_all, "run_spec_index.parquet")
+)
+
+# ── Quick sanity checks ───────────────────────────────────────────────────────
+
+message("coef_tbl columns:     ", paste(names(coef_tbl), collapse = ", "))
+message("subgroup_tbl columns: ", paste(names(subgroup_tbl), collapse = ", "))
+message("support_tbl columns:  ", paste(names(support_tbl), collapse = ", "))
+
+coef_tbl |> dplyr::count(vcov_id)
+coef_tbl |> dplyr::count(subset_id, group_id, subgroup)
+support_tbl |> dplyr::arrange(group_id, subgroup, event_time)
+```
+
+
+# Plotting functions
+
+```{r plotting-helpers}
+
+# ── Null coalescing (also exported by portable_sunab.R; safe to redefine) ─────
+`%||%` <- function(x, y) if (!is.null(x)) x else y
+
+
+# ── apply_saved_filters ───────────────────────────────────────────────────────
+#
+# Filter a data frame by a named list of allowed values.
+# Each name must be a column in df; each value is a vector of allowed values,
+# NULL (skip), or NA (keep only NA rows).
+#
+apply_saved_filters <- function(df, filters = list()) {
+  if (length(filters) == 0) return(df)
+
+  for (nm in names(filters)) {
+    if (!nm %in% names(df)) {
+      stop("Filter column not found in data: ", nm)
+    }
+
+    vals <- filters[[nm]]
+    if (is.null(vals)) next
+
+    if (length(vals) == 1 && is.na(vals)) {
+      df <- df |> dplyr::filter(is.na(.data[[nm]]))
+    } else {
+      df <- df |> dplyr::filter(.data[[nm]] %in% vals)
+    }
+  }
+
+  df
+}
+
+
+# ── format_n_label ────────────────────────────────────────────────────────────
+#
+# Format a numeric vector as "prefix=N" or "prefix=min–max" for legend labels.
+#
+format_n_label <- function(x, prefix = "n") {
+  x <- unique(stats::na.omit(x))
+  if (length(x) == 0) return(paste0(prefix, "=NA"))
+  if (length(x) == 1) return(paste0(prefix, "=", format(x, big.mark = ",")))
+  paste0(
+    prefix, "=",
+    format(min(x), big.mark = ","), "\u2013",
+    format(max(x), big.mark = ",")
+  )
+}
+
+
+# ── make_legend_labels_with_n ─────────────────────────────────────────────────
+#
+# Build a named character vector of legend labels that include sample-size
+# annotations, keyed by the unique values of `var`.
+#
+# Column names updated to match new pipeline output:
+#   n_pt_col    -> "n_treated_units"   (was "n_treated_units" — unchanged)
+#   n_event_col -> "n_treated_events"  (was "n_treated_events" — unchanged)
+#
+make_legend_labels_with_n <- function(df,
+                                       var,
+                                       n_pt_col    = "n_treated_units",
+                                       n_event_col = "n_treated_events") {
+  if (is.null(var)) return(NULL)
+
+  for (col in c(var, n_pt_col, n_event_col)) {
+    if (!col %in% names(df)) stop("Column not found in data: ", col)
+  }
+
+  df |>
+    dplyr::distinct(
+      .data[[var]],
+      subgroup_run_id,
+      .data[[n_pt_col]],
+      .data[[n_event_col]]
+    ) |>
+    dplyr::group_by(.data[[var]]) |>
+    dplyr::summarise(
+      n_pt_lab    = format_n_label(.data[[n_pt_col]],    prefix = "pts"),
+      n_event_lab = format_n_label(.data[[n_event_col]], prefix = "events"),
+      .groups = "drop"
+    ) |>
+    dplyr::mutate(
+      label = paste0(.data[[var]], " (", n_pt_lab, ", ", n_event_lab, ")")
+    ) |>
+    (\(tbl) stats::setNames(tbl$label, tbl[[var]]))()
+}
+
+
+# ── build_event_study_caption ─────────────────────────────────────────────────
+#
+# Build a multi-line plot caption summarising the key estimation choices.
+# Renamed from build_sunab_caption; now also shows estimator_type when known.
+#
+build_event_study_caption <- function(filters           = list(),
+                                       vcov_label        = NULL,
+                                       estimator_type    = NULL,
+                                       show_ci           = TRUE,
+                                       ci_level          = 0.95,
+                                       n_min_ptids_event      = 0,
+                                       n_min_fireids_event    = 0,
+                                       n_min_ptids_subgroup   = 0,
+                                       n_min_fireids_subgroup = 0) {
+  ci_pct <- round(ci_level * 100)
+
+  estimator_line <- if (!is.null(estimator_type)) {
+    paste0("Estimator: ", estimator_type)
+  } else {
+    "Estimator: Sun-Abraham"
+  }
+
+  base_lines <- c(
+    estimator_line,
+    if (show_ci) paste0(ci_pct, "% confidence intervals shown") else
+                 paste0(ci_pct, "% confidence intervals not shown"),
+    paste0(
+      "N limits (event-time): ",
+      format(n_min_ptids_event,    big.mark = ","), " pts, ",
+      format(n_min_fireids_event,  big.mark = ","), " events"
+    ),
+    paste0(
+      "N limits (subgroup): ",
+      format(n_min_ptids_subgroup,   big.mark = ","), " pts, ",
+      format(n_min_fireids_subgroup, big.mark = ","), " events"
+    )
+  )
+
+  if (!is.null(vcov_label)) {
+    base_lines <- c(base_lines, paste0("Standard errors: ", vcov_label))
+  }
+
+  if (length(filters) > 0) {
+    filter_lines <- purrr::imap_chr(filters, \(v, nm) {
+      if (is.null(v))                    return(paste0(nm, ": NULL"))
+      if (length(v) == 1 && is.na(v))   return(paste0(nm, ": NA"))
+      paste0(nm, ": ", paste(as.character(v), collapse = ", "))
+    })
+    base_lines <- c(base_lines, filter_lines)
+  }
+
+  paste(base_lines, collapse = "\n")
+}
+
+
+# ── plot_event_study ──────────────────────────────────────────────────────────
+#
+# General event-study plot from a coef_tbl produced by portable_sunab.R.
+#
+# Key column name changes vs. the old pipeline:
+#   analysis_id  -> subset_id   (the analysis subset identifier)
+#
+# All other column names used as aesthetics or filters are unchanged:
+#   outcome, group_id, subgroup, model_id, vcov_id, vcov_label,
+#   term_value, term_matches_pattern, estimate, ci_lower, ci_upper,
+#   n_ptids, n_fireids, n_treated_units, n_treated_events,
+#   subgroup_run_id, coef_run_id, estimator_type.
+#
+plot_event_study <- function(coef_tbl,
+                              filters            = list(),
+                              color_var,
+                              linetype_var       = NULL,
+                              facet_var          = NULL,
+                              facet_ncol         = NULL,
+                              facet_scales       = "fixed",
+                              show_ci            = TRUE,
+                              ci_style           = c("ribbon", "lines"),
+                              title              = NULL,
+                              subtitle           = NULL,
+                              caption            = NULL,
+                              baseline           = -6,
+                              xlim               = NULL,
+                              ylim               = NULL,
+                              color_values       = NULL,
+                              linetype_values    = NULL,
+                              legend_title_color    = NULL,
+                              legend_title_linetype = NULL,
+                              show_n             = TRUE,
+                              n_legend_var       = NULL,
+                              n_min_ptids_event       = 0,
+                              n_min_fireids_event     = 0,
+                              n_min_ptids_subgroup    = 0,
+                              n_min_fireids_subgroup  = 0,
+                              drop_na_estimate   = TRUE,
+                              drop_baseline_term = FALSE,
+                              line_size          = 0.9,
+                              point_size         = 1.8,
+                              ribbon_alpha       = 0.18,
+                              ci_line_alpha      = 0.7,
+                              ci_level           = 0.95) {
+
+  ci_style <- match.arg(ci_style)
+
+  # ── Column checks ────────────────────────────────────────────────────────────
+
+  needed_cols <- c(
+    "term_value", "estimate", "ci_lower", "ci_upper",
+    "subgroup_run_id", "coef_run_id",
+    "n_ptids", "n_fireids",
+    "n_treated_units", "n_treated_events"
+  )
+  missing_needed <- setdiff(needed_cols, names(coef_tbl))
+  if (length(missing_needed) > 0) {
+    stop("coef_tbl is missing required columns: ",
+         paste(missing_needed, collapse = ", "))
+  }
+
+  aes_vars <- stats::na.omit(c(color_var, linetype_var, facet_var))
+  missing_aes <- setdiff(aes_vars, names(coef_tbl))
+  if (length(missing_aes) > 0) {
+    stop("Aesthetic columns missing from coef_tbl: ",
+         paste(missing_aes, collapse = ", "))
+  }
+
+  # ── Filter and trim ──────────────────────────────────────────────────────────
+
+  d <- coef_tbl |> apply_saved_filters(filters = filters)
+
+  if ("term_matches_pattern" %in% names(d)) {
+    d <- d |> dplyr::filter(.data$term_matches_pattern)
+  }
+
+  d <- d |> dplyr::filter(!is.na(.data$term_value))
+
+  if (drop_na_estimate)   d <- d |> dplyr::filter(!is.na(.data$estimate))
+  if (drop_baseline_term) d <- d |> dplyr::filter(.data$term_value != baseline)
+  if (!is.null(xlim)) {
+    d <- d |> dplyr::filter(
+      .data$term_value >= xlim[1], .data$term_value <= xlim[2]
+    )
+  }
+
+  # ── Sample-size filters ──────────────────────────────────────────────────────
+
+  subgroup_keep <- d |>
+    dplyr::distinct(subgroup_run_id, n_treated_units, n_treated_events) |>
+    dplyr::filter(
+      .data$n_treated_units >= n_min_ptids_subgroup,
+      is.na(.data$n_treated_events) |
+        .data$n_treated_events >= n_min_fireids_subgroup
+    ) |>
+    dplyr::pull(subgroup_run_id)
+
+  d <- d |>
+    dplyr::filter(.data$subgroup_run_id %in% subgroup_keep) |>
+    dplyr::filter(
+      .data$n_ptids >= n_min_ptids_event,
+      is.na(.data$n_fireids) | .data$n_fireids >= n_min_fireids_event
+    )
+
+  # ── Build caption ────────────────────────────────────────────────────────────
+
+  estimator_types <- if ("estimator_type" %in% names(d)) {
+    unique(stats::na.omit(as.character(d$estimator_type)))
+  } else {
+    NULL
+  }
+  estimator_caption <- if (length(estimator_types) == 1) estimator_types else NULL
+
+  vcov_labels <- unique(stats::na.omit(as.character(
+    if (nrow(d) > 0) d$vcov_label else coef_tbl$vcov_label
+  )))
+  vcov_caption <- if (length(vcov_labels) == 1) {
+    vcov_labels
+  } else if (length(vcov_labels) > 1) {
+    paste(vcov_labels, collapse = ", ")
+  } else {
+    NULL
+  }
+
+  caption_auto <- build_event_study_caption(
+    filters                = filters,
+    vcov_label             = vcov_caption,
+    estimator_type         = estimator_caption,
+    show_ci                = show_ci,
+    ci_level               = ci_level,
+    n_min_ptids_event      = n_min_ptids_event,
+    n_min_fireids_event    = n_min_fireids_event,
+    n_min_ptids_subgroup   = n_min_ptids_subgroup,
+    n_min_fireids_subgroup = n_min_fireids_subgroup
+  )
+  if (!is.null(caption)) caption_auto <- paste(caption_auto, caption, sep = "\n")
+
+  # ── Empty-data fallback ──────────────────────────────────────────────────────
+
+  if (nrow(d) == 0) {
+    p <- ggplot2::ggplot() +
+      ggplot2::geom_blank() +
+      ggplot2::geom_vline(xintercept = 0,        linewidth = 0.6,
+                          linetype = "dotted", color = "red") +
+      ggplot2::geom_hline(yintercept = 0,        linewidth = 0.4,
+                          linetype = "solid",  color = "grey40") +
+      ggplot2::labs(title = title, subtitle = subtitle,
+                    caption = caption_auto, x = "Event time", y = "Effect") +
+      ggplot2::theme_minimal(base_size = 12) +
+      ggplot2::theme(panel.grid.minor = ggplot2::element_blank(),
+                     legend.position = "none")
+    if (!is.null(xlim) || !is.null(ylim)) {
+      p <- p + ggplot2::coord_cartesian(xlim = xlim, ylim = ylim)
+    }
+    return(p)
+  }
+
+  # ── Y-axis label ─────────────────────────────────────────────────────────────
+
+  outcomes <- unique(stats::na.omit(as.character(d$outcome)))
+  y_label  <- if (length(outcomes) == 1) paste0("Effect on ", outcomes) else "Effect"
+
+  # ── Legend labels (with optional N annotation) ───────────────────────────────
+
+  if (is.null(n_legend_var)) n_legend_var <- color_var %||% linetype_var
+
+  color_labels         <- NULL
+  linetype_labels      <- NULL
+  color_values_plot    <- NULL
+  linetype_values_plot <- NULL
+  color_breaks         <- NULL
+  linetype_breaks      <- NULL
+
+  if (!is.null(color_var)) {
+    color_labels <- if (show_n && identical(n_legend_var, color_var)) {
+      make_legend_labels_with_n(d, color_var)
+    } else {
+      vals <- d |>
+        dplyr::distinct(.data[[color_var]]) |>
+        dplyr::pull(.data[[color_var]]) |>
+        as.character()
+      stats::setNames(vals, vals)
+    }
+
+    d <- d |>
+      dplyr::mutate(
+        color_plot = dplyr::recode(as.character(.data[[color_var]]), !!!color_labels)
+      )
+    color_breaks <- unname(color_labels)
+
+    if (!is.null(color_values)) {
+      if (is.null(names(color_values))) stop("color_values must be a named vector.")
+      missing_nms <- setdiff(names(color_labels), names(color_values))
+      if (length(missing_nms) > 0) {
+        stop("color_values is missing names for: ", paste(missing_nms, collapse = ", "))
+      }
+      color_values_plot <- stats::setNames(
+        color_values[names(color_labels)],
+        unname(color_labels)
+      )
+    }
+  }
+
+  if (!is.null(linetype_var)) {
+    linetype_labels <- if (show_n && identical(n_legend_var, linetype_var)) {
+      make_legend_labels_with_n(d, linetype_var)
+    } else {
+      vals <- d |>
+        dplyr::distinct(.data[[linetype_var]]) |>
+        dplyr::pull(.data[[linetype_var]]) |>
+        as.character()
+      stats::setNames(vals, vals)
+    }
+
+    d <- d |>
+      dplyr::mutate(
+        linetype_plot = dplyr::recode(as.character(.data[[linetype_var]]), !!!linetype_labels)
+      )
+    linetype_breaks <- unname(linetype_labels)
+
+    if (!is.null(linetype_values)) {
+      if (is.null(names(linetype_values))) stop("linetype_values must be a named vector.")
+      missing_nms <- setdiff(names(linetype_labels), names(linetype_values))
+      if (length(missing_nms) > 0) {
+        stop("linetype_values is missing names for: ", paste(missing_nms, collapse = ", "))
+      }
+      linetype_values_plot <- stats::setNames(
+        linetype_values[names(linetype_labels)],
+        unname(linetype_labels)
+      )
+    }
+  }
+
+  # ── group aesthetic ───────────────────────────────────────────────────────────
+  # Build a plain character group ID rather than using interaction(), which
+  # produces a factor whose levels may not align across rows after filtering,
+  # causing geom_line to silently draw nothing.
+
+  d <- d |>
+    dplyr::arrange(.data$term_value) |>
+    dplyr::mutate(
+      plot_group = paste(.data$subgroup_run_id, .data$vcov_id, sep = "__")
+    )
+
+  # ── Base plot ─────────────────────────────────────────────────────────────────
+
+  p <- ggplot2::ggplot(
+    d,
+    ggplot2::aes(x = .data$term_value, y = .data$estimate, group = .data$plot_group)
+  )
+
+  # ── CI ribbon ────────────────────────────────────────────────────────────────
+  # geom_ribbon fill is added as a separate aes() call per branch so that NULL
+  # is never passed inside aes() — that silently breaks rendering.
+
+  if (show_ci && ci_style == "ribbon") {
+    if (!is.null(color_var)) {
+      p <- p + ggplot2::geom_ribbon(
+        ggplot2::aes(ymin = .data$ci_lower, ymax = .data$ci_upper,
+                     fill = .data$color_plot),
+        alpha = ribbon_alpha, linewidth = 0, show.legend = FALSE
+      )
+    } else {
+      p <- p + ggplot2::geom_ribbon(
+        ggplot2::aes(ymin = .data$ci_lower, ymax = .data$ci_upper),
+        alpha = ribbon_alpha, linewidth = 0, show.legend = FALSE
+      )
+    }
+  }
+
+  # ── CI lines ─────────────────────────────────────────────────────────────────
+
+  if (show_ci && ci_style == "lines") {
+    if (!is.null(color_var) && !is.null(linetype_var)) {
+      p <- p +
+        ggplot2::geom_line(
+          ggplot2::aes(y = .data$ci_lower,
+                       color = .data$color_plot, linetype = .data$linetype_plot),
+          alpha = ci_line_alpha, linewidth = 0.45
+        ) +
+        ggplot2::geom_line(
+          ggplot2::aes(y = .data$ci_upper,
+                       color = .data$color_plot, linetype = .data$linetype_plot),
+          alpha = ci_line_alpha, linewidth = 0.45
+        )
+    } else if (!is.null(color_var)) {
+      p <- p +
+        ggplot2::geom_line(
+          ggplot2::aes(y = .data$ci_lower, color = .data$color_plot),
+          alpha = ci_line_alpha, linewidth = 0.45
+        ) +
+        ggplot2::geom_line(
+          ggplot2::aes(y = .data$ci_upper, color = .data$color_plot),
+          alpha = ci_line_alpha, linewidth = 0.45
+        )
+    } else if (!is.null(linetype_var)) {
+      p <- p +
+        ggplot2::geom_line(
+          ggplot2::aes(y = .data$ci_lower, linetype = .data$linetype_plot),
+          alpha = ci_line_alpha, linewidth = 0.45
+        ) +
+        ggplot2::geom_line(
+          ggplot2::aes(y = .data$ci_upper, linetype = .data$linetype_plot),
+          alpha = ci_line_alpha, linewidth = 0.45
+        )
+    } else {
+      p <- p +
+        ggplot2::geom_line(
+          ggplot2::aes(y = .data$ci_lower),
+          alpha = ci_line_alpha, linewidth = 0.45
+        ) +
+        ggplot2::geom_line(
+          ggplot2::aes(y = .data$ci_upper),
+          alpha = ci_line_alpha, linewidth = 0.45
+        )
+    }
+  }
+
+  # ── Estimate lines + points ───────────────────────────────────────────────────
+
+  if (!is.null(color_var) && !is.null(linetype_var)) {
+    p <- p +
+      ggplot2::geom_line(
+        ggplot2::aes(color = .data$color_plot, linetype = .data$linetype_plot),
+        linewidth = line_size
+      ) +
+      ggplot2::geom_point(
+        ggplot2::aes(color = .data$color_plot),
+        size = point_size
+      )
+  } else if (!is.null(color_var)) {
+    p <- p +
+      ggplot2::geom_line(
+        ggplot2::aes(color = .data$color_plot),
+        linewidth = line_size
+      ) +
+      ggplot2::geom_point(
+        ggplot2::aes(color = .data$color_plot),
+        size = point_size
+      )
+  } else if (!is.null(linetype_var)) {
+    p <- p +
+      ggplot2::geom_line(
+        ggplot2::aes(linetype = .data$linetype_plot),
+        linewidth = line_size
+      ) +
+      ggplot2::geom_point(size = point_size)
+  } else {
+    p <- p +
+      ggplot2::geom_line(linewidth = line_size) +
+      ggplot2::geom_point(size = point_size)
+  }
+
+  # ── Reference lines ───────────────────────────────────────────────────────────
+
+  p <- p +
+    ggplot2::geom_hline(yintercept = 0,        linewidth = 0.4,
+                        linetype = "solid",  color = "grey40") +
+    ggplot2::geom_vline(xintercept = baseline, linewidth = 0.4,
+                        linetype = "dashed", color = "grey40") +
+    ggplot2::geom_vline(xintercept = 0,        linewidth = 0.6,
+                        linetype = "dotted", color = "red")
+
+  # ── Facets ────────────────────────────────────────────────────────────────────
+
+  if (!is.null(facet_var)) {
+    p <- p + ggplot2::facet_wrap(
+      stats::as.formula(paste("~", facet_var)),
+      ncol   = facet_ncol,
+      scales = facet_scales
+    )
+  }
+
+  # ── Scales ────────────────────────────────────────────────────────────────────
+
+  if (!is.null(color_var)) {
+    if (!is.null(color_values_plot)) {
+      p <- p +
+        ggplot2::scale_color_manual(
+          values = color_values_plot,
+          breaks = color_breaks,
+          name   = legend_title_color %||% color_var
+        )
+      if (show_ci && ci_style == "ribbon") {
+        p <- p +
+          ggplot2::scale_fill_manual(
+            values = color_values_plot,
+            breaks = color_breaks,
+            guide  = "none"
+          )
+      }
+    } else {
+      p <- p + ggplot2::labs(color = legend_title_color %||% color_var)
+    }
+  }
+
+  if (!is.null(linetype_var)) {
+    if (!is.null(linetype_values_plot)) {
+      p <- p +
+        ggplot2::scale_linetype_manual(
+          values = linetype_values_plot,
+          breaks = linetype_breaks,
+          name   = legend_title_linetype %||% linetype_var
+        )
+    } else {
+      p <- p + ggplot2::labs(linetype = legend_title_linetype %||% linetype_var)
+    }
+  }
+
+  # ── Labels and theme ──────────────────────────────────────────────────────────
+
+  p <- p +
+    ggplot2::labs(
+      title    = title,
+      subtitle = subtitle,
+      caption  = caption_auto,
+      x        = "Event time",
+      y        = y_label
+    ) +
+    ggplot2::theme_minimal(base_size = 12) +
+    ggplot2::theme(
+      panel.grid.minor = ggplot2::element_blank(),
+      legend.position  = "right",
+      strip.text       = ggplot2::element_text(face = "bold")
+    )
+
+  # ── Coord cartesian (only added when needed) ──────────────────────────────────
+  # Never add coord_cartesian conditionally with + if(...) — when the condition
+  # is FALSE that evaluates to p + FALSE which corrupts the plot object.
+
+  if (!is.null(xlim) || !is.null(ylim)) {
+    p <- p + ggplot2::coord_cartesian(xlim = xlim, ylim = ylim)
+  }
+
+  p
+}
+```
+
+
+# Palette helpers
+
+```{r palette-helpers}
+
+# ── make_named_palette ────────────────────────────────────────────────────────
+#
+# Build a named colour vector from a set of level values.
+#
+make_named_palette <- function(levels, palette = "Okabe-Ito") {
+  levels <- unique(as.character(levels))
+  vals   <- grDevices::palette.colors(length(levels), palette = palette)
+  stats::setNames(vals, levels)
+}
+
+
+# ── make_named_palette_from_tbl ───────────────────────────────────────────────
+#
+# Build a named colour vector by pulling unique values from a table column.
+# Updated to use `subset_id` as the default column (was `analysis_id`).
+#
+make_named_palette_from_tbl <- function(tbl,
+                                         var,
+                                         palette     = "Okabe-Ito",
+                                         levels      = NULL,
+                                         sort_levels = TRUE) {
+  if (!var %in% names(tbl)) stop("Column not found in table: ", var)
+
+  if (is.null(levels)) {
+    levels <- tbl |>
+      dplyr::distinct(.data[[var]]) |>
+      dplyr::pull(.data[[var]]) |>
+      as.character()
+    if (sort_levels) levels <- sort(levels)
+  } else {
+    levels <- as.character(levels)
+  }
+
+  if (length(levels) == 0) stop("No levels found for palette.")
+
+  vals <- grDevices::palette.colors(n = length(levels), palette = palette)
+  stats::setNames(vals, levels)
+}
+```
+
+
+# Plot parameters
+
+```{r plot-params}
+
+grDevices::palette.pals()   # list available palettes
+
+# ── Subgroup palette ──────────────────────────────────────────────────────────
+subgroup_pal <- c(
+  f   = "red3",
+  bf  = "forestgreen",
+  df  = "goldenrod2",
+  bdf = "purple"
+)
+
+# ── Subset (ecoregion / analysis partition) palette ───────────────────────────
+# Column is now `subset_id` instead of `analysis_id`.
+subset_pal <- make_named_palette_from_tbl(
+  coef_tbl,
+  var     = "subset_id",
+  palette = "Polychrome 36"
+)
+
+# ── Global N thresholds ───────────────────────────────────────────────────────
+n_min_ptids_event      <- 20
+n_min_fireids_event    <- 2
+n_min_ptids_subgroup   <- 50
+n_min_fireids_subgroup <- 5
+```
+
+
+# Outcome comparison plots
+
+Compare RAP tree vs VCF tree for each analysis subset × grouping scheme,
+one panel per outcome.
+
+```{r outcome-compare}
+#| message: false
+#| warning: false
+#| fig-width: 10
+#| fig-height: 5
+
+dir_outcome_compare <- file.path(dir_figs, "outcome_compare")
+dir_ensure(dir_outcome_compare)
+
+# Iterate over subset_id (replaces analysis_id in old script)
+for (sid in sort(unique(coef_tbl$subset_id))) {
+
+  p <- plot_event_study(
+    coef_tbl  = coef_tbl,
+    filters   = list(
+      subset_id = sid,
+      group_id  = "b10_pdsisumn10",
+      vcov_id   = "cluster_eco4",
+      model_id  = "b_pdsi_sunab_twfe"
+    ),
+    color_var             = "subgroup",
+    color_values          = subgroup_pal,
+    linetype_var          = NULL,
+    facet_var             = "outcome",
+    facet_ncol            = 2,
+    facet_scales          = "fixed",
+    legend_title_color    = "Subgroup",
+    legend_title_linetype = NULL,
+    n_min_ptids_event     = n_min_ptids_event,
+    n_min_fireids_event   = n_min_fireids_event,
+    n_min_ptids_subgroup  = n_min_ptids_subgroup,
+    n_min_fireids_subgroup = n_min_fireids_subgroup,
+    show_ci               = TRUE,
+    ci_style              = "ribbon",
+    title                 = sid,
+    subtitle              = NULL,
+    baseline              = -6,
+    xlim                  = c(-10, 20),
+    ylim                  = c(-50, 10),
+    show_n                = TRUE,
+    n_legend_var          = NULL,
+    line_size             = 1,
+    point_size            = 1.8,
+    ribbon_alpha          = 0.2,
+    ci_line_alpha         = 0.7,
+    ci_level              = 0.95
+  )
+
+  print(p)
+
+  ggplot2::ggsave(
+    file.path(dir_outcome_compare, glue::glue("outcome_compare_{sid}.png")),
+    plot   = p,
+    units  = "px",
+    width  = 4000,
+    height = 2000
+  )
+}
+```
+
+
+# Grouping scheme comparison plots
+
+Compare the four treatment grouping schemes for a fixed outcome and subset.
+
+```{r grouping-compare}
+#| message: false
+#| warning: false
+#| fig-width: 10
+#| fig-height: 5
+
+dir_group_compare <- file.path(dir_figs, "group_compare")
+dir_ensure(dir_group_compare)
+
+for (sid in sort(unique(coef_tbl$subset_id))) {
+  for (outcome_val in unique(coef_tbl$outcome)) {
+
+    p <- plot_event_study(
+      coef_tbl  = coef_tbl,
+      filters   = list(
+        subset_id = sid,
+        outcome   = outcome_val,
+        vcov_id   = "cluster_eco4",
+        model_id  = "b_pdsi_sunab_twfe"
+      ),
+      color_var             = "subgroup",
+      color_values          = subgroup_pal,
+      linetype_var          = NULL,
+      facet_var             = "group_id",
+      facet_ncol            = 2,
+      facet_scales          = "fixed",
+      legend_title_color    = "Subgroup",
+      n_min_ptids_event     = n_min_ptids_event,
+      n_min_fireids_event   = n_min_fireids_event,
+      n_min_ptids_subgroup  = n_min_ptids_subgroup,
+      n_min_fireids_subgroup = n_min_fireids_subgroup,
+      show_ci               = TRUE,
+      ci_style              = "ribbon",
+      title                 = glue::glue("{sid} — {outcome_val}"),
+      baseline              = -6,
+      xlim                  = c(-10, 20),
+      ylim                  = c(-50, 10),
+      show_n                = TRUE,
+      line_size             = 1,
+      point_size            = 1.8,
+      ribbon_alpha          = 0.2,
+      ci_level              = 0.95
+    )
+
+    print(p)
+
+    ggplot2::ggsave(
+      file.path(
+        dir_group_compare,
+        glue::glue("group_compare_{sid}_{outcome_val}.png")
+      ),
+      plot   = p,
+      units  = "px",
+      width  = 4000,
+      height = 2000
+    )
+  }
+}
+```
+
+
+# Vcov sensitivity plots
+
+Compare standard error estimators for a fixed subset × outcome × grouping.
+
+```{r vcov-sensitivity}
+#| message: false
+#| warning: false
+#| fig-width: 12
+#| fig-height: 5
+
+dir_vcov_compare <- file.path(dir_figs, "vcov_compare")
+dir_ensure(dir_vcov_compare)
+
+for (sid in sort(unique(coef_tbl$subset_id))) {
+  for (outcome_val in unique(coef_tbl$outcome)) {
+
+    p <- plot_event_study(
+      coef_tbl  = coef_tbl,
+      filters   = list(
+        subset_id = sid,
+        outcome   = outcome_val,
+        group_id  = "b10_pdsin3t1",
+        model_id  = "b_pdsi_sunab_twfe",
+        subgroup  = "f"
+      ),
+      color_var             = "vcov_label",
+      linetype_var          = NULL,
+      facet_var             = NULL,
+      legend_title_color    = "SE estimator",
+      n_min_ptids_event     = n_min_ptids_event,
+      n_min_fireids_event   = n_min_fireids_event,
+      n_min_ptids_subgroup  = n_min_ptids_subgroup,
+      n_min_fireids_subgroup = n_min_fireids_subgroup,
+      show_ci               = TRUE,
+      ci_style              = "lines",
+      title                 = glue::glue("{sid} — {outcome_val} — vcov sensitivity"),
+      baseline              = -6,
+      xlim                  = c(-10, 20),
+      ylim                  = c(-50, 10),
+      show_n                = FALSE,
+      line_size             = 0.9,
+      point_size            = 1.5,
+      ci_line_alpha         = 0.5,
+      ci_level              = 0.95
+    )
+
+    print(p)
+
+    ggplot2::ggsave(
+      file.path(
+        dir_vcov_compare,
+        glue::glue("vcov_compare_{sid}_{outcome_val}.png")
+      ),
+      plot   = p,
+      units  = "px",
+      width  = 4000,
+      height = 2000
+    )
+  }
+}
+```
+
+
+# Cross-subset comparison (e.g. all ecoregions, one subgroup)
+
+Compare a single subgroup × outcome across all analysis subsets (ecoregions),
+using `subset_id` on the colour or facet aesthetic.
+
+```{r cross-subset}
+#| message: false
+#| warning: false
+#| fig-width: 14
+#| fig-height: 6
+
+dir_subset_compare <- file.path(dir_figs, "subset_compare")
+dir_ensure(dir_subset_compare)
+
+for (outcome_val in unique(coef_tbl$outcome)) {
+
+  p <- plot_event_study(
+    coef_tbl  = coef_tbl,
+    filters   = list(
+      outcome  = outcome_val,
+      group_id = "b10_pdsin3t1",
+      vcov_id  = "cluster_eco4",
+      model_id = "b_pdsi_sunab_twfe",
+      subgroup = "f"
+    ),
+    color_var             = "subset_id",
+    color_values          = subset_pal,
+    linetype_var          = NULL,
+    facet_var             = NULL,
+    legend_title_color    = "Subset",
+    n_min_ptids_event     = n_min_ptids_event,
+    n_min_fireids_event   = n_min_fireids_event,
+    n_min_ptids_subgroup  = n_min_ptids_subgroup,
+    n_min_fireids_subgroup = n_min_fireids_subgroup,
+    show_ci               = FALSE,    # too cluttered with many lines
+    title                 = glue::glue("All subsets — {outcome_val} — subgroup f"),
+    baseline              = -6,
+    xlim                  = c(-10, 20),
+    ylim                  = c(-50, 10),
+    show_n                = TRUE,
+    line_size             = 0.8,
+    point_size            = 1.4,
+    ci_level              = 0.95
+  )
+
+  print(p)
+
+  ggplot2::ggsave(
+    file.path(
+      dir_subset_compare,
+      glue::glue("subset_compare_{outcome_val}.png")
+    ),
+    plot   = p,
+    units  = "px",
+    width  = 5000,
+    height = 2500
+  )
+}
+```
