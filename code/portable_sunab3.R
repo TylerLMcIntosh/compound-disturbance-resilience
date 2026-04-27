@@ -19,7 +19,8 @@
 
 .required_pkgs <- c(
   "arrow", "dplyr", "fixest", "glue", "purrr",
-  "readr", "rlang", "stringr", "tibble", "tidyr", "jsonlite"
+  "readr", "rlang", "stringr", "tibble", "tidyr", "jsonlite",
+  "WeightIt"
 )
 .missing_pkgs <- .required_pkgs[
   !vapply(.required_pkgs, requireNamespace, logical(1), quietly = TRUE)
@@ -593,7 +594,8 @@ run_one_weighting <- function(short_data_source,
     abs        = TRUE,
     pairwise   = TRUE,
     thresholds = c(m = 0.1),
-    var.order  = "unadjusted"
+    var.order  = "unadjusted",
+    stars = "raw"
   ) +
     ggplot2::labs(
       title = as.character(glue::glue(
@@ -614,6 +616,7 @@ run_one_weighting <- function(short_data_source,
     pairwise   = TRUE,
     thresholds = c(m = 0.1),
     var.order  = "unadjusted",
+    stars = "raw",
     which.treat = .all
   ) +
     ggplot2::labs(

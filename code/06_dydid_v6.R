@@ -20,6 +20,15 @@
 #   12. Rebuild merged tables
 # -------------------------------------------------------
 
+Sys.setenv(LD_LIBRARY_PATH = paste(
+  "/opt/conda/lib",
+  Sys.getenv("LD_LIBRARY_PATH"),
+  sep = ":"
+))
+
+Sys.setenv(PATH = paste("/usr/bin:/bin:/usr/local/bin", Sys.getenv("PATH"), sep = ":"))
+Sys.setenv(PKG_CONFIG_PATH = "/usr/lib/x86_64-linux-gnu/pkgconfig")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. Environment setup
@@ -31,14 +40,26 @@ if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
 library(here)
 
 required_script_pkgs <- c(
-  "tidyverse", "fixest", "arrow", "glue", "here"
+  "dplyr", "ggplot2", "tidyr", "readr", "purrr", "tibble", "stringr", "forcats", "fixest", "arrow", "glue", "here"
 )
+
+
 missing_script_pkgs <- required_script_pkgs[
   !vapply(required_script_pkgs, requireNamespace, logical(1), quietly = TRUE)
 ]
 if (length(missing_script_pkgs) > 0) install.packages(missing_script_pkgs)
 
-library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(readr)
+library(tibble)
+library(purrr)
+library(stringr)
+library(forcats)
+library(fixest)
+library(arrow)
+library(glue)
 
 source(here::here("code", "portable_sunab3.R"))
 
@@ -53,7 +74,7 @@ set.seed(seed)
 run_name <- "GEE_resilience_v6_operational_ss500_ts50000"
 version <- "v6"
 
-cyverse <- FALSE
+cyverse <- TRUE
 
 if (cyverse) {
   dir_base    <- file.path(
@@ -179,22 +200,22 @@ manual_subset_specs <- dplyr::bind_rows(
 # ── Combine ───────────────────────────────────────────────────────────────────
 
 analysis_subset_specs <- dplyr::bind_rows(
-  ecoregion_subset_specs,
-  #all_eco_subset_spec
+  #ecoregion_subset_specs,
+  all_eco_subset_spec
   # manual_subset_specs   # uncomment to also run burn-year window subsets
 )
 
 message(glue::glue("Analysis subsets defined: {nrow(analysis_subset_specs)}"))
 
-analysis_subset_specs <- analysis_subset_specs[11,]
+#analysis_subset_specs <- analysis_subset_specs[11,]
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 4. Outcome specs
 # ══════════════════════════════════════════════════════════════════════════════
 
 outcome_specs <- tibble::tibble(
-  outcome = c("rap_tree"#,
-              #"vcf_tree"
+  outcome = c("rap_tree",
+              "vcf_tree"
               )
 )
 
@@ -307,7 +328,7 @@ treatment_group_specs <- dplyr::bind_rows(
   
 )
 
-treatment_group_specs <- treatment_group_specs[2,]
+#treatment_group_specs <- treatment_group_specs[2,]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -408,21 +429,24 @@ model_specs <- dplyr::bind_rows(
 
 vcov_specs <- tibble::tibble(
   vcov_id = c(
-    "iid",
+    #"iid",
     "cluster_pt",
-    "cluster_eco4",
+    #"cluster_eco4",
+    "cluster_eco3",
     "conley_125km_20km"
   ),
   vcov_label = c(
-    "IID Classical",
+    #"IID Classical",
     "Clustered SEs: pt_id",
-    "Clustered SEs: us_l4code",
+    #"Clustered SEs: us_l4code",
+    "Clustered SEs: us_l3code",
     "Conley SEs: 125 km cutoff, 20 km pixel"
   ),
   vcov = list(
-    "iid",
+    #"iid",
     stats::as.formula("~ pt_id"),
-    stats::as.formula("~ us_l4code"),
+    #stats::as.formula("~ us_l4code"),
+    stats::as.formula("~ us_l3code"),
     fixest::vcov_conley(
       lat      = "lat",
       lon      = "long",
@@ -432,14 +456,15 @@ vcov_specs <- tibble::tibble(
     )
   ),
   vcov_vars = list(
-    character(0),
+    #character(0),
     "pt_id",
-    "us_l4code",
+    #"us_l4code",
+    "us_l3code",
     c("lat", "long")
   )
 )
 
-vcov_specs <- vcov_specs[3,]
+#vcov_specs <- vcov_specs[3,]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -540,7 +565,7 @@ results_sunab <- run_experiment(
     control_year_var = "mock_burn_year"
   ),
   skip_existing         = TRUE,
-  write_vcov            = FALSE,
+  write_vcov            = TRUE,
   verbose_timing        = TRUE,
   .progress             = TRUE
 )
