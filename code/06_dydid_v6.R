@@ -137,7 +137,19 @@ ecoregion_subset_specs <- expand_analysis_subset_specs_by_col(
   short_data_source = dir_parquet_short   # NULL if no weighting planned
 )
 
-# ── B) All ecoregions pooled ──────────────────────────────────────────────────
+# ── B) Auto-expand by nfg_group ───────────────────────────────────────────────
+
+forestgroup_subset_specs <- expand_analysis_subset_specs_by_col(
+  long_data_source  = dir_parquet_long,
+  split_col         = "nfg_factor",
+  id_prefix         = "nfg",
+  #base_filter       = ~ year >= 1997,
+  #values            = nfg_values,
+  short_data_source = dir_parquet_short,   # NULL if no weighting planned
+  check_all_files   = TRUE
+)
+
+# ── C) All ecoregions pooled ──────────────────────────────────────────────────
 
 all_eco_subset_spec <- make_analysis_subset_spec(
   subset_id         = "all_ecoregions",
@@ -146,7 +158,7 @@ all_eco_subset_spec <- make_analysis_subset_spec(
   short_data_source = dir_parquet_short   # NULL if no weighting planned
 )
 
-# ── C) Manual subsets — e.g. specific burn-year windows ──────────────────────
+# ── D) Manual subsets — e.g. specific burn-year windows ──────────────────────
 # short_data_source can be NULL here if weighting is not needed for these
 # subsets; they will simply be skipped by run_weighting_experiment().
 

@@ -125,22 +125,54 @@ make_analysis_subset_spec <- function(subset_id,
 #' @param values             If not NULL, restrict to this subset of values.
 #' @param short_data_source  Passed through to make_analysis_subset_spec.
 #'                           NULL if no weighting is planned.
+#' @param check_all_files    TRUE/FALSE - if true, check all files, safer for dictionary/factor columns
 expand_analysis_subset_specs_by_col <- function(long_data_source,
                                                 split_col,
                                                 id_prefix         = split_col,
                                                 base_filter       = NULL,
                                                 values            = NULL,
-                                                short_data_source = NULL) {
+                                                short_data_source = NULL,
+                                                check_all_files   = FALSE) {
   
-  ds <- open_arrow_source(long_data_source)
-  
-  unique_vals <- ds |>
-    dplyr::select(dplyr::all_of(split_col)) |>
-    dplyr::distinct() |>
-    dplyr::collect() |>
-    dplyr::pull(1) |>
-    stats::na.omit() |>
-    sort()
+  if (isTRUE(check_all_files)) {
+    if (length(long_data_source) == 1 && dir.exists(long_data_source)) {
+      parquet_files <- list.files(
+        long_data_source,
+        pattern = "\\.parquet$",
+        full.names = TRUE,
+        recursive = TRUE
+      )
+    } else {
+      parquet_files <- long_data_source
+    }
+    
+    if (length(parquet_files) == 0) {
+      stop("No parquet files found in long_data_source.")
+    }
+    
+    unique_vals <- parquet_files |>
+      purrr::map(\(f) {
+        arrow::read_parquet(f, col_select = dplyr::all_of(split_col)) |>
+          dplyr::pull(dplyr::all_of(split_col)) |>
+          as.character() |>
+          unique()
+      }) |>
+      unlist(use.names = FALSE) |>
+      stats::na.omit() |>
+      unique() |>
+      sort()
+    
+  } else {
+    ds <- open_arrow_source(long_data_source)
+    
+    unique_vals <- ds |>
+      dplyr::select(dplyr::all_of(split_col)) |>
+      dplyr::distinct() |>
+      dplyr::collect() |>
+      dplyr::pull(1) |>
+      stats::na.omit() |>
+      sort()
+  }
   
   if (!is.null(values)) {
     unique_vals <- intersect(unique_vals, values)
@@ -152,6 +184,7 @@ expand_analysis_subset_specs_by_col <- function(long_data_source,
   
   purrr::map_dfr(unique_vals, function(val) {
     combined_filter <- combine_filters(base_filter, build_equality_filter(split_col, val))
+    
     make_analysis_subset_spec(
       subset_id         = as.character(glue::glue("{id_prefix}_{safe_path_component(val)}")),
       long_data_source  = long_data_source,
@@ -482,6 +515,7 @@ run_one_weighting <- function(short_data_source,
   registry_file  <- file.path(run_dir, "registry.parquet")
   bal_rds_file   <- file.path(run_dir, "balance_objects.rds")
   love_plot_file <- file.path(run_dir, "love_plot.png")
+  love_plot_fullpairwise_file <- file.path(run_dir, "love_plot_fullpairwise.png")
   run_spec_file  <- file.path(run_dir, "weight_run_spec.rds")
   
   if (skip_existing && all(file.exists(c(weights_file, registry_file,
@@ -571,6 +605,27 @@ run_one_weighting <- function(short_data_source,
     love_plot_file,
     plot  = love_p,
     width = 2500, height = 2000, units = "px", bg = "white"
+  )
+  
+  love_p_fullpairwise <- cobalt::love.plot(
+    w_out,
+    stats      = "mean.diffs",
+    abs        = TRUE,
+    pairwise   = TRUE,
+    thresholds = c(m = 0.1),
+    var.order  = "unadjusted",
+    which.treat = .all
+  ) +
+    ggplot2::labs(
+      title = as.character(glue::glue(
+        "{subset_id} | {group_id} | {weighting_id} ({method}, {estimand})"
+      ))
+    )
+  
+  ggplot2::ggsave(
+    love_plot_fullpairwise_file,
+    plot  = love_p_fullpairwise,
+    width = 5000, height = 2000, units = "px", bg = "white"
   )
   
   # ── Registry ───────────────────────────────────────────────────────────────
