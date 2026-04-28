@@ -2497,7 +2497,12 @@ extract_coef_table_one_vcov <- function(model, vcov, vcov_id, vcov_label,
                                         meta, term_pattern, ci_level) {
   
   print(glue::glue("Computing vcov coeftable for: {vcov}"))
-  ct     <- fixest::coeftable(model, vcov = vcov)
+  #ct     <- fixest::coeftable(model, vcov = vcov)
+    ct <- if (is.null(vcov)) {
+      fixest::coeftable(model)
+    } else {
+      fixest::coeftable(model, vcov = vcov)
+    }
   ct_tbl <- tibble::as_tibble(as.data.frame(ct), rownames = "term")
   
   se_col <- if ("Std. Error" %in% names(ct_tbl)) "Std. Error" else names(ct_tbl)[3]

@@ -396,7 +396,11 @@ model_specs <- dplyr::bind_rows(
     weights_col      = NA_character_,   # unweighted
     feols_args = list(
       mem.clean = TRUE,
-      nthreads = 1
+      nthreads = 4,
+      data.save = FALSE,
+      demeaned = FALSE,
+      lean = TRUE,
+      vcov = ~ us_l3code
     )
   ),
   
@@ -412,7 +416,11 @@ model_specs <- dplyr::bind_rows(
     weights_col      = "glm_ato_topoclimnfg_weights",
     feols_args = list(
       mem.clean = TRUE,
-      nthreads = 1
+      nthreads = 4,
+      data.save = FALSE,
+      demeaned = FALSE,
+      lean = TRUE,
+      vcov = ~ us_l3code
     )
   ),
   
@@ -437,41 +445,48 @@ model_specs <- dplyr::bind_rows(
 # ══════════════════════════════════════════════════════════════════════════════
 
 vcov_specs <- tibble::tibble(
-  vcov_id = c(
-    #"iid",
-    "cluster_pt",
-    #"cluster_eco4",
-    "cluster_eco3"#,
-    #"conley_125km_20km"
-  ),
-  vcov_label = c(
-    #"IID Classical",
-    "Clustered SEs: pt_id",
-    #"Clustered SEs: us_l4code",
-    "Clustered SEs: us_l3code"#,
-    #"Conley SEs: 125 km cutoff, 20 km pixel"
-  ),
-  vcov = list(
-    #"iid",
-    stats::as.formula("~ pt_id"),
-    #stats::as.formula("~ us_l4code"),
-    stats::as.formula("~ us_l3code")#,
-    # fixest::vcov_conley(
-    #   lat      = "lat",
-    #   lon      = "long",
-    #   cutoff   = 125,
-    #   pixel    = 20,
-    #   distance = "triangular"
-    # )
-  ),
-  vcov_vars = list(
-    #character(0),
-    "pt_id",
-    #"us_l4code",
-    "us_l3code"#,
-    #c("lat", "long")
-  )
+  vcov_id    = "cluster_eco3",
+  vcov_label = "Clustered SEs: us_l3code",
+  vcov       = list(NULL),
+  vcov_vars  = list("us_l3code")
 )
+
+# vcov_specs <- tibble::tibble(
+#   vcov_id = c(
+#     #"iid",
+#     "cluster_pt",
+#     #"cluster_eco4",
+#     "cluster_eco3"#,
+#     #"conley_125km_20km"
+#   ),
+#   vcov_label = c(
+#     #"IID Classical",
+#     "Clustered SEs: pt_id",
+#     #"Clustered SEs: us_l4code",
+#     "Clustered SEs: us_l3code"#,
+#     #"Conley SEs: 125 km cutoff, 20 km pixel"
+#   ),
+#   vcov = list(
+#     #"iid",
+#     stats::as.formula("~ pt_id"),
+#     #stats::as.formula("~ us_l4code"),
+#     stats::as.formula("~ us_l3code")#,
+#     # fixest::vcov_conley(
+#     #   lat      = "lat",
+#     #   lon      = "long",
+#     #   cutoff   = 125,
+#     #   pixel    = 20,
+#     #   distance = "triangular"
+#     # )
+#   ),
+#   vcov_vars = list(
+#     #character(0),
+#     "pt_id",
+#     #"us_l4code",
+#     "us_l3code"#,
+#     #c("lat", "long")
+#   )
+# )
 
 #vcov_specs <- vcov_specs[3,]
 
@@ -574,7 +589,7 @@ results_sunab <- run_experiment(
     control_year_var = "mock_burn_year"
   ),
   skip_existing         = TRUE,
-  write_vcov            = TRUE,
+  write_vcov            = FALSE,
   verbose_timing        = TRUE,
   .progress             = TRUE
 )

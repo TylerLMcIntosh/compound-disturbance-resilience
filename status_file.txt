@@ -118,3 +118,27 @@
 2026-04-28 05:09:56 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [3/4] subgroup=df before df_model subset | R_heap_used=0.2MB R_heap_max=0.8MB
 2026-04-28 05:09:59 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [3/4] subgroup=df df_model n_rows=9966808 n_cols=8 cols=rap_tree, FirstTreat, year, pt_id, fire, b10_pdsin3t1, fireid, us_l3code
 2026-04-28 05:09:59 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [3/4] subgroup=df before feols | R_heap_used=0.7MB R_heap_max=1.4MB
+2026-04-28 20:22:22 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | START run_stub=all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe
+2026-04-28 20:22:22 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 20:22:26 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | after load_arrow_data n_rows=14266990 n_cols=74 | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 20:22:26 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | before apply_treatment_grouping | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 20:22:29 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | after apply_treatment_grouping rm(df) | R_heap_used=0.4MB R_heap_max=1MB
+2026-04-28 20:22:29 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | df_grouped columns [8]: rap_tree, FirstTreat, year, pt_id, fire, b10_pdsin3t1, fireid, us_l3code
+2026-04-28 20:22:30 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | subgroups to fit [4]: bdf, bf, df, f
+2026-04-28 20:22:31 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [1/4] subgroup=bdf SKIP outputs exist
+2026-04-28 20:22:31 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [2/4] subgroup=bf SKIP outputs exist
+2026-04-28 20:22:31 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [3/4] subgroup=df before df_model subset | R_heap_used=0.2MB R_heap_max=0.8MB
+2026-04-28 20:22:33 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [3/4] subgroup=df df_model n_rows=9966808 n_cols=8 cols=rap_tree, FirstTreat, year, pt_id, fire, b10_pdsin3t1, fireid, us_l3code
+2026-04-28 20:22:33 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [3/4] subgroup=df before feols | R_heap_used=0.7MB R_heap_max=1.4MB
+2026-04-28 20:36:42 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | START run_stub=all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe
+2026-04-28 20:36:42 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 20:36:55 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | after load_arrow_data n_rows=14266990 n_cols=74 | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 20:36:55 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | before apply_treatment_grouping | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 20:36:58 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | after apply_treatment_grouping rm(df) | R_heap_used=0.4MB R_heap_max=1MB
+2026-04-28 20:36:58 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | df_grouped columns [8]: rap_tree, FirstTreat, year, pt_id, fire, b10_pdsin3t1, fireid, us_l3code
+2026-04-28 20:36:59 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | subgroups to fit [4]: bdf, bf, df, f
+2026-04-28 20:36:59 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [1/4] subgroup=bdf SKIP outputs exist
+2026-04-28 20:36:59 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [2/4] subgroup=bf SKIP outputs exist
+2026-04-28 20:36:59 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [3/4] subgroup=df before df_model subset | R_heap_used=0.2MB R_heap_max=0.8MB
+2026-04-28 20:37:02 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [3/4] subgroup=df df_model n_rows=9966808 n_cols=8 cols=rap_tree, FirstTreat, year, pt_id, fire, b10_pdsin3t1, fireid, us_l3code
+2026-04-28 20:37:02 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [3/4] subgroup=df before feols | R_heap_used=0.7MB R_heap_max=1.4MB
