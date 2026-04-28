@@ -30,6 +30,8 @@ if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
 library(here)
 
 source(here::here("utils", "functions.R"))
+source(here::here("code", "portable_sunab3.R"))
+
 
 install_load_packages(c(
   "tidyverse",
@@ -58,6 +60,131 @@ set.seed(seed)
 # Load results tables
 
 ```{r load-tables}
+
+rebuild_estimation_tables <- function(dir_out, write_csv = TRUE, recursive = TRUE,
+                                      rebuild_vcov = TRUE) {
+  
+  dir_by_run <- file.path(dir_out, "tables", "by_run")
+  dir_all    <- file.path(dir_out, "tables", "all")
+  
+  if (!dir.exists(dir_by_run)) stop("by_run directory does not exist: ", dir_by_run)
+  dir.create(dir_all, recursive = TRUE, showWarnings = FALSE)
+  
+  find_parquets <- function(pattern) {
+    list.files(dir_by_run, pattern = pattern, recursive = recursive, full.names = TRUE)
+  }
+  
+  coef_files     <- find_parquets("^coef\\.parquet$")
+  subgroup_files <- find_parquets("^subgroup\\.parquet$")
+  support_files  <- find_parquets("^support\\.parquet$")
+  registry_files <- find_parquets("^registry\\.parquet$")
+  run_spec_files <- list.files(dir_by_run, "^run_spec\\.rds$", recursive = recursive, full.names = TRUE)
+  vcov_files     <- if (rebuild_vcov) find_parquets("^vcov\\.parquet$") else character(0)
+  
+  for (nm in c("coef_files", "subgroup_files", "support_files", "registry_files")) {
+    if (length(get(nm)) == 0) {
+      stop("No ", sub("_files", ".parquet", nm), " files found under: ", dir_by_run)
+    }
+  }
+  
+  read_and_dedup <- function(files, id_col) {
+    out <- purrr::map(files, \(f) {
+      x <- arrow::read_parquet(f)
+      
+      x[] <- lapply(x, function(col) {
+        if (inherits(col, "json") || is.list(col)) {
+          as.character(col)
+        } else {
+          col
+        }
+      })
+      
+      x$.mtime <- file.mtime(f)
+      x
+    })
+    
+    dplyr::bind_rows(out) |>
+      dplyr::group_by(dplyr::across(dplyr::all_of(id_col))) |>
+      dplyr::filter(.mtime == max(.mtime)) |>
+      dplyr::ungroup() |>
+      dplyr::select(-.mtime)
+  }
+  
+  coef_tbl     <- read_and_dedup(coef_files,     c("run_id", "subgroup", "term", "vcov_id"))
+  subgroup_tbl <- read_and_dedup(subgroup_files,  c("run_id", "subgroup"))
+  support_tbl  <- read_and_dedup(support_files,   c("run_id", "subgroup", "event_time"))
+  registry_tbl <- read_and_dedup(registry_files,  "run_id")
+  
+  vcov_tbl <- if (rebuild_vcov && length(vcov_files) > 0) {
+    read_and_dedup(vcov_files, c("run_id", "subgroup", "term_i", "term_j", "vcov_id"))
+  } else {
+    NULL
+  }
+  
+  spec_index_tbl <- NULL
+  if (length(run_spec_files) > 0) {
+    spec_index_tbl <- purrr::map_dfr(run_spec_files, \(f) {
+      spec <- readRDS(f)
+      tibble::tibble(
+        run_id               = spec$run_id               %||% NA_character_,
+        subset_id            = spec$subset_id             %||% NA_character_,
+        outcome              = spec$outcome               %||% NA_character_,
+        group_id             = spec$group_id              %||% NA_character_,
+        model_id             = spec$model_id              %||% NA_character_,
+        group_col            = spec$group_col             %||% NA_character_,
+        estimator_type       = spec$estimator_type        %||% NA_character_,
+        formula_template     = spec$formula_template      %||% NA_character_,
+        term_pattern         = spec$term_pattern          %||% NA_character_,
+        weights_col          = spec$weights_col           %||% NA_character_,
+        weights_parquet_path = spec$weights_parquet_path  %||% NA_character_,
+        data_filter          = data_filter_to_chr(spec$data_filter),
+        data_source          = paste(unlist(spec$data_source), collapse = " | "),
+        group_args_json      = as.character(serialize_object_json(spec$group_args)),
+        vcov_ids             = paste(spec$vcov_specs$vcov_id, collapse = " | "),
+        run_spec_file        = f,
+        .mtime               = file.mtime(f)
+      )
+    }) |>
+      dplyr::group_by(run_id) |>
+      dplyr::filter(.mtime == max(.mtime)) |>
+      dplyr::ungroup() |>
+      dplyr::select(-.mtime)
+  }
+  
+  write_pair <- function(tbl, stem) {
+    if (is.null(tbl)) return(list(parquet = NULL, csv = NULL))
+    pq  <- file.path(dir_all, paste0(stem, ".parquet"))
+    csv <- if (write_csv) file.path(dir_all, paste0(stem, ".csv")) else NULL
+    arrow::write_parquet(tbl, pq)
+    if (write_csv) readr::write_csv(tbl, csv)
+    list(parquet = pq, csv = csv)
+  }
+  
+  invisible(list(
+    coef_expanded_vcov   = coef_tbl,
+    subgroup_run_summary = subgroup_tbl,
+    event_time_support   = support_tbl,
+    run_registry         = registry_tbl,
+    vcov_matrices        = vcov_tbl,
+    run_spec_index       = spec_index_tbl,
+    files = list(
+      coef_expanded_vcov   = write_pair(coef_tbl,      "coef_expanded_vcov"),
+      subgroup_run_summary = write_pair(subgroup_tbl,   "subgroup_run_summary"),
+      event_time_support   = write_pair(support_tbl,    "event_time_support"),
+      run_registry         = write_pair(registry_tbl,   "run_registry"),
+      vcov_matrices        = write_pair(vcov_tbl,       "vcov_matrices"),
+      run_spec_index       = write_pair(spec_index_tbl, "run_spec_index")
+    )
+  ))
+}
+
+all_estimation_tables <- rebuild_estimation_tables(
+  dir_out   = dir_results,
+  rebuild_vcov = FALSE,
+  write_csv = TRUE
+)
+
+
 dir_all <- file.path(dir_results, "tables", "all")
 
 coef_tbl <- arrow::read_parquet(
@@ -737,13 +864,13 @@ subgroup_pal <- c(
   bdf = "purple"
 )
 
-# ── Subset (ecoregion / analysis partition) palette ───────────────────────────
-# Column is now `subset_id` instead of `analysis_id`.
-subset_pal <- make_named_palette_from_tbl(
-  coef_tbl,
-  var     = "subset_id",
-  palette = "Polychrome 36"
-)
+# # ── Subset (ecoregion / analysis partition) palette ───────────────────────────
+# # Column is now `subset_id` instead of `analysis_id`.
+# subset_pal <- make_named_palette_from_tbl(
+#   coef_tbl,
+#   var     = "subset_id",
+#   palette = "Polychrome 36"
+# )
 
 # ── Global N thresholds ───────────────────────────────────────────────────────
 n_min_ptids_event      <- 20
@@ -775,7 +902,7 @@ for (sid in sort(unique(coef_tbl$subset_id))) {
     filters   = list(
       subset_id = sid,
       group_id  = "b10_pdsisumn10",
-      vcov_id   = "cluster_eco4",
+      vcov_id   = "cluster_eco3",
       model_id  = "b_pdsi_sunab_twfe"
     ),
     color_var             = "subgroup",
@@ -816,6 +943,8 @@ for (sid in sort(unique(coef_tbl$subset_id))) {
     height = 2000
   )
 }
+
+
 ```
 compare weighted to non-weighted
 
