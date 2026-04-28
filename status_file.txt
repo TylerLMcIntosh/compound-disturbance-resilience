@@ -1,0 +1,120 @@
+2026-04-28 02:40:34 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | START run_stub=all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe
+2026-04-28 02:40:34 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 02:40:44 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe_glmatotopoclimnfg | START run_stub=all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe_glmatotopoclimnfg
+2026-04-28 02:40:44 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe_glmatotopoclimnfg | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 02:41:01 | all_ecoregions__rap_tree__b10_pdsin4t1__b_pdsi_sunab_twfe | START run_stub=all_ecoregions__rap_tree__b10_pdsin4t1__b_pdsi_sunab_twfe
+2026-04-28 02:41:02 | all_ecoregions__rap_tree__b10_pdsin4t1__b_pdsi_sunab_twfe | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 02:41:18 | all_ecoregions__rap_tree__b10_pdsin4t1__b_pdsi_sunab_twfe_glmatotopoclimnfg | START run_stub=all_ecoregions__rap_tree__b10_pdsin4t1__b_pdsi_sunab_twfe_glmatotopoclimnfg
+2026-04-28 02:41:18 | all_ecoregions__rap_tree__b10_pdsin4t1__b_pdsi_sunab_twfe_glmatotopoclimnfg | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 02:41:34 | all_ecoregions__rap_tree__b10_pdsisumn10__b_pdsi_sunab_twfe | START run_stub=all_ecoregions__rap_tree__b10_pdsisumn10__b_pdsi_sunab_twfe
+2026-04-28 02:41:34 | all_ecoregions__rap_tree__b10_pdsisumn10__b_pdsi_sunab_twfe | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 02:41:53 | all_ecoregions__rap_tree__b10_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg | START run_stub=all_ecoregions__rap_tree__b10_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg
+2026-04-28 02:41:53 | all_ecoregions__rap_tree__b10_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 02:42:10 | all_ecoregions__rap_tree__b25_pdsisumn10__b_pdsi_sunab_twfe | START run_stub=all_ecoregions__rap_tree__b25_pdsisumn10__b_pdsi_sunab_twfe
+2026-04-28 02:42:10 | all_ecoregions__rap_tree__b25_pdsisumn10__b_pdsi_sunab_twfe | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 02:42:28 | all_ecoregions__rap_tree__b25_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg | START run_stub=all_ecoregions__rap_tree__b25_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg
+2026-04-28 02:42:28 | all_ecoregions__rap_tree__b25_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 02:42:44 | all_ecoregions__vcf_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | START run_stub=all_ecoregions__vcf_tree__b10_pdsin3t1__b_pdsi_sunab_twfe
+2026-04-28 02:42:44 | all_ecoregions__vcf_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 02:43:07 | all_ecoregions__vcf_tree__b10_pdsin3t1__b_pdsi_sunab_twfe_glmatotopoclimnfg | START run_stub=all_ecoregions__vcf_tree__b10_pdsin3t1__b_pdsi_sunab_twfe_glmatotopoclimnfg
+2026-04-28 02:43:07 | all_ecoregions__vcf_tree__b10_pdsin3t1__b_pdsi_sunab_twfe_glmatotopoclimnfg | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 02:43:24 | all_ecoregions__vcf_tree__b10_pdsin4t1__b_pdsi_sunab_twfe | START run_stub=all_ecoregions__vcf_tree__b10_pdsin4t1__b_pdsi_sunab_twfe
+2026-04-28 02:43:24 | all_ecoregions__vcf_tree__b10_pdsin4t1__b_pdsi_sunab_twfe | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 02:43:41 | all_ecoregions__vcf_tree__b10_pdsin4t1__b_pdsi_sunab_twfe_glmatotopoclimnfg | START run_stub=all_ecoregions__vcf_tree__b10_pdsin4t1__b_pdsi_sunab_twfe_glmatotopoclimnfg
+2026-04-28 02:43:41 | all_ecoregions__vcf_tree__b10_pdsin4t1__b_pdsi_sunab_twfe_glmatotopoclimnfg | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 02:43:58 | all_ecoregions__vcf_tree__b10_pdsisumn10__b_pdsi_sunab_twfe | START run_stub=all_ecoregions__vcf_tree__b10_pdsisumn10__b_pdsi_sunab_twfe
+2026-04-28 02:43:58 | all_ecoregions__vcf_tree__b10_pdsisumn10__b_pdsi_sunab_twfe | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 02:44:14 | all_ecoregions__vcf_tree__b10_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg | START run_stub=all_ecoregions__vcf_tree__b10_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg
+2026-04-28 02:44:14 | all_ecoregions__vcf_tree__b10_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 02:44:29 | all_ecoregions__vcf_tree__b25_pdsisumn10__b_pdsi_sunab_twfe | START run_stub=all_ecoregions__vcf_tree__b25_pdsisumn10__b_pdsi_sunab_twfe
+2026-04-28 02:44:29 | all_ecoregions__vcf_tree__b25_pdsisumn10__b_pdsi_sunab_twfe | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 02:44:47 | all_ecoregions__vcf_tree__b25_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg | START run_stub=all_ecoregions__vcf_tree__b25_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg
+2026-04-28 02:44:47 | all_ecoregions__vcf_tree__b25_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 03:24:37 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | START run_stub=all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe
+2026-04-28 03:24:38 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 03:24:40 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe_glmatotopoclimnfg | START run_stub=all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe_glmatotopoclimnfg
+2026-04-28 03:24:41 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe_glmatotopoclimnfg | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 03:24:41 | all_ecoregions__rap_tree__b10_pdsin4t1__b_pdsi_sunab_twfe | START run_stub=all_ecoregions__rap_tree__b10_pdsin4t1__b_pdsi_sunab_twfe
+2026-04-28 03:24:41 | all_ecoregions__rap_tree__b10_pdsin4t1__b_pdsi_sunab_twfe | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 03:24:44 | all_ecoregions__rap_tree__b10_pdsin4t1__b_pdsi_sunab_twfe_glmatotopoclimnfg | START run_stub=all_ecoregions__rap_tree__b10_pdsin4t1__b_pdsi_sunab_twfe_glmatotopoclimnfg
+2026-04-28 03:24:44 | all_ecoregions__rap_tree__b10_pdsin4t1__b_pdsi_sunab_twfe_glmatotopoclimnfg | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 03:24:44 | all_ecoregions__rap_tree__b10_pdsisumn10__b_pdsi_sunab_twfe | START run_stub=all_ecoregions__rap_tree__b10_pdsisumn10__b_pdsi_sunab_twfe
+2026-04-28 03:24:44 | all_ecoregions__rap_tree__b10_pdsisumn10__b_pdsi_sunab_twfe | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 03:24:47 | all_ecoregions__rap_tree__b10_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg | START run_stub=all_ecoregions__rap_tree__b10_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg
+2026-04-28 03:24:47 | all_ecoregions__rap_tree__b10_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 03:24:47 | all_ecoregions__rap_tree__b25_pdsisumn10__b_pdsi_sunab_twfe | START run_stub=all_ecoregions__rap_tree__b25_pdsisumn10__b_pdsi_sunab_twfe
+2026-04-28 03:24:48 | all_ecoregions__rap_tree__b25_pdsisumn10__b_pdsi_sunab_twfe | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 03:24:51 | all_ecoregions__rap_tree__b25_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg | START run_stub=all_ecoregions__rap_tree__b25_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg
+2026-04-28 03:24:51 | all_ecoregions__rap_tree__b25_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 03:24:51 | all_ecoregions__vcf_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | START run_stub=all_ecoregions__vcf_tree__b10_pdsin3t1__b_pdsi_sunab_twfe
+2026-04-28 03:24:51 | all_ecoregions__vcf_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 03:24:53 | all_ecoregions__vcf_tree__b10_pdsin3t1__b_pdsi_sunab_twfe_glmatotopoclimnfg | START run_stub=all_ecoregions__vcf_tree__b10_pdsin3t1__b_pdsi_sunab_twfe_glmatotopoclimnfg
+2026-04-28 03:24:53 | all_ecoregions__vcf_tree__b10_pdsin3t1__b_pdsi_sunab_twfe_glmatotopoclimnfg | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 03:24:53 | all_ecoregions__vcf_tree__b10_pdsin4t1__b_pdsi_sunab_twfe | START run_stub=all_ecoregions__vcf_tree__b10_pdsin4t1__b_pdsi_sunab_twfe
+2026-04-28 03:24:54 | all_ecoregions__vcf_tree__b10_pdsin4t1__b_pdsi_sunab_twfe | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 03:24:55 | all_ecoregions__vcf_tree__b10_pdsin4t1__b_pdsi_sunab_twfe_glmatotopoclimnfg | START run_stub=all_ecoregions__vcf_tree__b10_pdsin4t1__b_pdsi_sunab_twfe_glmatotopoclimnfg
+2026-04-28 03:24:55 | all_ecoregions__vcf_tree__b10_pdsin4t1__b_pdsi_sunab_twfe_glmatotopoclimnfg | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 03:24:56 | all_ecoregions__vcf_tree__b10_pdsisumn10__b_pdsi_sunab_twfe | START run_stub=all_ecoregions__vcf_tree__b10_pdsisumn10__b_pdsi_sunab_twfe
+2026-04-28 03:24:56 | all_ecoregions__vcf_tree__b10_pdsisumn10__b_pdsi_sunab_twfe | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 03:24:59 | all_ecoregions__vcf_tree__b10_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg | START run_stub=all_ecoregions__vcf_tree__b10_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg
+2026-04-28 03:24:59 | all_ecoregions__vcf_tree__b10_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 03:24:59 | all_ecoregions__vcf_tree__b25_pdsisumn10__b_pdsi_sunab_twfe | START run_stub=all_ecoregions__vcf_tree__b25_pdsisumn10__b_pdsi_sunab_twfe
+2026-04-28 03:24:59 | all_ecoregions__vcf_tree__b25_pdsisumn10__b_pdsi_sunab_twfe | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 03:25:02 | all_ecoregions__vcf_tree__b25_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg | START run_stub=all_ecoregions__vcf_tree__b25_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg
+2026-04-28 03:25:03 | all_ecoregions__vcf_tree__b25_pdsisumn10__b_pdsi_sunab_twfe_glmatotopoclimnfg | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 03:39:08 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | START run_stub=all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe
+2026-04-28 03:39:08 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 03:39:12 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | after load_arrow_data n_rows=14266990 n_cols=74 | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 03:39:12 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | before apply_treatment_grouping | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 03:39:15 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | after apply_treatment_grouping rm(df) | R_heap_used=0.4MB R_heap_max=1MB
+2026-04-28 03:39:15 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | df_grouped columns [8]: rap_tree, FirstTreat, year, pt_id, fire, b10_pdsin3t1, fireid, us_l3code
+2026-04-28 03:39:16 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | subgroups to fit [4]: bdf, bf, df, f
+2026-04-28 03:39:24 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [1/4] subgroup=bdf before df_model subset | R_heap_used=0.2MB R_heap_max=0.8MB
+2026-04-28 03:39:26 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [1/4] subgroup=bdf df_model n_rows=7426635 n_cols=8 cols=rap_tree, FirstTreat, year, pt_id, fire, b10_pdsin3t1, fireid, us_l3code
+2026-04-28 03:39:26 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [1/4] subgroup=bdf before feols | R_heap_used=0.6MB R_heap_max=1.1MB
+2026-04-28 03:52:30 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [1/4] subgroup=bdf after feols rm(df_model) | R_heap_used=34MB R_heap_max=158.9MB
+2026-04-28 03:52:31 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [1/4] subgroup=bdf before extract_coef | R_heap_used=33.7MB R_heap_max=127.1MB
+2026-04-28 03:55:55 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [1/4] subgroup=bdf after extract_coef | R_heap_used=33.7MB R_heap_max=101.7MB
+2026-04-28 03:55:55 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [1/4] subgroup=bdf before extract_vcov | R_heap_used=33.7MB R_heap_max=101.7MB
+2026-04-28 03:57:17 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [1/4] subgroup=bdf after extract_vcov | R_heap_used=33.8MB R_heap_max=101.7MB
+2026-04-28 03:57:17 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [1/4] subgroup=bdf after rm(model) gc() | R_heap_used=0.3MB R_heap_max=65.2MB
+2026-04-28 03:57:17 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [1/4] subgroup=bdf writing temp parquets
+2026-04-28 03:57:23 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [1/4] subgroup=bdf after write rm(extracted) gc() | R_heap_used=0.2MB R_heap_max=41.8MB
+2026-04-28 03:57:35 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [2/4] subgroup=bf before df_model subset | R_heap_used=0.2MB R_heap_max=33.5MB
+2026-04-28 03:57:37 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [2/4] subgroup=bf df_model n_rows=7519659 n_cols=8 cols=rap_tree, FirstTreat, year, pt_id, fire, b10_pdsin3t1, fireid, us_l3code
+2026-04-28 03:57:37 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [2/4] subgroup=bf before feols | R_heap_used=0.6MB R_heap_max=26.8MB
+2026-04-28 04:10:51 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [2/4] subgroup=bf after feols rm(df_model) | R_heap_used=34.4MB R_heap_max=160.9MB
+2026-04-28 04:10:52 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [2/4] subgroup=bf before extract_coef | R_heap_used=34.1MB R_heap_max=128.7MB
+2026-04-28 04:14:18 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [2/4] subgroup=bf after extract_coef | R_heap_used=34.1MB R_heap_max=103MB
+2026-04-28 04:14:18 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [2/4] subgroup=bf before extract_vcov | R_heap_used=34.1MB R_heap_max=103MB
+2026-04-28 04:15:40 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [2/4] subgroup=bf after extract_vcov | R_heap_used=34.2MB R_heap_max=103MB
+2026-04-28 04:15:40 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [2/4] subgroup=bf after rm(model) gc() | R_heap_used=0.3MB R_heap_max=66MB
+2026-04-28 04:15:40 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [2/4] subgroup=bf writing temp parquets
+2026-04-28 04:15:46 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [2/4] subgroup=bf after write rm(extracted) gc() | R_heap_used=0.2MB R_heap_max=42.3MB
+2026-04-28 04:15:53 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [3/4] subgroup=df before df_model subset | R_heap_used=0.2MB R_heap_max=33.9MB
+2026-04-28 04:15:55 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [3/4] subgroup=df df_model n_rows=9966808 n_cols=8 cols=rap_tree, FirstTreat, year, pt_id, fire, b10_pdsin3t1, fireid, us_l3code
+2026-04-28 04:15:55 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [3/4] subgroup=df before feols | R_heap_used=0.7MB R_heap_max=27.2MB
+2026-04-28 05:02:38 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | START run_stub=all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe
+2026-04-28 05:02:39 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 05:02:43 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | after load_arrow_data n_rows=14266990 n_cols=74 | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 05:02:43 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | before apply_treatment_grouping | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 05:02:46 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | after apply_treatment_grouping rm(df) | R_heap_used=0.4MB R_heap_max=1MB
+2026-04-28 05:02:46 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | df_grouped columns [8]: rap_tree, FirstTreat, year, pt_id, fire, b10_pdsin3t1, fireid, us_l3code
+2026-04-28 05:02:47 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | subgroups to fit [4]: bdf, bf, df, f
+2026-04-28 05:02:47 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [1/4] subgroup=bdf SKIP outputs exist
+2026-04-28 05:02:47 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [2/4] subgroup=bf SKIP outputs exist
+2026-04-28 05:02:48 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [3/4] subgroup=df before df_model subset | R_heap_used=0.2MB R_heap_max=0.8MB
+2026-04-28 05:02:50 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [3/4] subgroup=df df_model n_rows=9966808 n_cols=8 cols=rap_tree, FirstTreat, year, pt_id, fire, b10_pdsin3t1, fireid, us_l3code
+2026-04-28 05:02:50 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [3/4] subgroup=df before feols | R_heap_used=0.7MB R_heap_max=1.4MB
+2026-04-28 05:09:46 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | START run_stub=all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe
+2026-04-28 05:09:46 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | before load_arrow_data | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 05:09:52 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | after load_arrow_data n_rows=14266990 n_cols=74 | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 05:09:52 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | before apply_treatment_grouping | R_heap_used=0.1MB R_heap_max=0.2MB
+2026-04-28 05:09:54 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | after apply_treatment_grouping rm(df) | R_heap_used=0.4MB R_heap_max=1MB
+2026-04-28 05:09:54 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | df_grouped columns [8]: rap_tree, FirstTreat, year, pt_id, fire, b10_pdsin3t1, fireid, us_l3code
+2026-04-28 05:09:55 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | subgroups to fit [4]: bdf, bf, df, f
+2026-04-28 05:09:56 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [1/4] subgroup=bdf SKIP outputs exist
+2026-04-28 05:09:56 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [2/4] subgroup=bf SKIP outputs exist
+2026-04-28 05:09:56 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [3/4] subgroup=df before df_model subset | R_heap_used=0.2MB R_heap_max=0.8MB
+2026-04-28 05:09:59 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [3/4] subgroup=df df_model n_rows=9966808 n_cols=8 cols=rap_tree, FirstTreat, year, pt_id, fire, b10_pdsin3t1, fireid, us_l3code
+2026-04-28 05:09:59 | all_ecoregions__rap_tree__b10_pdsin3t1__b_pdsi_sunab_twfe | [3/4] subgroup=df before feols | R_heap_used=0.7MB R_heap_max=1.4MB

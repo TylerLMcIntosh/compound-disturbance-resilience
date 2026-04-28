@@ -1,4 +1,4 @@
-# portable_sunab.R
+# portable_sunab3.R
 # Portable Sun-Abraham / TWFE DiD estimation pipeline
 # -------------------------------------------------------
 # Design principles:
@@ -250,7 +250,8 @@ make_model_spec <- function(model_id,
                             formula_template,
                             estimator_type = c("sunab", "twfe"),
                             term_pattern   = ".*",
-                            weights_col    = NA_character_) {
+                            weights_col    = NA_character_,
+                            feols_args     = list()) {
   
   estimator_type <- match.arg(estimator_type)
   if (!is.character(model_id)         || length(model_id)         != 1) stop("model_id must be length-1 character.")
@@ -261,7 +262,8 @@ make_model_spec <- function(model_id,
     formula_template = formula_template,
     estimator_type   = estimator_type,
     term_pattern     = term_pattern,
-    weights_col      = normalize_optional_colname(weights_col)
+    weights_col      = normalize_optional_colname(weights_col),
+    feols_args       = list(feols_args)
   )
 }
 
@@ -842,6 +844,10 @@ run_experiment <- function(dataset_spec,
     stop("At least one of run_estimation or run_descriptive must be TRUE.")
   }
   
+  if (!"feols_args" %in% names(model_specs)) {
+    model_specs$feols_args <- replicate(nrow(model_specs), list(), simplify = FALSE)
+  }
+  
   desc_args <- list(
     treated_year_var = dataset_spec$time_var,
     control_year_var = dataset_spec$time_var
@@ -914,12 +920,13 @@ run_experiment <- function(dataset_spec,
       term_pattern     = run_grid$term_pattern,
       weights_col      = run_grid$weights_col,
       run_id           = run_grid$run_id,
-      run_stub         = run_grid$run_stub
+      run_stub         = run_grid$run_stub,
+      feols_args = run_grid$feols_args
     ),
     function(long_data_source, data_filter, subset_id, outcome,
              group_id, group_col, group_fun, group_args,
              model_id, formula_template, estimator_type, term_pattern,
-             weights_col, run_id, run_stub) {
+             weights_col, run_id, run_stub, feols_args) {
       
       result <- list(
         run_id = run_id, estimation = NULL, descriptive = NULL,
@@ -960,7 +967,8 @@ run_experiment <- function(dataset_spec,
             group_palette        = group_palette,
             ci_level             = ci_level,
             skip_existing        = skip_existing,
-            write_vcov           = write_vcov
+            write_vcov           = write_vcov,
+            feols_args = feols_args
           )
           result$skipped <- isTRUE(result$estimation$skipped_existing)
         }
@@ -1041,6 +1049,9 @@ run_experiment <- function(dataset_spec,
 # SECTION 9 — Single-run estimation worker
 # ══════════════════════════════════════════════════════════════════════════════
 
+
+# added logging and export writes at subgroup level
+
 run_one_estimation <- function(data_source,
                                data_filter,
                                dataset_spec,
@@ -1063,11 +1074,33 @@ run_one_estimation <- function(data_source,
                                group_palette  = NULL,
                                ci_level       = 0.95,
                                skip_existing  = TRUE,
-                               write_vcov     = FALSE) {
+                               write_vcov     = FALSE,
+                               feols_args = list()) {
   
-  run_dir <- file.path(dir_out, "tables", "by_run", run_stub)
-  dir_ensure_local(run_dir)
+  # ── Status logging helpers ─────────────────────────────────────────────────
+  status_file <- file.path(here::here(), "status_file.txt")
   
+  log_status <- function(msg) {
+    line <- paste0(format(Sys.time(), "%Y-%m-%d %H:%M:%S"), " | ", run_id, " | ", msg)
+    cat(line, "\n")
+    write(line, file = status_file, append = TRUE)
+  }
+  
+  log_mem <- function(msg) {
+    g       <- gc(reset = FALSE, verbose = FALSE)
+    used_mb <- round(sum(g[, 2]) / 1024, 1)
+    max_mb  <- round(sum(g[, 4]) / 1024, 1)
+    log_status(glue::glue("{msg} | R_heap_used={used_mb}MB R_heap_max={max_mb}MB"))
+  }
+  
+  # ── Directory layout ───────────────────────────────────────────────────────
+  run_dir      <- file.path(dir_out, "tables", "by_run", run_stub)
+  subgroup_dir <- file.path(run_dir, "by_subgroup")
+  dir_ensure_local(c(run_dir, subgroup_dir))
+  
+  log_status(glue::glue("START run_stub={run_stub}"))
+  
+  # ── Final merged output files ──────────────────────────────────────────────
   coef_file     <- file.path(run_dir, "coef.parquet")
   subgroup_file <- file.path(run_dir, "subgroup.parquet")
   support_file  <- file.path(run_dir, "support.parquet")
@@ -1079,6 +1112,7 @@ run_one_estimation <- function(data_source,
   if (write_vcov) required_files <- c(required_files, vcov_file)
   
   if (skip_existing && all(file.exists(required_files))) {
+    log_status("SKIP all required output files already exist")
     return(list(
       coef_file        = coef_file,
       subgroup_file    = subgroup_file,
@@ -1093,12 +1127,15 @@ run_one_estimation <- function(data_source,
   fit_started <- Sys.time()
   
   # ── Load long panel ────────────────────────────────────────────────────────
+  log_mem("before load_arrow_data")
   df <- load_arrow_data(data_source, data_filter)
   n_rows_read         <- nrow(df)
   n_rows_after_filter <- nrow(df)
+  log_mem(glue::glue("after load_arrow_data n_rows={n_rows_read} n_cols={ncol(df)}"))
   
   # ── Join weights when applicable ───────────────────────────────────────────
   if (!is.na(weights_col) && !is.null(weights_parquet_path)) {
+    log_status(glue::glue("joining weights col={weights_col}"))
     weights_tbl <- arrow::read_parquet(weights_parquet_path) |>
       dplyr::select(dplyr::all_of(c(dataset_spec$unit_id, weights_col)))
     df <- df |> dplyr::left_join(weights_tbl, by = dataset_spec$unit_id)
@@ -1108,12 +1145,16 @@ run_one_estimation <- function(data_source,
         "[{run_id}] {n_na_weights} rows have NA weights after join and will be dropped by feols()."
       ))
     }
+    log_mem("after weights join")
   }
   
   # ── Apply grouping ─────────────────────────────────────────────────────────
+  log_mem("before apply_treatment_grouping")
   df_grouped <- apply_treatment_grouping(
     df = df, group_fun = group_fun, group_col = group_col, group_args = group_args
   )
+  rm(df)
+  log_mem("after apply_treatment_grouping rm(df)")
   
   # ── Build formula and identify needed columns ──────────────────────────────
   model_formula <- build_model_formula(formula_template, outcome)
@@ -1131,19 +1172,30 @@ run_one_estimation <- function(data_source,
   check_required_columns(df_grouped, needed_cols, context = run_id)
   df_grouped <- df_grouped |> dplyr::select(dplyr::all_of(needed_cols))
   
-  # ── Fit subgroup models ────────────────────────────────────────────────────
-  subgroup_models <- fit_subgroup_models(
-    df             = df_grouped,
-    group_col      = group_col,
-    dataset_spec   = dataset_spec,
-    formula        = model_formula,
-    estimator_type = estimator_type,
-    weights_col    = weights_col
-  )
+  # confirm column pruning worked
+  log_status(glue::glue(
+    "df_grouped columns [{ncol(df_grouped)}]: {paste(names(df_grouped), collapse = ', ')}"
+  ))
   
-  fit_finished <- Sys.time()
+  # ── Identify subgroups to loop over ───────────────────────────────────────
+  trt_sym <- rlang::sym(dataset_spec$trt_col)
   
-  # ── Extract tables ─────────────────────────────────────────────────────────
+  subgroups <- df_grouped |>
+    dplyr::filter(!is.na(.data[[group_col]])) |>
+    dplyr::distinct(.data[[group_col]]) |>
+    dplyr::pull(.data[[group_col]]) |>
+    as.character() |>
+    sort()
+  
+  if (length(subgroups) == 0) {
+    stop(glue::glue("No non-NA values in group column '{group_col}' for run '{run_id}'."))
+  }
+  
+  log_status(glue::glue(
+    "subgroups to fit [{length(subgroups)}]: {paste(subgroups, collapse = ', ')}"
+  ))
+  
+  # ── Shared metadata passed to all extractor helpers ───────────────────────
   shared_meta <- list(
     subset_id        = subset_id,
     outcome          = outcome,
@@ -1156,28 +1208,216 @@ run_one_estimation <- function(data_source,
     group_palette    = group_palette
   )
   
-  subgroup_tbl <- make_subgroup_run_summary(models = subgroup_models, meta = shared_meta) |>
-    dplyr::mutate(run_id = run_id)
-  
-  support_tbl <- make_event_time_support_run_summary(models = subgroup_models, meta = shared_meta) |>
-    dplyr::mutate(run_id = run_id)
-  
-  coef_tbl <- extract_all_coef_tables(
-    models       = subgroup_models,
-    meta         = shared_meta,
-    vcov_specs   = vcov_specs,
-    term_pattern = term_pattern,
-    ci_level     = ci_level
-  ) |> dplyr::mutate(run_id = run_id)
-  
-  vcov_tbl <- if (write_vcov) {
-    extract_all_vcov_tables(
-      models = subgroup_models, meta = shared_meta, vcov_specs = vcov_specs
+  # ── Per-subgroup fit → extract → write → discard loop ─────────────────────
+  for (i in seq_along(subgroups)) {
+    g      <- subgroups[[i]]
+    g_safe <- safe_path_component(g)
+    g_dir  <- file.path(subgroup_dir, g_safe)
+    dir_ensure_local(g_dir)
+    
+    # per-subgroup temp file paths
+    g_coef_file     <- file.path(g_dir, "coef.parquet")
+    g_subgroup_file <- file.path(g_dir, "subgroup.parquet")
+    g_support_file  <- file.path(g_dir, "support.parquet")
+    g_vcov_file     <- file.path(g_dir, "vcov.parquet")
+    
+    # skip this subgroup if outputs already exist
+    g_required <- c(g_coef_file, g_subgroup_file, g_support_file)
+    if (write_vcov) g_required <- c(g_required, g_vcov_file)
+    
+    if (skip_existing && all(file.exists(g_required))) {
+      log_status(glue::glue("[{i}/{length(subgroups)}] subgroup={g} SKIP outputs exist"))
+      next
+    }
+    
+    log_mem(glue::glue("[{i}/{length(subgroups)}] subgroup={g} before df_model subset"))
+    
+    df_model <- dplyr::bind_rows(
+      df_grouped |> dplyr::filter(!!trt_sym == 0),
+      df_grouped |> dplyr::filter(!!trt_sym == 1, .data[[group_col]] == g)
+    )
+    
+    log_status(glue::glue(
+      "[{i}/{length(subgroups)}] subgroup={g} ",
+      "df_model n_rows={nrow(df_model)} n_cols={ncol(df_model)} ",
+      "cols={paste(names(df_model), collapse = ', ')}"
+    ))
+    
+    feols_weights <- if (!is.na(weights_col) && weights_col %in% names(df_model)) {
+      stats::as.formula(paste("~", weights_col))
+    } else {
+      NULL
+    }
+    
+    log_mem(glue::glue("[{i}/{length(subgroups)}] subgroup={g} before feols"))
+    
+    model <- do.call(
+      fixest::feols,
+      c(list(fml = model_formula, data = df_model, weights = feols_weights),
+        feols_args)
+    )
+    
+    df_est <- df_model[fixest::obs(model), , drop = FALSE]
+    rm(df_model)
+    log_mem(glue::glue("[{i}/{length(subgroups)}] subgroup={g} after feols rm(df_model)"))
+    
+    # ── Attach model attributes ────────────────────────────────────────────
+    attr(model, "group_value")    <- g
+    attr(model, "group_col")      <- group_col
+    attr(model, "unit_id")        <- dataset_spec$unit_id
+    attr(model, "event_id")       <- normalize_optional_colname(dataset_spec$event_id)
+    attr(model, "estimator_type") <- estimator_type
+    attr(model, "weights_col")    <- normalize_optional_colname(weights_col)
+    
+    if (estimator_type == "sunab") {
+      sv <- parse_sunab_vars(model_formula)
+      attr(model, "cohort_var")         <- sv$cohort_var
+      attr(model, "time_var")           <- sv$time_var
+      attr(model, "event_time_support") <- make_event_time_support_one_model(
+        df_est     = df_est,
+        trt_col    = dataset_spec$trt_col,
+        unit_id    = dataset_spec$unit_id,
+        event_id   = dataset_spec$event_id,
+        cohort_var = sv$cohort_var,
+        time_var   = sv$time_var
+      )
+    } else {
+      attr(model, "cohort_var")         <- NA_character_
+      attr(model, "time_var")           <- NA_character_
+      attr(model, "event_time_support") <- empty_event_time_support()
+    }
+    
+    attr(model, "n_treated_units") <- df_est |>
+      dplyr::filter(.data[[dataset_spec$trt_col]] == 1) |>
+      dplyr::summarise(n = dplyr::n_distinct(.data[[dataset_spec$unit_id]])) |>
+      dplyr::pull(n)
+    
+    attr(model, "n_treated_events") <-
+      compute_n_distinct_optional(
+        df_est |> dplyr::filter(.data[[dataset_spec$trt_col]] == 1),
+        dataset_spec$event_id
+      )
+    
+    attr(model, "n_control_units") <- df_est |>
+      dplyr::filter(.data[[dataset_spec$trt_col]] == 0) |>
+      dplyr::summarise(n = dplyr::n_distinct(.data[[dataset_spec$unit_id]])) |>
+      dplyr::pull(n)
+    
+    attr(model, "n_total_units")     <- dplyr::n_distinct(df_est[[dataset_spec$unit_id]])
+    attr(model, "n_rows_model_data") <- nrow(df_est)
+    rm(df_est)
+    
+    # ── Extract coef ───────────────────────────────────────────────────────
+    log_mem(glue::glue("[{i}/{length(subgroups)}] subgroup={g} before extract_coef"))
+    g_coef_tbl <- purrr::pmap_dfr(
+      list(
+        vcov       = vcov_specs$vcov,
+        vcov_id    = vcov_specs$vcov_id,
+        vcov_label = vcov_specs$vcov_label
+      ),
+      \(vcov, vcov_id, vcov_label) extract_coef_table_one_vcov(
+        model        = model,
+        vcov         = vcov,
+        vcov_id      = vcov_id,
+        vcov_label   = vcov_label,
+        meta         = shared_meta,
+        term_pattern = term_pattern,
+        ci_level     = ci_level
+      )
     ) |> dplyr::mutate(run_id = run_id)
-  } else {
-    NULL
+    log_mem(glue::glue("[{i}/{length(subgroups)}] subgroup={g} after extract_coef"))
+    
+    # ── Extract subgroup summary ───────────────────────────────────────────
+    g_subgroup_tbl <- tibble::tibble(
+      subset_id         = subset_id,
+      outcome           = outcome,
+      group_id          = group_id,
+      group_col         = group_col,
+      subgroup          = g,
+      model_id          = model_id,
+      formula_template  = formula_template,
+      estimator_type    = estimator_type,
+      weights_col       = weights_col %||% NA_character_,
+      n_treated_units   = attr(model, "n_treated_units"),
+      n_treated_events  = attr(model, "n_treated_events"),
+      n_control_units   = attr(model, "n_control_units"),
+      n_total_units     = attr(model, "n_total_units"),
+      n_rows_model_data = attr(model, "n_rows_model_data"),
+      subgroup_color    = get_group_color(g, group_palette),
+      subgroup_run_id   = make_subgroup_run_id(shared_meta, g),
+      run_id            = run_id
+    )
+    
+    # ── Extract event time support ─────────────────────────────────────────
+    g_support_tbl <- make_event_time_support_run_summary(
+      models = stats::setNames(list(model), g),
+      meta   = shared_meta
+    ) |> dplyr::mutate(run_id = run_id)
+    
+    # ── Extract vcov ───────────────────────────────────────────────────────
+    if (write_vcov) {
+      log_mem(glue::glue("[{i}/{length(subgroups)}] subgroup={g} before extract_vcov"))
+      g_vcov_tbl <- purrr::pmap_dfr(
+        list(
+          vcov       = vcov_specs$vcov,
+          vcov_id    = vcov_specs$vcov_id,
+          vcov_label = vcov_specs$vcov_label
+        ),
+        \(vcov, vcov_id, vcov_label) extract_vcov_table_one_vcov(
+          model      = model,
+          vcov       = vcov,
+          vcov_id    = vcov_id,
+          vcov_label = vcov_label,
+          meta       = shared_meta
+        )
+      ) |> dplyr::mutate(run_id = run_id)
+      log_mem(glue::glue("[{i}/{length(subgroups)}] subgroup={g} after extract_vcov"))
+    }
+    
+    # ── Discard model before writing ───────────────────────────────────────
+    rm(model)
+    gc()
+    log_mem(glue::glue("[{i}/{length(subgroups)}] subgroup={g} after rm(model) gc()"))
+    
+    # ── Write per-subgroup temp parquets ───────────────────────────────────
+    log_status(glue::glue("[{i}/{length(subgroups)}] subgroup={g} writing temp parquets"))
+    arrow::write_parquet(g_coef_tbl,     g_coef_file)
+    arrow::write_parquet(g_subgroup_tbl, g_subgroup_file)
+    arrow::write_parquet(g_support_tbl,  g_support_file)
+    if (write_vcov) arrow::write_parquet(g_vcov_tbl, g_vcov_file)
+    
+    rm(g_coef_tbl, g_subgroup_tbl, g_support_tbl)
+    if (write_vcov) rm(g_vcov_tbl)
+    gc()
+    log_mem(glue::glue("[{i}/{length(subgroups)}] subgroup={g} after write rm(extracted) gc()"))
   }
   
+  fit_finished <- Sys.time()
+  log_status(glue::glue(
+    "all subgroups complete elapsed={round(as.numeric(fit_finished - fit_started, units = 'mins'), 1)}min"
+  ))
+  
+  rm(df_grouped)
+  gc()
+  
+  # ── Merge per-subgroup parquets into final run-level files ─────────────────
+  log_mem("before merging subgroup parquets")
+  
+  read_subgroup_parquets <- function(filename) {
+    files    <- file.path(subgroup_dir, safe_path_component(subgroups), filename)
+    existing <- files[file.exists(files)]
+    if (length(existing) == 0) stop("No subgroup parquets found for: ", filename)
+    purrr::map_dfr(existing, arrow::read_parquet)
+  }
+  
+  coef_tbl     <- read_subgroup_parquets("coef.parquet")
+  subgroup_tbl <- read_subgroup_parquets("subgroup.parquet")
+  support_tbl  <- read_subgroup_parquets("support.parquet")
+  vcov_tbl     <- if (write_vcov) read_subgroup_parquets("vcov.parquet") else NULL
+  
+  log_mem("after merging subgroup parquets")
+  
+  # ── Registry and run spec ──────────────────────────────────────────────────
   registry_tbl <- make_estimation_registry(
     run_id               = run_id,
     subset_id            = subset_id,
@@ -1233,6 +1473,8 @@ run_one_estimation <- function(data_source,
     write_vcov           = write_vcov
   )
   
+  # ── Write final merged outputs ─────────────────────────────────────────────
+  log_status("writing final merged parquet outputs")
   arrow::write_parquet(subgroup_tbl, subgroup_file)
   arrow::write_parquet(support_tbl,  support_file)
   arrow::write_parquet(coef_tbl,     coef_file)
@@ -1240,9 +1482,9 @@ run_one_estimation <- function(data_source,
   if (write_vcov && !is.null(vcov_tbl)) arrow::write_parquet(vcov_tbl, vcov_file)
   saveRDS(run_spec, run_spec_file)
   
-  rm(subgroup_models, df, df_grouped,
-     subgroup_tbl, support_tbl, coef_tbl, vcov_tbl, registry_tbl, run_spec)
+  rm(subgroup_tbl, support_tbl, coef_tbl, vcov_tbl, registry_tbl, run_spec)
   gc()
+  log_mem("END final outputs written rm(tables) gc()")
   
   list(
     coef_file        = coef_file,
@@ -1254,6 +1496,583 @@ run_one_estimation <- function(data_source,
     skipped_existing = FALSE
   )
 }
+
+# STRUCTURE WITH EACH MODEL RUN ON ITS OWN
+# run_one_estimation <- function(data_source,
+#                                data_filter,
+#                                dataset_spec,
+#                                subset_id,
+#                                outcome,
+#                                group_id,
+#                                group_col,
+#                                group_fun,
+#                                group_args,
+#                                model_id,
+#                                formula_template,
+#                                estimator_type,
+#                                term_pattern,
+#                                weights_col,
+#                                weights_parquet_path,
+#                                vcov_specs,
+#                                dir_out,
+#                                run_id,
+#                                run_stub,
+#                                group_palette  = NULL,
+#                                ci_level       = 0.95,
+#                                skip_existing  = TRUE,
+#                                write_vcov     = FALSE,
+#                                feols_args = list()) {
+  
+#   run_dir <- file.path(dir_out, "tables", "by_run", run_stub)
+#   dir_ensure_local(run_dir)
+  
+#   print(glue::glue("Starting run for model: {run_stub}"))
+  
+#   coef_file     <- file.path(run_dir, "coef.parquet")
+#   subgroup_file <- file.path(run_dir, "subgroup.parquet")
+#   support_file  <- file.path(run_dir, "support.parquet")
+#   vcov_file     <- file.path(run_dir, "vcov.parquet")
+#   registry_file <- file.path(run_dir, "registry.parquet")
+#   run_spec_file <- file.path(run_dir, "run_spec.rds")
+  
+#   required_files <- c(coef_file, subgroup_file, support_file, registry_file, run_spec_file)
+#   if (write_vcov) required_files <- c(required_files, vcov_file)
+  
+#   if (skip_existing && all(file.exists(required_files))) {
+#     return(list(
+#       coef_file        = coef_file,
+#       subgroup_file    = subgroup_file,
+#       support_file     = support_file,
+#       vcov_file        = if (write_vcov) vcov_file else NULL,
+#       registry_file    = registry_file,
+#       run_spec_file    = run_spec_file,
+#       skipped_existing = TRUE
+#     ))
+#   }
+  
+#   fit_started <- Sys.time()
+  
+#   # ── Load long panel ────────────────────────────────────────────────────────
+#   df <- load_arrow_data(data_source, data_filter)
+#   n_rows_read         <- nrow(df)
+#   n_rows_after_filter <- nrow(df)
+  
+#   # ── Join weights when applicable ───────────────────────────────────────────
+#   if (!is.na(weights_col) && !is.null(weights_parquet_path)) {
+#     weights_tbl <- arrow::read_parquet(weights_parquet_path) |>
+#       dplyr::select(dplyr::all_of(c(dataset_spec$unit_id, weights_col)))
+#     df <- df |> dplyr::left_join(weights_tbl, by = dataset_spec$unit_id)
+#     n_na_weights <- sum(is.na(df[[weights_col]]))
+#     if (n_na_weights > 0) {
+#       warning(glue::glue(
+#         "[{run_id}] {n_na_weights} rows have NA weights after join and will be dropped by feols()."
+#       ))
+#     }
+#   }
+  
+#   # ── Apply grouping ─────────────────────────────────────────────────────────
+#   df_grouped <- apply_treatment_grouping(
+#     df = df, group_fun = group_fun, group_col = group_col, group_args = group_args
+#   )
+#   rm(df)  # done with the unmodified panel; only need df_grouped from here
+  
+#   # ── Build formula and identify needed columns ──────────────────────────────
+#   model_formula <- build_model_formula(formula_template, outcome)
+  
+#   needed_cols <- get_needed_columns(
+#     formula     = model_formula,
+#     trt_col     = dataset_spec$trt_col,
+#     group_col   = group_col,
+#     unit_id     = dataset_spec$unit_id,
+#     event_id    = dataset_spec$event_id,
+#     vcov_vars   = vcov_specs$vcov_vars,
+#     weights_col = weights_col
+#   )
+  
+#   check_required_columns(df_grouped, needed_cols, context = run_id)
+#   df_grouped <- df_grouped |> dplyr::select(dplyr::all_of(needed_cols))
+  
+#   # ── Identify subgroups to loop over ───────────────────────────────────────
+#   trt_sym <- rlang::sym(dataset_spec$trt_col)
+  
+#   subgroups <- df_grouped |>
+#     dplyr::filter(!is.na(.data[[group_col]])) |>
+#     dplyr::distinct(.data[[group_col]]) |>
+#     dplyr::pull(.data[[group_col]]) |>
+#     as.character() |>
+#     sort()
+  
+#   if (length(subgroups) == 0) {
+#     stop(glue::glue("No non-NA values in group column '{group_col}' for run '{run_id}'."))
+#   }
+  
+#   # ── Shared metadata passed to all extractor helpers ───────────────────────
+#   shared_meta <- list(
+#     subset_id        = subset_id,
+#     outcome          = outcome,
+#     group_id         = group_id,
+#     group_col        = group_col,
+#     model_id         = model_id,
+#     formula_template = formula_template,
+#     estimator_type   = estimator_type,
+#     weights_col      = weights_col,
+#     group_palette    = group_palette
+#   )
+  
+#   # ── Accumulators — one row-block per subgroup, bound at the end ───────────
+#   coef_rows     <- vector("list", length(subgroups))
+#   subgroup_rows <- vector("list", length(subgroups))
+#   support_rows  <- vector("list", length(subgroups))
+#   vcov_rows     <- if (write_vcov) vector("list", length(subgroups)) else NULL
+  
+#   # ── Per-subgroup fit → extract → discard loop ─────────────────────────────
+#   for (i in seq_along(subgroups)) {
+#     g <- subgroups[[i]]
+#     print(glue::glue("  [{i}/{length(subgroups)}] Fitting subgroup: {g}"))
+    
+#     # subset to control + this subgroup's treated units only
+#     df_model <- dplyr::bind_rows(
+#       df_grouped |> dplyr::filter(!!trt_sym == 0),
+#       df_grouped |> dplyr::filter(!!trt_sym == 1, .data[[group_col]] == g)
+#     )
+    
+#     feols_weights <- if (!is.na(weights_col) && weights_col %in% names(df_model)) {
+#       stats::as.formula(paste("~", weights_col))
+#     } else {
+#       NULL
+#     }
+    
+#     model <- do.call(
+#       fixest::feols,
+#       c(list(fml = model_formula, data = df_model, weights = feols_weights),
+#         feols_args)
+#     )
+    
+#     df_est <- df_model[fixest::obs(model), , drop = FALSE]
+#     rm(df_model)  # drop the subgroup slice immediately
+    
+#     # attach the same attributes fit_one_subgroup_model used to attach,
+#     # so the extractor helpers work unchanged
+#     attr(model, "group_value")    <- g
+#     attr(model, "group_col")      <- group_col
+#     attr(model, "unit_id")        <- dataset_spec$unit_id
+#     attr(model, "event_id")       <- normalize_optional_colname(dataset_spec$event_id)
+#     attr(model, "estimator_type") <- estimator_type
+#     attr(model, "weights_col")    <- normalize_optional_colname(weights_col)
+    
+#     if (estimator_type == "sunab") {
+#       sv <- parse_sunab_vars(model_formula)
+#       attr(model, "cohort_var")         <- sv$cohort_var
+#       attr(model, "time_var")           <- sv$time_var
+#       attr(model, "event_time_support") <- make_event_time_support_one_model(
+#         df_est     = df_est,
+#         trt_col    = dataset_spec$trt_col,
+#         unit_id    = dataset_spec$unit_id,
+#         event_id   = dataset_spec$event_id,
+#         cohort_var = sv$cohort_var,
+#         time_var   = sv$time_var
+#       )
+#     } else {
+#       attr(model, "cohort_var")         <- NA_character_
+#       attr(model, "time_var")           <- NA_character_
+#       attr(model, "event_time_support") <- empty_event_time_support()
+#     }
+    
+#     attr(model, "n_treated_units") <- df_est |>
+#       dplyr::filter(.data[[dataset_spec$trt_col]] == 1) |>
+#       dplyr::summarise(n = dplyr::n_distinct(.data[[dataset_spec$unit_id]])) |>
+#       dplyr::pull(n)
+    
+#     attr(model, "n_treated_events") <-
+#       compute_n_distinct_optional(
+#         df_est |> dplyr::filter(.data[[dataset_spec$trt_col]] == 1),
+#         dataset_spec$event_id
+#       )
+    
+#     attr(model, "n_control_units") <- df_est |>
+#       dplyr::filter(.data[[dataset_spec$trt_col]] == 0) |>
+#       dplyr::summarise(n = dplyr::n_distinct(.data[[dataset_spec$unit_id]])) |>
+#       dplyr::pull(n)
+    
+#     attr(model, "n_total_units")     <- dplyr::n_distinct(df_est[[dataset_spec$unit_id]])
+#     attr(model, "n_rows_model_data") <- nrow(df_est)
+#     rm(df_est)
+    
+#     # extract while the model is in scope, then discard it
+#     coef_rows[[i]] <- purrr::pmap_dfr(
+#       list(
+#         vcov       = vcov_specs$vcov,
+#         vcov_id    = vcov_specs$vcov_id,
+#         vcov_label = vcov_specs$vcov_label
+#       ),
+#       \(vcov, vcov_id, vcov_label) extract_coef_table_one_vcov(
+#         model        = model,
+#         vcov         = vcov,
+#         vcov_id      = vcov_id,
+#         vcov_label   = vcov_label,
+#         meta         = shared_meta,
+#         term_pattern = term_pattern,
+#         ci_level     = ci_level
+#       )
+#     ) |> dplyr::mutate(run_id = run_id)
+    
+#     subgroup_rows[[i]] <- tibble::tibble(
+#       subset_id         = subset_id,
+#       outcome           = outcome,
+#       group_id          = group_id,
+#       group_col         = group_col,
+#       subgroup          = g,
+#       model_id          = model_id,
+#       formula_template  = formula_template,
+#       estimator_type    = estimator_type,
+#       weights_col       = weights_col %||% NA_character_,
+#       n_treated_units   = attr(model, "n_treated_units"),
+#       n_treated_events  = attr(model, "n_treated_events"),
+#       n_control_units   = attr(model, "n_control_units"),
+#       n_total_units     = attr(model, "n_total_units"),
+#       n_rows_model_data = attr(model, "n_rows_model_data"),
+#       subgroup_color    = get_group_color(g, group_palette),
+#       subgroup_run_id   = make_subgroup_run_id(shared_meta, g),
+#       run_id            = run_id
+#     )
+    
+#     support_rows[[i]] <- make_event_time_support_run_summary(
+#       models = stats::setNames(list(model), g),
+#       meta   = shared_meta
+#     ) |> dplyr::mutate(run_id = run_id)
+    
+#     if (write_vcov) {
+#       vcov_rows[[i]] <- purrr::pmap_dfr(
+#         list(
+#           vcov       = vcov_specs$vcov,
+#           vcov_id    = vcov_specs$vcov_id,
+#           vcov_label = vcov_specs$vcov_label
+#         ),
+#         \(vcov, vcov_id, vcov_label) extract_vcov_table_one_vcov(
+#           model      = model,
+#           vcov       = vcov,
+#           vcov_id    = vcov_id,
+#           vcov_label = vcov_label,
+#           meta       = shared_meta
+#         )
+#       ) |> dplyr::mutate(run_id = run_id)
+#     }
+    
+#     rm(model)
+#     gc()
+#   }
+  
+#   fit_finished <- Sys.time()
+  
+#   # ── Bind accumulated rows ──────────────────────────────────────────────────
+#   coef_tbl     <- dplyr::bind_rows(coef_rows)
+#   subgroup_tbl <- dplyr::bind_rows(subgroup_rows)
+#   support_tbl  <- dplyr::bind_rows(support_rows)
+#   vcov_tbl     <- if (write_vcov) dplyr::bind_rows(vcov_rows) else NULL
+  
+#   rm(coef_rows, subgroup_rows, support_rows, vcov_rows, df_grouped)
+  
+#   # ── Registry and run spec (unchanged from original) ────────────────────────
+#   registry_tbl <- make_estimation_registry(
+#     run_id               = run_id,
+#     subset_id            = subset_id,
+#     outcome              = outcome,
+#     group_id             = group_id,
+#     model_id             = model_id,
+#     group_col            = group_col,
+#     dataset_spec         = dataset_spec,
+#     formula_template     = formula_template,
+#     estimator_type       = estimator_type,
+#     term_pattern         = term_pattern,
+#     weights_col          = weights_col,
+#     weights_parquet_path = weights_parquet_path,
+#     data_filter          = data_filter,
+#     data_source          = data_source,
+#     vcov_specs           = vcov_specs,
+#     group_args           = group_args,
+#     n_rows_read          = n_rows_read,
+#     n_rows_after_filter  = n_rows_after_filter,
+#     subgroup_tbl         = subgroup_tbl,
+#     support_tbl          = support_tbl,
+#     fit_started          = fit_started,
+#     fit_finished         = fit_finished,
+#     coef_file            = coef_file,
+#     subgroup_file        = subgroup_file,
+#     support_file         = support_file,
+#     vcov_file            = if (write_vcov) vcov_file else NA_character_,
+#     registry_file        = registry_file,
+#     run_spec_file        = run_spec_file
+#   )
+  
+#   run_spec <- list(
+#     run_id               = run_id,
+#     run_stub             = run_stub,
+#     subset_id            = subset_id,
+#     outcome              = outcome,
+#     group_id             = group_id,
+#     model_id             = model_id,
+#     group_col            = group_col,
+#     dataset_spec         = dataset_spec,
+#     formula_template     = formula_template,
+#     estimator_type       = estimator_type,
+#     term_pattern         = term_pattern,
+#     weights_col          = weights_col,
+#     weights_parquet_path = weights_parquet_path,
+#     data_filter          = data_filter,
+#     data_source          = data_source,
+#     group_fun            = group_fun,
+#     group_args           = group_args,
+#     vcov_specs           = vcov_specs,
+#     group_palette        = group_palette,
+#     ci_level             = ci_level,
+#     write_vcov           = write_vcov
+#   )
+  
+#   arrow::write_parquet(subgroup_tbl, subgroup_file)
+#   arrow::write_parquet(support_tbl,  support_file)
+#   arrow::write_parquet(coef_tbl,     coef_file)
+#   arrow::write_parquet(registry_tbl, registry_file)
+#   if (write_vcov && !is.null(vcov_tbl)) arrow::write_parquet(vcov_tbl, vcov_file)
+#   saveRDS(run_spec, run_spec_file)
+  
+#   rm(subgroup_tbl, support_tbl, coef_tbl, vcov_tbl, registry_tbl, run_spec)
+#   gc()
+  
+#   list(
+#     coef_file        = coef_file,
+#     subgroup_file    = subgroup_file,
+#     support_file     = support_file,
+#     vcov_file        = if (write_vcov) vcov_file else NULL,
+#     registry_file    = registry_file,
+#     run_spec_file    = run_spec_file,
+#     skipped_existing = FALSE
+#   )
+# }
+
+
+# ORIGINAL STRUCTURE
+# run_one_estimation <- function(data_source,
+#                                data_filter,
+#                                dataset_spec,
+#                                subset_id,
+#                                outcome,
+#                                group_id,
+#                                group_col,
+#                                group_fun,
+#                                group_args,
+#                                model_id,
+#                                formula_template,
+#                                estimator_type,
+#                                term_pattern,
+#                                weights_col,
+#                                weights_parquet_path,
+#                                vcov_specs,
+#                                dir_out,
+#                                run_id,
+#                                run_stub,
+#                                group_palette  = NULL,
+#                                ci_level       = 0.95,
+#                                skip_existing  = TRUE,
+#                                write_vcov     = FALSE,
+#                                feols_args = list()) {
+#   
+#   run_dir <- file.path(dir_out, "tables", "by_run", run_stub)
+#   dir_ensure_local(run_dir)
+#   
+#   print(glue::glue("Starting run for model: {run_stub}"))
+#   
+#   coef_file     <- file.path(run_dir, "coef.parquet")
+#   subgroup_file <- file.path(run_dir, "subgroup.parquet")
+#   support_file  <- file.path(run_dir, "support.parquet")
+#   vcov_file     <- file.path(run_dir, "vcov.parquet")
+#   registry_file <- file.path(run_dir, "registry.parquet")
+#   run_spec_file <- file.path(run_dir, "run_spec.rds")
+#   
+#   required_files <- c(coef_file, subgroup_file, support_file, registry_file, run_spec_file)
+#   if (write_vcov) required_files <- c(required_files, vcov_file)
+#   
+#   if (skip_existing && all(file.exists(required_files))) {
+#     return(list(
+#       coef_file        = coef_file,
+#       subgroup_file    = subgroup_file,
+#       support_file     = support_file,
+#       vcov_file        = if (write_vcov) vcov_file else NULL,
+#       registry_file    = registry_file,
+#       run_spec_file    = run_spec_file,
+#       skipped_existing = TRUE
+#     ))
+#   }
+#   
+#   fit_started <- Sys.time()
+#   
+#   # ── Load long panel ────────────────────────────────────────────────────────
+#   df <- load_arrow_data(data_source, data_filter)
+#   n_rows_read         <- nrow(df)
+#   n_rows_after_filter <- nrow(df)
+#   
+#   # ── Join weights when applicable ───────────────────────────────────────────
+#   if (!is.na(weights_col) && !is.null(weights_parquet_path)) {
+#     weights_tbl <- arrow::read_parquet(weights_parquet_path) |>
+#       dplyr::select(dplyr::all_of(c(dataset_spec$unit_id, weights_col)))
+#     df <- df |> dplyr::left_join(weights_tbl, by = dataset_spec$unit_id)
+#     n_na_weights <- sum(is.na(df[[weights_col]]))
+#     if (n_na_weights > 0) {
+#       warning(glue::glue(
+#         "[{run_id}] {n_na_weights} rows have NA weights after join and will be dropped by feols()."
+#       ))
+#     }
+#   }
+#   
+#   # ── Apply grouping ─────────────────────────────────────────────────────────
+#   df_grouped <- apply_treatment_grouping(
+#     df = df, group_fun = group_fun, group_col = group_col, group_args = group_args
+#   )
+#   
+#   # ── Build formula and identify needed columns ──────────────────────────────
+#   model_formula <- build_model_formula(formula_template, outcome)
+#   
+#   needed_cols <- get_needed_columns(
+#     formula     = model_formula,
+#     trt_col     = dataset_spec$trt_col,
+#     group_col   = group_col,
+#     unit_id     = dataset_spec$unit_id,
+#     event_id    = dataset_spec$event_id,
+#     vcov_vars   = vcov_specs$vcov_vars,
+#     weights_col = weights_col
+#   )
+#   
+#   check_required_columns(df_grouped, needed_cols, context = run_id)
+#   df_grouped <- df_grouped |> dplyr::select(dplyr::all_of(needed_cols))
+#   
+#   # ── Fit subgroup models ────────────────────────────────────────────────────
+#   subgroup_models <- do.call(
+#     fit_subgroup_models,
+#     c(
+#       list(
+#         df             = df_grouped,
+#         group_col      = group_col,
+#         dataset_spec   = dataset_spec,
+#         formula        = model_formula,
+#         estimator_type = estimator_type,
+#         weights_col    = weights_col
+#       ),
+#       feols_args
+#     )
+#   )
+#   
+#   fit_finished <- Sys.time()
+#   
+#   # ── Extract tables ─────────────────────────────────────────────────────────
+#   shared_meta <- list(
+#     subset_id        = subset_id,
+#     outcome          = outcome,
+#     group_id         = group_id,
+#     group_col        = group_col,
+#     model_id         = model_id,
+#     formula_template = formula_template,
+#     estimator_type   = estimator_type,
+#     weights_col      = weights_col,
+#     group_palette    = group_palette
+#   )
+#   
+#   subgroup_tbl <- make_subgroup_run_summary(models = subgroup_models, meta = shared_meta) |>
+#     dplyr::mutate(run_id = run_id)
+#   
+#   support_tbl <- make_event_time_support_run_summary(models = subgroup_models, meta = shared_meta) |>
+#     dplyr::mutate(run_id = run_id)
+#   
+#   coef_tbl <- extract_all_coef_tables(
+#     models       = subgroup_models,
+#     meta         = shared_meta,
+#     vcov_specs   = vcov_specs,
+#     term_pattern = term_pattern,
+#     ci_level     = ci_level
+#   ) |> dplyr::mutate(run_id = run_id)
+#   
+#   vcov_tbl <- if (write_vcov) {
+#     extract_all_vcov_tables(
+#       models = subgroup_models, meta = shared_meta, vcov_specs = vcov_specs
+#     ) |> dplyr::mutate(run_id = run_id)
+#   } else {
+#     NULL
+#   }
+#   
+#   registry_tbl <- make_estimation_registry(
+#     run_id               = run_id,
+#     subset_id            = subset_id,
+#     outcome              = outcome,
+#     group_id             = group_id,
+#     model_id             = model_id,
+#     group_col            = group_col,
+#     dataset_spec         = dataset_spec,
+#     formula_template     = formula_template,
+#     estimator_type       = estimator_type,
+#     term_pattern         = term_pattern,
+#     weights_col          = weights_col,
+#     weights_parquet_path = weights_parquet_path,
+#     data_filter          = data_filter,
+#     data_source          = data_source,
+#     vcov_specs           = vcov_specs,
+#     group_args           = group_args,
+#     n_rows_read          = n_rows_read,
+#     n_rows_after_filter  = n_rows_after_filter,
+#     subgroup_tbl         = subgroup_tbl,
+#     support_tbl          = support_tbl,
+#     fit_started          = fit_started,
+#     fit_finished         = fit_finished,
+#     coef_file            = coef_file,
+#     subgroup_file        = subgroup_file,
+#     support_file         = support_file,
+#     vcov_file            = if (write_vcov) vcov_file else NA_character_,
+#     registry_file        = registry_file,
+#     run_spec_file        = run_spec_file
+#   )
+#   
+#   run_spec <- list(
+#     run_id               = run_id,
+#     run_stub             = run_stub,
+#     subset_id            = subset_id,
+#     outcome              = outcome,
+#     group_id             = group_id,
+#     model_id             = model_id,
+#     group_col            = group_col,
+#     dataset_spec         = dataset_spec,
+#     formula_template     = formula_template,
+#     estimator_type       = estimator_type,
+#     term_pattern         = term_pattern,
+#     weights_col          = weights_col,
+#     weights_parquet_path = weights_parquet_path,
+#     data_filter          = data_filter,
+#     data_source          = data_source,
+#     group_fun            = group_fun,
+#     group_args           = group_args,
+#     vcov_specs           = vcov_specs,
+#     group_palette        = group_palette,
+#     ci_level             = ci_level,
+#     write_vcov           = write_vcov
+#   )
+#   
+#   arrow::write_parquet(subgroup_tbl, subgroup_file)
+#   arrow::write_parquet(support_tbl,  support_file)
+#   arrow::write_parquet(coef_tbl,     coef_file)
+#   arrow::write_parquet(registry_tbl, registry_file)
+#   if (write_vcov && !is.null(vcov_tbl)) arrow::write_parquet(vcov_tbl, vcov_file)
+#   saveRDS(run_spec, run_spec_file)
+#   
+#   rm(subgroup_models, df, df_grouped,
+#      subgroup_tbl, support_tbl, coef_tbl, vcov_tbl, registry_tbl, run_spec)
+#   gc()
+#   
+#   list(
+#     coef_file        = coef_file,
+#     subgroup_file    = subgroup_file,
+#     support_file     = support_file,
+#     vcov_file        = if (write_vcov) vcov_file else NULL,
+#     registry_file    = registry_file,
+#     run_spec_file    = run_spec_file,
+#     skipped_existing = FALSE
+#   )
+# }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1564,94 +2383,95 @@ rebuild_descriptive_tables <- function(dir_out, write_csv = TRUE, recursive = TR
 # SECTION 12 — Model fitting internals
 # ══════════════════════════════════════════════════════════════════════════════
 
-fit_subgroup_models <- function(df, group_col, dataset_spec, formula,
-                                estimator_type, weights_col = NA_character_, ...) {
-  
-  trt_col  <- dataset_spec$trt_col
-  unit_id  <- dataset_spec$unit_id
-  event_id <- dataset_spec$event_id
-  
-  groups <- df |>
-    dplyr::filter(!is.na(.data[[group_col]])) |>
-    dplyr::distinct(.data[[group_col]]) |>
-    dplyr::pull(.data[[group_col]]) |>
-    as.character() |>
-    sort()
-  
-  if (length(groups) == 0) stop(glue::glue("No non-NA values in group column '{group_col}'."))
-  
-  models <- purrr::map(groups, \(g) fit_one_subgroup_model(
-    df = df, group_col = group_col, group_value = g, trt_col = trt_col,
-    formula = formula, unit_id = unit_id, event_id = event_id,
-    estimator_type = estimator_type, weights_col = weights_col, ...
-  ))
-  
-  names(models) <- groups
-  models
-}
-
-
-fit_one_subgroup_model <- function(df, group_col, group_value, trt_col,
-                                   formula, unit_id, event_id,
-                                   estimator_type, weights_col = NA_character_, ...) {
-  
-  group_sym <- rlang::sym(group_col)
-  trt_sym   <- rlang::sym(trt_col)
-  
-  df_model <- dplyr::bind_rows(
-    df |> dplyr::filter(!!trt_sym == 0),
-    df |> dplyr::filter(!!trt_sym == 1, !!group_sym == group_value)
-  )
-  
-  feols_weights <- if (!is.na(weights_col) && weights_col %in% names(df_model)) {
-    stats::as.formula(paste("~", weights_col))
-  } else {
-    NULL
-  }
-  
-  model  <- fixest::feols(formula, data = df_model, weights = feols_weights, ...)
-  df_est <- df_model[fixest::obs(model), , drop = FALSE]
-  
-  attr(model, "group_value")    <- group_value
-  attr(model, "group_col")      <- group_col
-  attr(model, "unit_id")        <- unit_id
-  attr(model, "event_id")       <- normalize_optional_colname(event_id)
-  attr(model, "estimator_type") <- estimator_type
-  attr(model, "weights_col")    <- normalize_optional_colname(weights_col)
-  
-  if (estimator_type == "sunab") {
-    sv <- parse_sunab_vars(formula)
-    attr(model, "cohort_var")       <- sv$cohort_var
-    attr(model, "time_var")         <- sv$time_var
-    attr(model, "event_time_support") <- make_event_time_support_one_model(
-      df_est = df_est, trt_col = trt_col, unit_id = unit_id,
-      event_id = event_id, cohort_var = sv$cohort_var, time_var = sv$time_var
-    )
-  } else {
-    attr(model, "cohort_var")         <- NA_character_
-    attr(model, "time_var")           <- NA_character_
-    attr(model, "event_time_support") <- empty_event_time_support()
-  }
-  
-  attr(model, "n_treated_units") <- df_est |>
-    dplyr::filter(.data[[trt_col]] == 1) |>
-    dplyr::summarise(n = dplyr::n_distinct(.data[[unit_id]])) |>
-    dplyr::pull(n)
-  
-  attr(model, "n_treated_events") <- df_est |>
-    dplyr::filter(.data[[trt_col]] == 1) |>
-    (\(x) compute_n_distinct_optional(x, event_id))()
-  
-  attr(model, "n_control_units") <- df_est |>
-    dplyr::filter(.data[[trt_col]] == 0) |>
-    dplyr::summarise(n = dplyr::n_distinct(.data[[unit_id]])) |>
-    dplyr::pull(n)
-  
-  attr(model, "n_total_units")     <- dplyr::n_distinct(df_est[[unit_id]])
-  attr(model, "n_rows_model_data") <- nrow(df_est)
-  
-  model
-}
+# fit_subgroup_models <- function(df, group_col, dataset_spec, formula,
+#                                 estimator_type, weights_col = NA_character_, ...) {
+#   
+#   trt_col  <- dataset_spec$trt_col
+#   unit_id  <- dataset_spec$unit_id
+#   event_id <- dataset_spec$event_id
+#   
+#   groups <- df |>
+#     dplyr::filter(!is.na(.data[[group_col]])) |>
+#     dplyr::distinct(.data[[group_col]]) |>
+#     dplyr::pull(.data[[group_col]]) |>
+#     as.character() |>
+#     sort()
+#   
+#   if (length(groups) == 0) stop(glue::glue("No non-NA values in group column '{group_col}'."))
+#   
+#   models <- purrr::map(groups, \(g) fit_one_subgroup_model(
+#     df = df, group_col = group_col, group_value = g, trt_col = trt_col,
+#     formula = formula, unit_id = unit_id, event_id = event_id,
+#     estimator_type = estimator_type, weights_col = weights_col, ...
+#   ))
+#   
+#   names(models) <- groups
+#   models
+# }
+# 
+# 
+# fit_one_subgroup_model <- function(df, group_col, group_value, trt_col,
+#                                    formula, unit_id, event_id,
+#                                    estimator_type, weights_col = NA_character_, ...) {
+#   
+#   print(glue::glue("Estimating subgroup model for: {group_value}"))
+#   group_sym <- rlang::sym(group_col)
+#   trt_sym   <- rlang::sym(trt_col)
+#   
+#   df_model <- dplyr::bind_rows(
+#     df |> dplyr::filter(!!trt_sym == 0),
+#     df |> dplyr::filter(!!trt_sym == 1, !!group_sym == group_value)
+#   )
+#   
+#   feols_weights <- if (!is.na(weights_col) && weights_col %in% names(df_model)) {
+#     stats::as.formula(paste("~", weights_col))
+#   } else {
+#     NULL
+#   }
+#   
+#   model  <- fixest::feols(formula, data = df_model, weights = feols_weights, ...)
+#   df_est <- df_model[fixest::obs(model), , drop = FALSE]
+#   
+#   attr(model, "group_value")    <- group_value
+#   attr(model, "group_col")      <- group_col
+#   attr(model, "unit_id")        <- unit_id
+#   attr(model, "event_id")       <- normalize_optional_colname(event_id)
+#   attr(model, "estimator_type") <- estimator_type
+#   attr(model, "weights_col")    <- normalize_optional_colname(weights_col)
+#   
+#   if (estimator_type == "sunab") {
+#     sv <- parse_sunab_vars(formula)
+#     attr(model, "cohort_var")       <- sv$cohort_var
+#     attr(model, "time_var")         <- sv$time_var
+#     attr(model, "event_time_support") <- make_event_time_support_one_model(
+#       df_est = df_est, trt_col = trt_col, unit_id = unit_id,
+#       event_id = event_id, cohort_var = sv$cohort_var, time_var = sv$time_var
+#     )
+#   } else {
+#     attr(model, "cohort_var")         <- NA_character_
+#     attr(model, "time_var")           <- NA_character_
+#     attr(model, "event_time_support") <- empty_event_time_support()
+#   }
+#   
+#   attr(model, "n_treated_units") <- df_est |>
+#     dplyr::filter(.data[[trt_col]] == 1) |>
+#     dplyr::summarise(n = dplyr::n_distinct(.data[[unit_id]])) |>
+#     dplyr::pull(n)
+#   
+#   attr(model, "n_treated_events") <- df_est |>
+#     dplyr::filter(.data[[trt_col]] == 1) |>
+#     (\(x) compute_n_distinct_optional(x, event_id))()
+#   
+#   attr(model, "n_control_units") <- df_est |>
+#     dplyr::filter(.data[[trt_col]] == 0) |>
+#     dplyr::summarise(n = dplyr::n_distinct(.data[[unit_id]])) |>
+#     dplyr::pull(n)
+#   
+#   attr(model, "n_total_units")     <- dplyr::n_distinct(df_est[[unit_id]])
+#   attr(model, "n_rows_model_data") <- nrow(df_est)
+#   
+#   model
+# }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1676,6 +2496,7 @@ extract_all_coef_tables <- function(models, meta, vcov_specs, term_pattern, ci_l
 extract_coef_table_one_vcov <- function(model, vcov, vcov_id, vcov_label,
                                         meta, term_pattern, ci_level) {
   
+  print(glue::glue("Computing vcov coeftable for: {vcov}"))
   ct     <- fixest::coeftable(model, vcov = vcov)
   ct_tbl <- tibble::as_tibble(as.data.frame(ct), rownames = "term")
   
@@ -2124,6 +2945,7 @@ open_arrow_source <- function(data_source) {
   arrow::open_dataset(unlist(data_source), format = "parquet")
 }
 
+#OLDEST
 # load_arrow_data <- function(data_source, data_filter) {
 #   ds <- open_arrow_source(data_source)
 #   if (!is.null(data_filter)) {
@@ -2161,6 +2983,7 @@ load_arrow_data <- function(data_source, data_filter = NULL) {
     }
   )
 }
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════

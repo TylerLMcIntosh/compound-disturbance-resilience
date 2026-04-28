@@ -1,4 +1,4 @@
-# run_analysis.R
+# 06_dydid_v6.R
 # Execution script for the portable Sun-Abraham / TWFE DiD pipeline
 # -------------------------------------------------------
 # This script is the only file that should need to change when adapting the
@@ -38,9 +38,10 @@ rm(list = ls())
 
 if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
 library(here)
+here::i_am("code/06_dydid_v6.ipynb")
 
 required_script_pkgs <- c(
-  "dplyr", "ggplot2", "tidyr", "readr", "purrr", "tibble", "stringr", "forcats", "fixest", "arrow", "glue", "here"
+  "dplyr", "ggplot2", "tidyr", "readr", "purrr", "tibble", "stringr", "forcats", "fixest", "arrow", "glue", "here", "WeightIt"
 )
 
 
@@ -60,6 +61,8 @@ library(forcats)
 library(fixest)
 library(arrow)
 library(glue)
+library(WeightIt)
+
 
 source(here::here("code", "portable_sunab3.R"))
 
@@ -385,26 +388,32 @@ model_specs <- dplyr::bind_rows(
   make_model_spec(
     model_id         = "b_pdsi_sunab_twfe",
     formula_template = paste0(
-      "{outcome} ~ biotic_relaxedforestnorm + pdsi_annual",
-      " + sunab(FirstTreat, year, ref.p = -6)",
+      "{outcome} ~ sunab(FirstTreat, year, ref.p = -6)",
       " | pt_id + year"
     ),
     estimator_type   = "sunab",
     term_pattern     = "^year::",
-    weights_col      = NA_character_   # unweighted
+    weights_col      = NA_character_,   # unweighted
+    feols_args = list(
+      mem.clean = TRUE,
+      nthreads = 1
+    )
   ),
   
   # ── Weighted Sun-Abraham (GLM ATO) ────────────────────────────────────────
   make_model_spec(
     model_id         = "b_pdsi_sunab_twfe_glmatotopoclimnfg",
     formula_template = paste0(
-      "{outcome} ~ biotic_relaxedforestnorm + pdsi_annual",
-      " + sunab(FirstTreat, year, ref.p = -6)",
+      "{outcome} ~ sunab(FirstTreat, year, ref.p = -6)",
       " | pt_id + year"
     ),
     estimator_type   = "sunab",
     term_pattern     = "^year::",
-    weights_col      = "glm_ato_topoclimnfg_weights"
+    weights_col      = "glm_ato_topoclimnfg_weights",
+    feols_args = list(
+      mem.clean = TRUE,
+      nthreads = 1
+    )
   ),
   
   # ── Plain TWFE (unweighted, for robustness) ────────────────────────────────
@@ -432,35 +441,35 @@ vcov_specs <- tibble::tibble(
     #"iid",
     "cluster_pt",
     #"cluster_eco4",
-    "cluster_eco3",
-    "conley_125km_20km"
+    "cluster_eco3"#,
+    #"conley_125km_20km"
   ),
   vcov_label = c(
     #"IID Classical",
     "Clustered SEs: pt_id",
     #"Clustered SEs: us_l4code",
-    "Clustered SEs: us_l3code",
-    "Conley SEs: 125 km cutoff, 20 km pixel"
+    "Clustered SEs: us_l3code"#,
+    #"Conley SEs: 125 km cutoff, 20 km pixel"
   ),
   vcov = list(
     #"iid",
     stats::as.formula("~ pt_id"),
     #stats::as.formula("~ us_l4code"),
-    stats::as.formula("~ us_l3code"),
-    fixest::vcov_conley(
-      lat      = "lat",
-      lon      = "long",
-      cutoff   = 125,
-      pixel    = 20,
-      distance = "triangular"
-    )
+    stats::as.formula("~ us_l3code")#,
+    # fixest::vcov_conley(
+    #   lat      = "lat",
+    #   lon      = "long",
+    #   cutoff   = 125,
+    #   pixel    = 20,
+    #   distance = "triangular"
+    # )
   ),
   vcov_vars = list(
     #character(0),
     "pt_id",
     #"us_l4code",
-    "us_l3code",
-    c("lat", "long")
+    "us_l3code"#,
+    #c("lat", "long")
   )
 )
 
@@ -550,7 +559,7 @@ rebuild_weighting_tables(dir_out = dir_results, write_csv = TRUE)
 
 results_sunab <- run_experiment(
   dataset_spec          = dataset_spec,
-  analysis_subset_specs = analysis_subset_specs,
+  analysis_subset_specs = analysis_subset_specs[1,],
   outcome_specs         = outcome_specs,
   treatment_group_specs = treatment_group_specs,
   model_specs           = model_specs |> dplyr::filter(estimator_type == "sunab"),

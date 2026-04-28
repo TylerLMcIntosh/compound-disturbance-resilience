@@ -1,10 +1,27 @@
+cyverse = TRUE
 
 run_name <- "GEE_resilience_v6_operational_ss500_ts50000"
 
-dir_base    <- file.path(
+
+if(cyverse) {
+  Sys.setenv(LD_LIBRARY_PATH = paste(
+    "/opt/conda/lib",
+    Sys.getenv("LD_LIBRARY_PATH"),
+    sep = ":"
+  ))
+  
+  Sys.setenv(PATH = paste("/usr/bin:/bin:/usr/local/bin", Sys.getenv("PATH"), sep = ":"))
+  Sys.setenv(PKG_CONFIG_PATH = "/usr/lib/x86_64-linux-gnu/pkgconfig")
+  
+  dir_base    <- file.path(
     "~/data-store/data/iplant/home/shared/earthlab/macrosystems/tlm", run_name
   )
-dir_derived    <- file.path(dir_base, "data", "derived")
+  dir_derived    <- file.path(dir_base, "data", "derived")
+} else {
+  dir_derived <- here("data/derived", run_name)
+}
+
+
 
 required_script_pkgs <- c(
   "here", "arrow", "dplyr", "purrr"
@@ -77,7 +94,7 @@ walk(long_files, function(f) {
   out_file <- file.path(dir_long_filtered, basename(f))
   
   read_parquet(f) |>
-    filter((year >= 1997 & burn_year >= 2002) | (year > 1997 & is.na(burn_year))) |>
+    filter((year >= 1992 & burn_year >= 2002) | (year > 1992 & is.na(burn_year))) |>
     write_parquet(out_file)
 })
 
