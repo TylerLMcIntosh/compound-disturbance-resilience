@@ -20,7 +20,7 @@ library(here)
 here::i_am("code/06_dydid_v6.ipynb")
 
 required_script_pkgs <- c(
-  "dplyr", "ggplot2", "tidyr", "arrow"
+  "dplyr", "ggplot2", "tidyr", "arrow", "fixest"
 )
 
 
@@ -33,6 +33,7 @@ library(dplyr)
 library(ggplot2)
 library(tidyr)
 library(arrow)
+library(fixest)
 
 
 
@@ -49,7 +50,7 @@ set.seed(seed)
 run_name <- "GEE_resilience_v6_operational_ss500_ts50000"
 version <- "v6"
 
-cyverse <- TRUE
+cyverse <- FALSE
 
 if (cyverse) {
   dir_base    <- file.path(
@@ -77,9 +78,32 @@ dir_parquet_short <- file.path(dir_data, "parquet_short_filtered")
 
 dir_ensure_local(c(dir_data, dir_parquet_long, dir_raw, dir_manual, dir_results, dir_figs))
 
+names(arrow::open_dataset(dir_parquet_short))
+names(arrow::open_dataset(dir_parquet_long))
+
+dats <- arrow::open_dataset(dir_parquet_long) |> 
+  select("pt_id", "fire", "lat", "long",
+         "nfg_factor",
+         "biotic_relaxedforestnorm_5_yrs_prior_sum_yot", "pdsi_annual_5_yrs_prior_sum_yot",
+         "FirstTreat", "year") |>
+  collect()
+
+pts <- unique(dats$pt_id)
+
+dats_t1 <- dats |> filter(pt_id %in% sample(pts, size = 1000))
+dats_t2 <- dats |> filter(pt_id %in% sample(pts, size = 10000))
+dats_t3 <- dats |> filter(pt_id %in% sample(pts, size = 100000))
 
 
-dats <- arrow::open_dataset(dir_parquet_long) |> collect()
+s_t1 <- fixest:::sunab(dats_t1$FirstTreat, dats_t1$year, ref.p = -6)
+s_t2 <- fixest:::sunab(dats_t2$FirstTreat, dats_t2$year, ref.p = -6)
+s_t3 <- fixest:::sunab(dats_t3$FirstTreat, dats_t3$year, ref.p = -6)
+
+
+
+vcov1 <- arrow::read_parquet(here(dir_results, "tables/by_run/nfg_Douglas-fir_Group__vcf_tree__b10_pdsin4t1__b_pdsi_sunab_twfe_glmatotopoclim/vcov.parquet"))
+
+
 
 hist(dats$year)
 
@@ -97,6 +121,28 @@ length(unique(nd$pt_id))
 hist(nd$year)
 
 
+
+
+dats_s <- arrow::open_dataset(dir_parquet_short) |> 
+  select("pt_id", "fire", "lat", "long",
+         "nfg_factor") |>
+  collect()
+
+
+dats_s |> filter(is.na(nfg_factor))
+unique(dats_s$nfg_factor)
+
+dats_s |>
+  group_by(nfg_factor) |>
+  summarize(n = n()) |>
+  arrange(desc(n))
+
+
+dats_s |>
+  filter(fire == 1) |>
+  group_by(nfg_factor) |>
+  summarize(n = n()) |>
+  arrange(desc(n))
 
 
 

@@ -178,6 +178,8 @@ set_cd_groups_with_control <- function(df,
 
 ```
 
+
+
 # Sunab functions
 ```{r}
 # library(dplyr)
@@ -365,9 +367,9 @@ set_cd_groups_with_control <- function(df,
 
 ```{r}
 
-test_dats_sn <- arrow::read_parquet(here(dir_derived, "parquet", "dats_long_sierranevada.parquet"))
-test_dats_sn_short <- arrow::read_parquet(here(dir_derived, "parquet", "dats_short_sierranevada.parquet"))
-test_dats_nc <- arrow::read_parquet(here(dir_derived, "parquet", "dats_long_northcascades.parquet"))
+test_dats_sn <- arrow::read_parquet(here(dir_derived, "parquet_long", "dats_long_sierranevada.parquet"))
+test_dats_sn_short <- arrow::read_parquet(here(dir_derived, "parquet_short", "dats_short_sierranevada.parquet"))
+test_dats_nc <- arrow::read_parquet(here(dir_derived, "parquet_long", "dats_long_northcascades.parquet"))
 
 #test_dats_sr <- arrow::read_parquet(here(dir_derived, "parquet", "dats_long_southernrockies.parquet"))
 
@@ -396,23 +398,23 @@ test_dats_nc <- test_dats_nc |>
   filter(year >= 1997) #|>
   #mutate(use_tv_covars = ifelse(Time_to_Treatment <= -5 & Time_to_Treatment <= 0, 0, 1))
 
-
-# WHY ARE SOME UNITS NA FOR THE BIOTIC/PDSI SUMS?? - THESE ARE ALL CORRECT, AND SHOULD BE NA
-test_dats_sn |> group_by(b10_pdsin3t1) |> summarize(n = n())
-why_na <- test_dats_sn |>
-  filter(is.na(b10_pdsin3t1) & fire == 1) |>
-  select(b10_pdsin3t1, pdsi_annual_5_yrs_prior_threshold_n3_yot, biotic_relaxedforestnorm_5_yrs_prior_sum_yot, fire, year, burn_year, pt_id, lat, long)
-length(unique(why_na$pt_id))
-unique(why_na$year)
-length(unique(test_dats_sn$pt_id))
-why_na_sf <- why_na |>
-  distinct(pt_id, .keep_all = TRUE) |>
-  sf::st_as_sf(coords = c("long", "lat"), crs = 4326)
-
-mapview::mapview(why_na_sf)
-write_csv(why_na_sf, file = here::here(dir_derived, "sierra_nevada_biotic_or_pdsi_nas_unique_pt_id.csv"))
-
-hist(why_na$burn_year) # equal representation across years
+# 
+# # WHY ARE SOME UNITS NA FOR THE BIOTIC/PDSI SUMS?? - THESE ARE ALL CORRECT, AND SHOULD BE NA
+# test_dats_sn |> group_by(b10_pdsin3t1) |> summarize(n = n())
+# why_na <- test_dats_sn |>
+#   filter(is.na(b10_pdsin3t1) & fire == 1) |>
+#   select(b10_pdsin3t1, pdsi_annual_5_yrs_prior_threshold_n3_yot, biotic_relaxedforestnorm_5_yrs_prior_sum_yot, fire, year, burn_year, pt_id, lat, long)
+# length(unique(why_na$pt_id))
+# unique(why_na$year)
+# length(unique(test_dats_sn$pt_id))
+# why_na_sf <- why_na |>
+#   distinct(pt_id, .keep_all = TRUE) |>
+#   sf::st_as_sf(coords = c("long", "lat"), crs = 4326)
+# 
+# mapview::mapview(why_na_sf)
+# write_csv(why_na_sf, file = here::here(dir_derived, "sierra_nevada_biotic_or_pdsi_nas_unique_pt_id.csv"))
+# 
+# hist(why_na$burn_year) # equal representation across years
 
 # 
 # test_dats_sn_gwf <- test_dats_sn |>
@@ -491,6 +493,1085 @@ hist(why_na$burn_year) # equal representation across years
 # sunab_gwf_p1 + xlim(-5, 25)
 # sunab_gwf_p2 + xlim(-5, 25)
 # sunab_gwf_p3 + xlim(-5, 25)
+
+```
+
+
+# Try interacted Sunab (again)
+
+```{r}
+
+test_dats_sn <- test_dats_sn |>
+  dplyr::mutate(
+    b10_pdsin3t1 = factor(b10_pdsin3t1)
+  )
+
+table(test_dats_sn$b10_pdsin3t1, useNA = "ifany")
+
+with(
+  test_dats_sn,
+  table(b10_pdsin3t1, is.na(FirstTreat), useNA = "ifany")
+)
+
+
+test_dats_sn2 <- test_dats_sn |>
+  dplyr::mutate(
+    b10_pdsin3t1_ctrl = as.character(b10_pdsin3t1),
+    b10_pdsin3t1_ctrl = tidyr::replace_na(b10_pdsin3t1_ctrl, "control"),
+    b10_pdsin3t1_ctrl = factor(
+      b10_pdsin3t1_ctrl,
+      levels = c("control", "f", "bf", "df", "bdf")
+    )
+  )
+
+# Try with control group
+est_sunab <- feols(
+  rap_tree ~ sunab(FirstTreat, year, ref.p = -6, no_agg = TRUE):b10_pdsin3t1 | pt_id + year,
+  data = test_dats_sn2,
+  mem.clean = TRUE,
+  lean = FALSE,
+  cluster = ~ pt_id
+)
+
+cn <- names(coef(est_sunab, agg = FALSE))
+cat(cn, sep = "\n")
+
+agg_cd_event <- aggregate(
+  est_sunab,
+  agg = "(year::-?[0-9]+):cohort::[0-9]+:(b10_pdsin3t1.*)"
+)
+
+
+es_df <- as.data.frame(agg_cd_event) |>
+  rownames_to_column("term") |>
+  rename(
+    estimate = Estimate,
+    se = `Std. Error`
+  ) |>
+  mutate(
+    event_time = as.integer(str_extract(term, "(?<=year::)-?[0-9]+")),
+    b10_pdsin3t1 = str_extract(term, "b10_pdsin3t1.*$"),
+    conf_low = estimate - 1.96 * se,
+    conf_high = estimate + 1.96 * se
+  )
+
+ggplot(es_df, aes(x = event_time, y = estimate, color = b10_pdsin3t1)) +
+  geom_hline(yintercept = 0, linewidth = 0.3) +
+  geom_vline(xintercept = -1, linetype = "dashed", linewidth = 0.3) +
+  geom_ribbon(
+    aes(ymin = conf_low, ymax = conf_high, fill = b10_pdsin3t1),
+    alpha = 0.15,
+    color = NA
+  ) +
+  geom_line() +
+  geom_point() +
+  labs(
+    x = "Years since treatment",
+    y = "Estimated effect on rap_tree",
+    color = "Group",
+    fill = "Group"
+  ) +
+  theme_minimal()
+
+
+# Compare results to separate dummy version
+
+
+test_dats_sn2 <- test_dats_sn |>
+  dplyr::mutate(
+    cd_f   = as.integer(b10_pdsin3t1 == "f"),
+    cd_bf  = as.integer(b10_pdsin3t1 == "bf"),
+    cd_df  = as.integer(b10_pdsin3t1 == "df"),
+    cd_bdf = as.integer(b10_pdsin3t1 == "bdf"),
+    dplyr::across(
+      c(cd_f, cd_bf, cd_df, cd_bdf),
+      ~ tidyr::replace_na(.x, 0L)
+    )
+  )
+
+test_dats_sn2_small <- test_dats_sn2 |>
+  dplyr::filter(
+    pt_id %in% sample(unique(test_dats_sn2$pt_id), 10000)
+  )
+
+est_sunab_dummy <- feols(
+  rap_tree ~
+    sunab(FirstTreat, year, ref.p = -6, no_agg = FALSE):cd_f +
+    sunab(FirstTreat, year, ref.p = -6, no_agg = FALSE):cd_bf +
+    sunab(FirstTreat, year, ref.p = -6, no_agg = FALSE):cd_df +
+    sunab(FirstTreat, year, ref.p = -6, no_agg = FALSE):cd_bdf |
+    pt_id + year,
+  data = test_dats_sn2_small,
+  cluster = ~ pt_id
+)
+
+
+cn_dummy <- names(coef(est_sunab_dummy, agg = FALSE))
+cat(cn_dummy, sep = "\n")
+
+agg_cd_event_dummy <- aggregate(
+  est_sunab_dummy,
+  agg = "(year::-?[0-9]+):cohort::[0-9]+:(cd.*)"
+)
+
+
+es_df_dummy <- as.data.frame(agg_cd_event_dummy) |>
+  rownames_to_column("term") |>
+  rename(
+    estimate = Estimate,
+    se = `Std. Error`
+  ) |>
+  mutate(
+    event_time = as.integer(str_extract(term, "(?<=year::)-?[0-9]+")),
+    cd = str_extract(term, "cd_.*$"),
+    conf_low = estimate - 1.96 * se,
+    conf_high = estimate + 1.96 * se
+  )
+
+ggplot(es_df_dummy, aes(x = event_time, y = estimate, color = cd)) +
+  geom_hline(yintercept = 0, linewidth = 0.3) +
+  geom_vline(xintercept = -1, linetype = "dashed", linewidth = 0.3) +
+  geom_ribbon(
+    aes(ymin = conf_low, ymax = conf_high, fill = cd),
+    alpha = 0.15,
+    color = NA
+  ) +
+  geom_line() +
+  geom_point() +
+  labs(
+    x = "Years since treatment",
+    y = "Estimated effect on rap_tree",
+    color = "Group",
+    fill = "Group"
+  ) +
+  theme_minimal()
+
+#aggregate
+att_2_6_dummy <- aggregate(
+  est_sunab_dummy,
+  agg = "year::[2-6]:cohort::[0-9]+:(cd_.*)"
+)
+
+att_7_11_dummy <- aggregate(
+  est_sunab_dummy,
+  agg = "year::(?:7|8|9|10|11):cohort::[0-9]+:(cd_.*)"
+)
+
+#mutate for plot
+att_windows_df <- dplyr::bind_rows(
+  as.data.frame(att_2_6_dummy) |>
+    tibble::rownames_to_column("cd") |>
+    dplyr::mutate(window = "Years 2–6"),
+  
+  as.data.frame(att_7_11_dummy) |>
+    tibble::rownames_to_column("cd") |>
+    dplyr::mutate(window = "Years 7–11")
+) |>
+  dplyr::rename(
+    estimate = Estimate,
+    se = `Std. Error`
+  ) |>
+  dplyr::mutate(
+    cd = stringr::str_extract(cd, "cd_.*$"),
+    conf_low = estimate - 1.96 * se,
+    conf_high = estimate + 1.96 * se
+  )
+
+
+
+#plot
+ggplot(att_windows_df, aes(x = cd, y = estimate, color = window)) +
+  geom_hline(yintercept = 0, linewidth = 0.3) +
+  geom_pointrange(
+    aes(ymin = conf_low, ymax = conf_high),
+    position = position_dodge(width = 0.5)
+  ) +
+  labs(
+    x = "Group",
+    y = "Average estimated effect on rap_tree",
+    color = "Post-treatment window"
+  ) +
+  theme_minimal()
+
+
+
+# PRE-REFERENCE WALD TESTS
+
+groups <- c("cd_f", "cd_bf", "cd_df", "cd_bdf")
+
+pretrend_tests <- purrr::map_dfr(groups, \(g) {
+  out <- fixest::wald(
+    est_sunab_dummy,
+    keep = paste0("^year::-(?:7|8|9|10|11|12|13|14|15):cohort::[0-9]+:", g, "$"),
+    print = FALSE
+  )
+
+  tibble::tibble(
+    group = g,
+    stat = out$stat,
+    p = out$p,
+    df1 = out$df1,
+    df2 = out$df2
+  )
+})
+
+
+
+
+build_agg_eventstudy <- function(model) {
+  b <- coef(model, agg = FALSE)
+  V <- vcov(model)
+  cn <- names(b)
+
+  parsed <- tibble(
+    term = cn,
+    event_time = as.integer(str_extract(cn, "(?<=year::)-?[0-9]+")),
+    cd = str_extract(cn, "cd_.*$")
+  )
+
+  groups <- parsed |>
+    distinct(event_time, cd) |>
+    arrange(cd, event_time)
+
+  A <- matrix(
+    0,
+    nrow = nrow(groups),
+    ncol = length(b),
+    dimnames = list(
+      paste0("year::", groups$event_time, ":", groups$cd),
+      cn
+    )
+  )
+
+  for (i in seq_len(nrow(groups))) {
+    idx <- which(
+      parsed$event_time == groups$event_time[i] &
+        parsed$cd == groups$cd[i]
+    )
+
+    A[i, idx] <- 1 / length(idx)
+  }
+
+  b_agg <- as.numeric(A %*% b)
+  V_agg <- A %*% V %*% t(A)
+
+  list(
+    coef = b_agg,
+    vcov = V_agg,
+    groups = groups
+  )
+}
+
+agg_es <- build_agg_eventstudy(est_sunab_dummy)
+
+wald_zero_pretrend <- function(agg_obj, group, pre_years = -15:-7) {
+  idx <- which(
+    agg_obj$groups$cd == group &
+      agg_obj$groups$event_time %in% pre_years
+  )
+
+  idx <- idx[order(agg_obj$groups$event_time[idx])]
+
+  b <- agg_obj$coef[idx]
+  V <- agg_obj$vcov[idx, idx, drop = FALSE]
+
+  stat <- as.numeric(
+    t(b) %*% solve(V) %*% b
+  )
+
+  df <- length(idx)
+
+  p <- pchisq(
+    stat,
+    df = df,
+    lower.tail = FALSE
+  )
+
+  tibble(
+    group = group,
+    stat = stat,
+    df = df,
+    p = p
+  )
+}
+
+groups <- c("cd_f", "cd_bf", "cd_df", "cd_bdf")
+
+pretrend_tests <- purrr::map_dfr(
+  groups,
+  ~ wald_zero_pretrend(
+    agg_es,
+    group = .x,
+    pre_years = -15:-7
+  )
+)
+
+pretrend_tests
+
+
+
+wald_pretrend_slope <- function(agg_obj, group, pre_years = -15:-7) {
+  idx <- which(
+    agg_obj$groups$cd == group &
+      agg_obj$groups$event_time %in% pre_years
+  )
+
+  idx <- idx[order(agg_obj$groups$event_time[idx])]
+
+  y <- agg_obj$coef[idx]
+  V <- agg_obj$vcov[idx, idx, drop = FALSE]
+  t <- agg_obj$groups$event_time[idx]
+
+  X <- cbind(
+    intercept = 1,
+    slope = t
+  )
+
+  Vinv <- solve(V)
+
+  beta_hat <- solve(t(X) %*% Vinv %*% X) %*%
+    t(X) %*% Vinv %*% y
+
+  vcov_beta <- solve(t(X) %*% Vinv %*% X)
+
+  slope_est <- beta_hat["slope", 1]
+  slope_se <- sqrt(vcov_beta["slope", "slope"])
+
+  stat <- (slope_est / slope_se)^2
+  p <- pchisq(stat, df = 1, lower.tail = FALSE)
+
+  tibble::tibble(
+    group = group,
+    slope = slope_est,
+    slope_se = slope_se,
+    stat = stat,
+    df = 1,
+    p = p
+  )
+}
+
+
+slope_tests <- purrr::map_dfr(
+  c("cd_f", "cd_bf", "cd_df", "cd_bdf"),
+  ~ wald_pretrend_slope(
+    agg_es,
+    group = .x,
+    pre_years = -15:-7
+  )
+)
+
+slope_tests
+
+
+# COMPARE POST-TRT EFFECTS
+
+wald_compare_window <- function(
+    agg_obj,
+    group_a,
+    group_b,
+    years = 2:6
+) {
+  idx_a <- which(
+    agg_obj$groups$cd == group_a &
+      agg_obj$groups$event_time %in% years
+  )
+
+  idx_b <- which(
+    agg_obj$groups$cd == group_b &
+      agg_obj$groups$event_time %in% years
+  )
+
+  L <- numeric(length(agg_obj$coef))
+
+  L[idx_a] <-  1 / length(idx_a)
+  L[idx_b] <- -1 / length(idx_b)
+
+  est <- sum(L * agg_obj$coef)
+
+  var <- as.numeric(
+    t(L) %*% agg_obj$vcov %*% L
+  )
+
+  se <- sqrt(var)
+
+  stat <- (est / se)^2
+
+  p <- pchisq(
+    stat,
+    df = 1,
+    lower.tail = FALSE
+  )
+
+  tibble::tibble(
+    contrast = paste(group_a, "vs", group_b),
+    estimate_diff = est,
+    se = se,
+    stat = stat,
+    df = 1,
+    p = p
+  )
+}
+
+library(purrr)
+library(dplyr)
+
+pairs <- list(
+  c("cd_f",   "cd_bf"),
+  c("cd_f",   "cd_df"),
+  c("cd_f",   "cd_bdf")
+)
+
+post_2_6_tests <- purrr::map_dfr(
+  pairs,
+  ~ wald_compare_window(
+    agg_es,
+    group_a = .x[1],
+    group_b = .x[2],
+    years = 2:6
+  )
+)
+
+
+post_2_6_tests <- post_2_6_tests |>
+  mutate(
+    p_bh = p.adjust(p, method = "BH"),
+    p_holm = p.adjust(p, method = "holm")
+  )
+
+post_2_6_tests
+
+ggplot(post_2_6_tests, aes(
+  x = contrast,
+  y = estimate_diff
+)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_pointrange(
+    aes(
+      ymin = estimate_diff - 1.96 * se,
+      ymax = estimate_diff + 1.96 * se
+    )
+  ) +
+  coord_flip() +
+  theme_minimal()
+
+
+
+
+
+post_2_15_tests <- purrr::map_dfr(
+  pairs,
+  ~ wald_compare_window(
+    agg_es,
+    group_a = .x[1],
+    group_b = .x[2],
+    years = 2:15
+  )
+)
+
+
+post_2_15_tests <- post_2_15_tests |>
+  mutate(
+    p_bh = p.adjust(p, method = "BH"),
+    p_holm = p.adjust(p, method = "holm")
+  )
+
+post_2_15_tests
+
+ggplot(post_2_15_tests, aes(
+  x = contrast,
+  y = estimate_diff
+)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_pointrange(
+    aes(
+      ymin = estimate_diff - 1.96 * se,
+      ymax = estimate_diff + 1.96 * se
+    )
+  ) +
+  coord_flip() +
+  theme_minimal()
+
+
+
+post_10_15_tests <- purrr::map_dfr(
+  pairs,
+  ~ wald_compare_window(
+    agg_es,
+    group_a = .x[1],
+    group_b = .x[2],
+    years = 10:15
+  )
+)
+
+
+post_10_15_tests <- post_10_15_tests |>
+  mutate(
+    p_bh = p.adjust(p, method = "BH"),
+    p_holm = p.adjust(p, method = "holm")
+  )
+
+post_10_15_tests
+
+ggplot(post_10_15_tests, aes(
+  x = contrast,
+  y = estimate_diff
+)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_pointrange(
+    aes(
+      ymin = estimate_diff - 1.96 * se,
+      ymax = estimate_diff + 1.96 * se
+    )
+  ) +
+  coord_flip() +
+  theme_minimal()
+
+
+
+
+
+# slope comparisons
+
+compare_group_slopes <- function(
+    agg_obj,
+    group_a,
+    group_b,
+    years = 2:15
+) {
+  idx <- which(
+    agg_obj$groups$cd %in% c(group_a, group_b) &
+      agg_obj$groups$event_time %in% years
+  )
+
+  df <- agg_obj$groups[idx, ] |>
+    mutate(
+      estimate = agg_obj$coef[idx],
+      group = factor(cd, levels = c(group_a, group_b))
+    )
+
+  V <- agg_obj$vcov[idx, idx, drop = FALSE]
+
+  X <- model.matrix(
+    ~ event_time * group,
+    data = df
+  )
+
+  Vinv <- solve(V)
+
+  beta_hat <- solve(t(X) %*% Vinv %*% X) %*%
+    t(X) %*% Vinv %*% df$estimate
+
+  vcov_beta <- solve(t(X) %*% Vinv %*% X)
+
+  interaction_term <- grep(
+    "^event_time:group",
+    rownames(vcov_beta),
+    value = TRUE
+  )
+
+  slope_diff <- beta_hat[interaction_term, 1]
+  slope_se <- sqrt(vcov_beta[interaction_term, interaction_term])
+
+  stat <- (slope_diff / slope_se)^2
+  p <- pchisq(stat, df = 1, lower.tail = FALSE)
+
+  tibble::tibble(
+    contrast = paste(group_a, "vs", group_b),
+    slope_diff = slope_diff,
+    slope_se = slope_se,
+    stat = stat,
+    p = p
+  )
+}
+
+
+slope_comparisons <- purrr::map_dfr(
+  pairs,
+  ~ compare_group_slopes(
+    agg_es,
+    group_a = .x[1],
+    group_b = .x[2],
+    years = 2:15
+  )
+)
+
+slope_comparisons
+
+
+# event-time group differences
+
+library(dplyr)
+library(stringr)
+library(tibble)
+library(ggplot2)
+
+build_agg_eventstudy_by_cohort_group <- function(model) {
+  b <- coef(model, agg = FALSE)
+  V <- vcov(model)
+  cn <- names(b)
+
+  parsed <- tibble(
+    term = cn,
+    event_time = as.integer(str_extract(cn, "(?<=year::)-?[0-9]+")),
+    cohort = as.integer(str_extract(cn, "(?<=cohort::)[0-9]+")),
+    cd = str_extract(cn, "cd_.*$")
+  ) |>
+    filter(!is.na(event_time), !is.na(cohort), !is.na(cd)) |>
+    mutate(
+      cohort_group = case_when(
+        cohort >= 2000 & cohort <= 2010 ~ "2000–2010",
+        cohort >= 2011 & cohort <= 2020 ~ "2011–2020",
+        TRUE ~ NA_character_
+      )
+    ) |>
+    filter(!is.na(cohort_group))
+
+  groups <- parsed |>
+    distinct(event_time, cd, cohort_group) |>
+    arrange(cd, cohort_group, event_time)
+
+  A <- matrix(
+    0,
+    nrow = nrow(groups),
+    ncol = length(b),
+    dimnames = list(
+      paste0(groups$cohort_group, ":", groups$cd, ":year::", groups$event_time),
+      cn
+    )
+  )
+
+  for (i in seq_len(nrow(groups))) {
+    idx <- which(
+      parsed$event_time == groups$event_time[i] &
+        parsed$cd == groups$cd[i] &
+        parsed$cohort_group == groups$cohort_group[i]
+    )
+
+    A[i, idx] <- 1 / length(idx)
+  }
+
+  b_agg <- as.numeric(A %*% b)
+  V_agg <- A %*% V %*% t(A)
+
+  list(
+    coef = b_agg,
+    vcov = V_agg,
+    groups = groups
+  )
+}
+
+agg_es_cohort_group <- build_agg_eventstudy_by_cohort_group(est_sunab_dummy)
+
+es_cohort_group_df <- agg_es_cohort_group$groups |>
+  mutate(
+    estimate = agg_es_cohort_group$coef,
+    se = sqrt(diag(agg_es_cohort_group$vcov)),
+    conf_low = estimate - 1.96 * se,
+    conf_high = estimate + 1.96 * se
+  )
+
+ggplot(
+  es_cohort_group_df,
+  aes(
+    x = event_time,
+    y = estimate,
+    color = cohort_group,
+    fill = cohort_group
+  )
+) +
+  geom_hline(yintercept = 0, linewidth = 0.3) +
+  geom_vline(xintercept = -1, linetype = "dashed", linewidth = 0.3) +
+  geom_ribbon(
+    aes(ymin = conf_low, ymax = conf_high),
+    alpha = 0.15,
+    color = NA
+  ) +
+  geom_line() +
+  geom_point(size = 1.5) +
+  facet_wrap(~ cd) +
+  labs(
+    x = "Years since treatment",
+    y = "Estimated effect on rap_tree",
+    color = "Cohort group",
+    fill = "Cohort group"
+  ) +
+  theme_minimal()
+
+
+years <- 2:15
+
+loo <- purrr::map_dfr(years, function(drop_year) {
+  purrr::map_dfr(
+    pairs,
+    ~ compare_group_slopes(
+      agg_es,
+      group_a = .x[1],
+      group_b = .x[2],
+      years = setdiff(years, drop_year)
+    )
+  ) |>
+    mutate(dropped_year = drop_year)
+})
+
+
+loo <- loo |>
+  mutate(
+    conf_low = slope_diff - 1.96 * slope_se,
+    conf_high = slope_diff + 1.96 * slope_se
+  )
+
+ggplot(
+  loo,
+  aes(
+    x = dropped_year,
+    y = slope_diff,
+    color = contrast,
+    fill = contrast
+  )
+) +
+  geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.3) +
+  geom_ribbon(
+    aes(
+      ymin = conf_low,
+      ymax = conf_high
+    ),
+    alpha = 0.15,
+    color = NA
+  ) +
+  geom_line() +
+  geom_point(size = 2) +
+  labs(
+    x = "Dropped event year",
+    y = "Slope difference (GLS)",
+    color = "Comparison",
+    fill = "Comparison"
+  ) +
+  theme_minimal()
+
+
+
+# compare sensitivity to thiel-sen
+
+library(mblm)
+library(boot)
+library(dplyr)
+library(purrr)
+library(ggplot2)
+
+get_pair_df <- function(agg_obj, group_a, group_b, years = 2:15) {
+  idx <- which(
+    agg_obj$groups$cd %in% c(group_a, group_b) &
+      agg_obj$groups$event_time %in% years
+  )
+
+  agg_obj$groups[idx, ] |>
+    mutate(
+      estimate = agg_obj$coef[idx],
+      group = factor(cd, levels = c(group_a, group_b))
+    )
+}
+
+theilsen_compare <- function(
+    agg_obj,
+    group_a,
+    group_b,
+    years = 2:15,
+    n_boot = 2000
+) {
+  df <- get_pair_df(agg_obj, group_a, group_b, years)
+
+  slope_fun <- function(dat, idx) {
+    d <- dat[idx, ]
+
+    fit_a <- mblm::mblm(
+      estimate ~ event_time,
+      data = dplyr::filter(d, group == group_a)
+    )
+
+    fit_b <- mblm::mblm(
+      estimate ~ event_time,
+      data = dplyr::filter(d, group == group_b)
+    )
+
+    coef(fit_a)[2] - coef(fit_b)[2]
+  }
+
+  obs <- slope_fun(df, seq_len(nrow(df)))
+
+  boot_out <- boot::boot(
+    df,
+    statistic = slope_fun,
+    R = n_boot
+  )
+
+  ci <- quantile(
+    boot_out$t,
+    probs = c(0.025, 0.975),
+    na.rm = TRUE
+  )
+
+  tibble(
+    contrast = paste(group_a, "vs", group_b),
+    slope_diff = obs,
+    conf_low = ci[[1]],
+    conf_high = ci[[2]]
+  )
+}
+
+
+theilsen_results <- purrr::map_dfr(
+  pairs,
+  ~ theilsen_compare(
+    agg_es,
+    group_a = .x[1],
+    group_b = .x[2],
+    years = 2:15
+  )
+)
+
+compare_df <- slope_comparisons |>
+  transmute(
+    contrast,
+    method = "GLS",
+    slope_diff,
+    conf_low = slope_diff - 1.96 * slope_se,
+    conf_high = slope_diff + 1.96 * slope_se
+  ) |>
+  bind_rows(
+    theilsen_results |>
+      mutate(method = "Theil-Sen")
+  )
+
+ggplot(
+  compare_df,
+  aes(
+    x = contrast,
+    y = slope_diff,
+    color = method
+  )
+) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_pointrange(
+    aes(
+      ymin = conf_low,
+      ymax = conf_high
+    ),
+    position = position_dodge(width = 0.5)
+  ) +
+  coord_flip() +
+  theme_minimal()
+
+
+
+
+
+# Try again with actual slope estimates instead of slope differences
+
+estimate_gls_slope <- function(
+    agg_obj,
+    group,
+    years = 2:15
+) {
+  idx <- which(
+    agg_obj$groups$cd == group &
+      agg_obj$groups$event_time %in% years
+  )
+
+  df <- agg_obj$groups[idx, ] |>
+    mutate(
+      estimate = agg_obj$coef[idx]
+    )
+
+  V <- agg_obj$vcov[idx, idx, drop = FALSE]
+
+  X <- model.matrix(
+    ~ event_time,
+    data = df
+  )
+
+  Vinv <- solve(V)
+
+  beta_hat <- solve(t(X) %*% Vinv %*% X) %*%
+    t(X) %*% Vinv %*% df$estimate
+
+  vcov_beta <- solve(t(X) %*% Vinv %*% X)
+
+  slope <- beta_hat["event_time", 1]
+  slope_se <- sqrt(vcov_beta["event_time", "event_time"])
+
+  tibble::tibble(
+    group = group,
+    slope = slope,
+    slope_se = slope_se
+  )
+}
+
+groups <- c("cd_f", "cd_bf", "cd_df", "cd_bdf")
+years <- 2:15
+
+gls_loo <- purrr::map_dfr(
+  years,
+  function(drop_year) {
+    purrr::map_dfr(
+      groups,
+      ~ estimate_gls_slope(
+        agg_es,
+        group = .x,
+        years = setdiff(years, drop_year)
+      )
+    ) |>
+      mutate(dropped_year = drop_year)
+  }
+)
+
+gls_summary <- gls_loo |>
+  group_by(group) |>
+  summarise(
+    slope = mean(slope),
+    slope_sd = sd(slope),
+    slope_se = mean(slope_se),
+    conf_low = slope - 1.96 * slope_se,
+    conf_high = slope + 1.96 * slope_se,
+    .groups = "drop"
+  ) |>
+  mutate(method = "GLS (LOO)")
+
+library(mblm)
+library(boot)
+
+bootstrap_theilsen <- function(
+    agg_obj,
+    group,
+    years = 2:15,
+    n_boot = 2000
+) {
+  idx <- which(
+    agg_obj$groups$cd == group &
+      agg_obj$groups$event_time %in% years
+  )
+
+  df <- agg_obj$groups[idx, ] |>
+    mutate(
+      estimate = agg_obj$coef[idx]
+    )
+
+  slope_fun <- function(dat, idx) {
+    d <- dat[idx, ]
+
+    fit <- mblm::mblm(
+      estimate ~ event_time,
+      data = d
+    )
+
+    coef(fit)[2]
+  }
+
+  boot_out <- boot::boot(
+    df,
+    statistic = slope_fun,
+    R = n_boot
+  )
+
+  tibble::tibble(
+    group = group,
+    slope = median(boot_out$t, na.rm = TRUE),
+    conf_low = quantile(boot_out$t, 0.025, na.rm = TRUE),
+    conf_high = quantile(boot_out$t, 0.975, na.rm = TRUE),
+    method = "Theil-Sen"
+  )
+}
+
+theilsen_summary <- purrr::map_dfr(
+  groups,
+  ~ bootstrap_theilsen(
+    agg_es,
+    group = .x,
+    years = 2:15
+  )
+)
+
+plot_df <- bind_rows(
+  gls_summary |>
+    select(group, slope, conf_low, conf_high, method),
+
+  theilsen_summary
+)
+
+ggplot(
+  plot_df,
+  aes(
+    x = group,
+    y = slope,
+    color = method
+  )
+) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_pointrange(
+    aes(
+      ymin = conf_low,
+      ymax = conf_high
+    ),
+    position = position_dodge(width = 0.5)
+  ) +
+  labs(
+    x = "Group",
+    y = "Estimated post-treatment slope (effect units/year)",
+    color = "Method"
+  ) +
+  theme_minimal()
+
+ggplot(es_df_dummy, aes(x = event_time, y = estimate, color = cd)) +
+  geom_hline(yintercept = 0, linewidth = 0.3) +
+  geom_vline(xintercept = -1, linetype = "dashed", linewidth = 0.3) +
+  geom_ribbon(
+    aes(ymin = conf_low, ymax = conf_high, fill = cd),
+    alpha = 0.15,
+    color = NA
+  ) +
+  geom_line() +
+  geom_point() +
+  labs(
+    x = "Years since treatment",
+    y = "Estimated effect on rap_tree",
+    color = "Group",
+    fill = "Group"
+  ) +
+  theme_minimal()
+
+
+
+
+
+# Try split test
+
+est_sunab_dummy_splittest <- feols(
+  rap_tree ~
+    sunab(FirstTreat, year, ref.p = -6, no_agg = FALSE):cd_f +
+    sunab(FirstTreat, year, ref.p = -6, no_agg = FALSE):cd_bf +
+    sunab(FirstTreat, year, ref.p = -6, no_agg = FALSE):cd_df +
+    sunab(FirstTreat, year, ref.p = -6, no_agg = FALSE):cd_bdf |
+    pt_id + year,
+  data = test_dats_sn2_small,
+  cluster = ~ pt_id,
+  split = ~nfg_factor %keep% c("California Mixed Conifer Group", "Ponderosa Pine Group")
+)
+
+glimpse(est_sunab_dummy_splittest)
+
+x <- est_sunab_dummy_splittest$`sample.var: nfg_factor; sample: California Mixed Conifer Group`
+
+test_dats_sn2_small |>
+  summarise(n_clusters = n_distinct(us_l4code))
+
+
+V <- vcov(est_sunab_dummy)
+
+eig <- eigen(V, symmetric = TRUE)$values
+
+summary(eig)
+min(eig)
+
+kappa(V)
 
 ```
 

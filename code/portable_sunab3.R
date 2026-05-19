@@ -517,6 +517,7 @@ run_one_weighting <- function(short_data_source,
   weights_file   <- file.path(run_dir, "weights.parquet")
   registry_file  <- file.path(run_dir, "registry.parquet")
   bal_rds_file   <- file.path(run_dir, "balance_objects.rds")
+  obs_file <- file.path(run_dir, "obs.csv")
   love_plot_file <- file.path(run_dir, "love_plot.png")
   love_plot_fullpairwise_file <- file.path(run_dir, "love_plot_fullpairwise.png")
   run_spec_file  <- file.path(run_dir, "weight_run_spec.rds")
@@ -589,6 +590,9 @@ run_one_weighting <- function(short_data_source,
     stats      = c("mean.diffs", "variance.ratios"),
     thresholds = c(m = 0.1, v = 2)
   )
+  
+  write_csv(bal_obj$Observations, obs_file)
+  
   
   love_p <- cobalt::love.plot(
     w_out,

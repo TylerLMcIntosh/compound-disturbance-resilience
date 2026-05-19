@@ -31,7 +31,7 @@ Sys.setenv(PKG_CONFIG_PATH = "/usr/lib/x86_64-linux-gnu/pkgconfig")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 1. Environment setup
+# 1. Environment setup ----
 # ══════════════════════════════════════════════════════════════════════════════
 
 rm(list = ls())
@@ -77,7 +77,7 @@ set.seed(seed)
 run_name <- "GEE_resilience_v6_operational_ss500_ts50000"
 version <- "v6"
 
-cyverse <- TRUE
+cyverse <- FALSE
 
 if (cyverse) {
   dir_base    <- file.path(
@@ -107,7 +107,7 @@ dir_ensure_local(c(dir_data, dir_parquet_long, dir_raw, dir_manual, dir_results,
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 2. Dataset spec
+# 2. Dataset spec ----
 # ══════════════════════════════════════════════════════════════════════════════
 
 dataset_spec <- make_dataset_spec(
@@ -120,7 +120,7 @@ dataset_spec <- make_dataset_spec(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 3. Analysis subset specs
+# 3. Analysis subset specs ----
 # ══════════════════════════════════════════════════════════════════════════════
 # Each row = one data slice. data_filter is pushed to Arrow before collect()
 # for both long and short sources.
@@ -173,9 +173,9 @@ forestgroup_subset_specs <- expand_analysis_subset_specs_by_col(
   check_all_files   = TRUE
 )
 
-# ── C) All ecoregions pooled ──────────────────────────────────────────────────
+# ── C) All data pooled ──────────────────────────────────────────────────
 
-all_eco_subset_spec <- make_analysis_subset_spec(
+all_data_subset_spec <- make_analysis_subset_spec(
   subset_id         = "all_ecoregions",
   long_data_source  = dir_parquet_long,
   #data_filter       = ~ year >= 1997,
@@ -186,34 +186,35 @@ all_eco_subset_spec <- make_analysis_subset_spec(
 # short_data_source can be NULL here if weighting is not needed for these
 # subsets; they will simply be skipped by run_weighting_experiment().
 
-manual_subset_specs <- dplyr::bind_rows(
+all_data_temporalsplit_subset_specs <- dplyr::bind_rows(
   make_analysis_subset_spec(
     subset_id        = "burnyear_2000_2009",
     long_data_source = dir_parquet_long,
-    data_filter      = ~ year >= 1997 & burn_year >= 2000 & burn_year < 2010
-    # short_data_source = NULL  (default — no weighting for these subsets)
+    data_filter      = ~ burn_year >= 2000 & burn_year < 2010,
+    short_data_source = dir_parquet_short
   ),
   make_analysis_subset_spec(
     subset_id        = "burnyear_2010_2019",
     long_data_source = dir_parquet_long,
-    data_filter      = ~ year >= 1997 & burn_year >= 2010 & burn_year < 2020
+    data_filter      = ~ burn_year >= 2010 & burn_year < 2020,
+    short_data_source = dir_parquet_short
   )
 )
 
 # ── Combine ───────────────────────────────────────────────────────────────────
 
-analysis_subset_specs <- dplyr::bind_rows(
-  #ecoregion_subset_specs,
-  all_eco_subset_spec
-  # manual_subset_specs   # uncomment to also run burn-year window subsets
-)
-
-message(glue::glue("Analysis subsets defined: {nrow(analysis_subset_specs)}"))
+# analysis_subset_specs <- dplyr::bind_rows(
+#   #ecoregion_subset_specs,
+#   all_eco_subset_spec
+#   # manual_subset_specs   # uncomment to also run burn-year window subsets
+# )
+# 
+# message(glue::glue("Analysis subsets defined: {nrow(analysis_subset_specs)}"))
 
 #analysis_subset_specs <- analysis_subset_specs[11,]
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 4. Outcome specs
+# 4. Outcome specs ----
 # ══════════════════════════════════════════════════════════════════════════════
 
 outcome_specs <- tibble::tibble(
@@ -224,7 +225,7 @@ outcome_specs <- tibble::tibble(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 5. Treatment group specs
+# 5. Treatment group specs ----
 # ══════════════════════════════════════════════════════════════════════════════
 # group_fun contract:
 #   Receives: df, group_col (injected), plus everything in group_args.
@@ -279,7 +280,23 @@ set_cd_groups <- function(df,
 }
 
 
-treatment_group_specs <- dplyr::bind_rows(
+initial_treatment_group_specs <- dplyr::bind_rows(
+
+  make_treatment_group_spec(
+    group_id   = "b10_pdsisumn10",
+    group_col  = "b10_pdsisumn10",
+    group_fun  = set_cd_groups,
+    group_args = list(
+      b_nm        = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+      d_nm        = "pdsi_annual_5_yrs_prior_sum_yot",
+      b_threshold = 10,
+      d_threshold = -10
+    )
+  )
+)
+
+
+expanded_treatment_group_specs <- dplyr::bind_rows(
   
   make_treatment_group_spec(
     group_id   = "b10_pdsin4t1",
@@ -306,18 +323,6 @@ treatment_group_specs <- dplyr::bind_rows(
   ),
   
   make_treatment_group_spec(
-    group_id   = "b10_pdsisumn10",
-    group_col  = "b10_pdsisumn10",
-    group_fun  = set_cd_groups,
-    group_args = list(
-      b_nm        = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
-      d_nm        = "pdsi_annual_5_yrs_prior_sum_yot",
-      b_threshold = 10,
-      d_threshold = -10
-    )
-  ),
-  
-  make_treatment_group_spec(
     group_id   = "b25_pdsisumn10",
     group_col  = "b25_pdsisumn10",
     group_fun  = set_cd_groups,
@@ -328,14 +333,13 @@ treatment_group_specs <- dplyr::bind_rows(
       d_threshold = -10
     )
   )
-  
 )
 
 #treatment_group_specs <- treatment_group_specs[2,]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 6. Weighting specs
+# 6. Weighting specs ----
 # ══════════════════════════════════════════════════════════════════════════════
 # Defines propensity-score weighting approaches run BEFORE estimation.
 # The weighting pipeline crosses analysis_subset_specs x treatment_group_specs
@@ -353,11 +357,19 @@ weighting_specs <- dplyr::bind_rows(
   
   # GLM logistic regression, ATO estimand (average treatment in the overlap)
   make_weighting_spec(
-    weighting_id   = "glm_ato",
+    weighting_id   = "glm_ato_topoclimnfg",
     weight_formula = ~ aet + srtm + tpi + def + chili + nfg_factor,
     method         = "glm",
-    estimand       = "ATO",
-    weighting_name = "topoclimnfg"
+    estimand       = "ATO"#,
+    #weighting_name = "topoclimnfg"
+  ),
+  
+  make_weighting_spec(
+    weighting_id   = "glm_ato_topoclimnfgrap",
+    weight_formula = ~ aet + srtm + tpi + def + chili + nfg_factor + gam_rap_tree_pre6_fit,
+    method         = "glm",
+    estimand       = "ATO"#,
+    #weighting_name = "topoclimnfgrap"
   )
   
   # Add further weighting specs here as needed, e.g.:
@@ -375,14 +387,39 @@ weighting_specs <- dplyr::bind_rows(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 7. Model specs
+# 7. Model specs ----
 # ══════════════════════════════════════════════════════════════════════════════
 # formula_template uses {outcome} as the only glue placeholder.
 # weights_col: name of the weight column to pass to feols(). Must match a
 #   column produced by run_weighting_experiment() for the same subset x group
 #   combination. NA_character_ (default) = unweighted.
 
-model_specs <- dplyr::bind_rows(
+initial_model_specs <- dplyr::bind_rows(
+
+  # ── Weighted Sun-Abraham (GLM ATO) ────────────────────────────────────────
+  make_model_spec(
+    model_id         = "b_pdsi_sunab_twfe_glmatotopoclimnfg",
+    formula_template = paste0(
+      "{outcome} ~ sunab(FirstTreat, year, ref.p = -6)",
+      " | pt_id + year"
+    ),
+    estimator_type   = "sunab",
+    term_pattern     = "^year::",
+    weights_col      = "glm_ato_topoclimnfg_weights")#,
+  # 
+  # make_model_spec(
+  #   model_id         = "b_pdsi_sunab_twfe_glmatotopoclimnfgrap",
+  #   formula_template = paste0(
+  #     "{outcome} ~ sunab(FirstTreat, year, ref.p = -6)",
+  #     " | pt_id + year"
+  #   ),
+  #   estimator_type   = "sunab",
+  #   term_pattern     = "^year::",
+  #   weights_col      = "glm_ato_topoclimnfgrap_weights")
+  # 
+)
+
+expanded_model_specs <- dplyr::bind_rows(
   
   # ── Unweighted Sun-Abraham ─────────────────────────────────────────────────
   make_model_spec(
@@ -393,100 +430,110 @@ model_specs <- dplyr::bind_rows(
     ),
     estimator_type   = "sunab",
     term_pattern     = "^year::",
-    weights_col      = NA_character_,   # unweighted
-    feols_args = list(
-      mem.clean = TRUE,
-      nthreads = 4,
-      data.save = FALSE,
-      demeaned = FALSE,
-      lean = TRUE,
-      vcov = ~ us_l3code
-    )
+    weights_col      = NA_character_#,   # unweighted
+    # feols_args = list(
+    #   mem.clean = TRUE,
+    #   nthreads = 4,
+    #   data.save = FALSE,
+    #   demeaned = FALSE,
+    #   lean = TRUE,
+    #   vcov = ~ us_l3code
+    # )
   ),
-  
-  # ── Weighted Sun-Abraham (GLM ATO) ────────────────────────────────────────
+
+  # ── Plain TWFE (unweighted, for robustness) ────────────────────────────────
   make_model_spec(
-    model_id         = "b_pdsi_sunab_twfe_glmatotopoclimnfg",
+    model_id         = "b_pdsi_twfe",
     formula_template = paste0(
-      "{outcome} ~ sunab(FirstTreat, year, ref.p = -6)",
+      "{outcome} ~ biotic_relaxedforestnorm + pdsi_annual",
+      " + i(rel_year, ref = -6)",
       " | pt_id + year"
     ),
-    estimator_type   = "sunab",
-    term_pattern     = "^year::",
-    weights_col      = "glm_ato_topoclimnfg_weights",
-    feols_args = list(
-      mem.clean = TRUE,
-      nthreads = 4,
-      data.save = FALSE,
-      demeaned = FALSE,
-      lean = TRUE,
-      vcov = ~ us_l3code
-    )
-  ),
-  
-  # ── Plain TWFE (unweighted, for robustness) ────────────────────────────────
-  # make_model_spec(
-  #   model_id         = "b_pdsi_twfe",
-  #   formula_template = paste0(
-  #     "{outcome} ~ biotic_relaxedforestnorm + pdsi_annual",
-  #     " + i(rel_year, ref = -6)",
-  #     " | pt_id + year"
-  #   ),
-  #   estimator_type   = "twfe",
-  #   term_pattern     = "^rel_year::",
-  #   weights_col      = NA_character_
-  # )
+    estimator_type   = "twfe",
+    term_pattern     = "^rel_year::",
+    weights_col      = NA_character_
+  )
   
 )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 8. Vcov specs
+# 8. Vcov specs ----
 # ══════════════════════════════════════════════════════════════════════════════
-
-vcov_specs <- tibble::tibble(
-  vcov_id    = "cluster_eco3",
-  vcov_label = "Clustered SEs: us_l3code",
-  vcov       = list(NULL),
-  vcov_vars  = list("us_l3code")
-)
 
 # vcov_specs <- tibble::tibble(
-#   vcov_id = c(
-#     #"iid",
-#     "cluster_pt",
-#     #"cluster_eco4",
-#     "cluster_eco3"#,
-#     #"conley_125km_20km"
-#   ),
-#   vcov_label = c(
-#     #"IID Classical",
-#     "Clustered SEs: pt_id",
-#     #"Clustered SEs: us_l4code",
-#     "Clustered SEs: us_l3code"#,
-#     #"Conley SEs: 125 km cutoff, 20 km pixel"
-#   ),
-#   vcov = list(
-#     #"iid",
-#     stats::as.formula("~ pt_id"),
-#     #stats::as.formula("~ us_l4code"),
-#     stats::as.formula("~ us_l3code")#,
-#     # fixest::vcov_conley(
-#     #   lat      = "lat",
-#     #   lon      = "long",
-#     #   cutoff   = 125,
-#     #   pixel    = 20,
-#     #   distance = "triangular"
-#     # )
-#   ),
-#   vcov_vars = list(
-#     #character(0),
-#     "pt_id",
-#     #"us_l4code",
-#     "us_l3code"#,
-#     #c("lat", "long")
-#   )
+#   vcov_id    = "cluster_eco3",
+#   vcov_label = "Clustered SEs: us_l3code",
+#   vcov       = list(NULL),
+#   vcov_vars  = list("us_l3code")
 # )
+
+ecor_vcov_specs <- tibble::tibble(
+  vcov_id = c(
+    #"iid",
+    "cluster_pt",
+    "cluster_eco4",
+    #"cluster_eco3"#,
+    "conley_125km_20km"
+  ),
+  vcov_label = c(
+    #"IID Classical",
+    "Clustered SEs: pt_id",
+    "Clustered SEs: us_l4code",
+    #"Clustered SEs: us_l3code"#,
+    "Conley SEs: 125 km cutoff, 20 km pixel"
+  ),
+  vcov = list(
+    #"iid",
+    stats::as.formula("~ pt_id"),
+    stats::as.formula("~ us_l4code"),
+    #stats::as.formula("~ us_l3code")#,
+    fixest::vcov_conley(
+      lat      = "lat",
+      lon      = "long",
+      cutoff   = 125,
+      pixel    = 20,
+      distance = "triangular"
+    )
+  ),
+  vcov_vars = list(
+    #character(0),
+    "pt_id",
+    "us_l4code",
+    #"us_l3code"#,
+    c("lat", "long")
+  )
+)
+
+
+regionwide_vcov_specs <- tibble::tibble(
+  vcov_id = c(
+    "cluster_pt",
+    "cluster_eco3",
+    "conley_125km_20km"
+  ),
+  vcov_label = c(
+    "Clustered SEs: pt_id",
+    "Clustered SEs: us_l3code",
+    "Conley SEs: 125 km cutoff, 20 km pixel"
+  ),
+  vcov = list(
+    stats::as.formula("~ pt_id"),
+    stats::as.formula("~ us_l3code"),
+    fixest::vcov_conley(
+      lat      = "lat",
+      lon      = "long",
+      cutoff   = 125,
+      pixel    = 20,
+      distance = "triangular"
+    )
+  ),
+  vcov_vars = list(
+    "pt_id",
+    "us_l3code",
+    c("lat", "long")
+  )
+)
 
 #vcov_specs <- vcov_specs[3,]
 
@@ -504,25 +551,57 @@ group_palette <- c(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 9. Preview run grid
+# 9. Preview run grid ----
 # ══════════════════════════════════════════════════════════════════════════════
 
-preview_grid <- tidyr::crossing(
-  analysis_subset_specs |> dplyr::select(subset_id),
-  outcome_specs,
-  treatment_group_specs |> dplyr::select(group_id),
-  model_specs |> dplyr::select(model_id, estimator_type, weights_col)
-) |>
-  dplyr::mutate(
-    run_id = glue::glue("{subset_id}__{outcome}__{group_id}__{model_id}")
-  )
+preview_grid_run <- function(subset_specs,
+                             outcome_specs,
+                             treatment_group_specs,
+                             model_specs,
+                             vcov_specs) {
+  preview_grid <- tidyr::crossing(
+    subset_specs |> dplyr::select(subset_id),
+    outcome_specs,
+    treatment_group_specs |> dplyr::select(group_id),
+    model_specs |> dplyr::select(model_id, estimator_type, weights_col)
+  ) |>
+    dplyr::mutate(
+      run_id = glue::glue("{subset_id}__{outcome}__{group_id}__{model_id}")
+    )
+  
+  message(glue::glue("Total runs planned: {nrow(preview_grid)}"))
+  message(glue::glue("VCOV specs for each run: {paste(vcov_specs$vcov_id, collapse = ', ')}"))
+  print(preview_grid |> dplyr::select(subset_id, outcome, group_id, model_id, weights_col))  
 
-message(glue::glue("Total runs planned: {nrow(preview_grid)}"))
-print(preview_grid |> dplyr::select(subset_id, outcome, group_id, model_id, weights_col))
+}
 
+
+preview_grid_run(ecoregion_subset_specs,
+                 outcome_specs,
+                 initial_treatment_group_specs,
+                 initial_model_specs,
+                 ecor_vcov_specs)
+
+preview_grid_run(forestgroup_subset_specs,
+                 outcome_specs,
+                 initial_treatment_group_specs,
+                 initial_model_specs,
+                 regionwide_vcov_specs)
+
+preview_grid_run(all_data_subset_spec,
+                 outcome_specs,
+                 initial_treatment_group_specs,
+                 initial_model_specs,
+                 regionwide_vcov_specs)
+
+preview_grid_run(all_data_temporalsplit_subset_specs,
+                 outcome_specs,
+                 initial_treatment_group_specs,
+                 initial_model_specs,
+                 regionwide_vcov_specs)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 10. Run weighting experiment
+# 10. Run weighting experiment ----
 # ══════════════════════════════════════════════════════════════════════════════
 # Must run BEFORE run_experiment() for any model_specs rows with weights_col
 # set to a non-NA value.
@@ -532,18 +611,18 @@ print(preview_grid |> dplyr::select(subset_id, outcome, group_id, model_id, weig
 #
 # Comment out this entire block if running an unweighted-only analysis.
 
-# weighting_subsets <- dplyr::bind_rows(
-#   ecoregion_subset_specs,
-#   all_eco_subset_spec
-# )
+weighting_subsets <- dplyr::bind_rows(
+  ecoregion_subset_specs,
+  #forestgroup_subset_specs,
+  #all_data_subset_spec,
+  all_data_temporalsplit_subset_specs
+)
 
-
-weighting_subsets <- analysis_subset_specs
 
 results_weighting <- run_weighting_experiment(
   dataset_spec          = dataset_spec,
   analysis_subset_specs = weighting_subsets,
-  treatment_group_specs = treatment_group_specs,
+  treatment_group_specs = initial_treatment_group_specs,
   weighting_specs       = weighting_specs,
   dir_out               = dir_results,
   skip_existing         = TRUE,
@@ -562,7 +641,7 @@ rebuild_weighting_tables(dir_out = dir_results, write_csv = TRUE)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 11. Run estimation experiment
+# 11. Run estimation experiments ----
 # ══════════════════════════════════════════════════════════════════════════════
 # For weighted model specs, resolve_weights_parquet() (called internally)
 # locates the correct weights parquet from weights/by_run using subset_id x
@@ -574,11 +653,11 @@ rebuild_weighting_tables(dir_out = dir_results, write_csv = TRUE)
 
 results_sunab <- run_experiment(
   dataset_spec          = dataset_spec,
-  analysis_subset_specs = analysis_subset_specs[1,],
+  analysis_subset_specs = ecoregion_subset_specs,
   outcome_specs         = outcome_specs,
-  treatment_group_specs = treatment_group_specs,
-  model_specs           = model_specs |> dplyr::filter(estimator_type == "sunab"),
-  vcov_specs            = vcov_specs,
+  treatment_group_specs = initial_treatment_group_specs,
+  model_specs           = initial_model_specs,
+  vcov_specs            = ecor_vcov_specs,
   dir_out               = dir_results,
   group_palette         = group_palette,
   ci_level              = 0.95,
@@ -623,10 +702,10 @@ if (length(failed_sunab) > 0) {
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 12. Rebuild merged output tables
+# 12. Rebuild merged output tables ----
 # ══════════════════════════════════════════════════════════════════════════════
 # Call at any point after one or more run_experiment() calls. Scans all
-# by_run folders under dir_results, deduplicates on run_id (most recent file),
+# by_run folders under dir_results, de-duplicates on run_id (most recent file),
 # writes merged tables to tables/all/ and descriptive/all/.
 
 all_estimation_tables <- rebuild_estimation_tables(

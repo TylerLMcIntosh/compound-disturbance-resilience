@@ -1,4 +1,4 @@
-cyverse = TRUE
+cyverse = FALSE
 
 run_name <- "GEE_resilience_v6_operational_ss500_ts50000"
 

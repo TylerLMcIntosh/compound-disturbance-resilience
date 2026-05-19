@@ -902,8 +902,8 @@ for (sid in sort(unique(coef_tbl$subset_id))) {
     filters   = list(
       subset_id = sid,
       group_id  = "b10_pdsisumn10",
-      vcov_id   = "cluster_eco3",
-      model_id  = "b_pdsi_sunab_twfe"
+      vcov_id   = "cluster_eco4",
+      model_id  = "b_pdsi_sunab_twfe_glmatotopoclimnfg"
     ),
     color_var             = "subgroup",
     color_values          = subgroup_pal,
@@ -954,8 +954,8 @@ compare weighted to non-weighted
 #| fig-width: 10
 #| fig-height: 5
 
-dir_outcome_compare <- file.path(dir_figs, "outcome_compare")
-dir_ensure(dir_outcome_compare)
+dir_weight_compare <- file.path(dir_figs, "weight_compare")
+dir_ensure(dir_weight_compare)
 
 # Iterate over subset_id (replaces analysis_id in old script)
 for (sid in sort(unique(coef_tbl$subset_id))) {
@@ -964,14 +964,14 @@ for (sid in sort(unique(coef_tbl$subset_id))) {
     coef_tbl  = coef_tbl,
     filters   = list(
       subset_id = sid,
-      group_id  = "b10_pdsin3t1",
+      group_id  = "b10_pdsisumn10",
       vcov_id   = "cluster_eco4",
-      model_id  = "b_pdsi_sunab_twfe"
+      outcome = "rap_tree"
     ),
     color_var             = "subgroup",
     color_values          = subgroup_pal,
     linetype_var          = NULL,
-    facet_var             = "outcome",
+    facet_var             = "model_id",
     facet_ncol            = 2,
     facet_scales          = "fixed",
     legend_title_color    = "Subgroup",
@@ -999,7 +999,7 @@ for (sid in sort(unique(coef_tbl$subset_id))) {
   print(p)
 
   ggplot2::ggsave(
-    file.path(dir_outcome_compare, glue::glue("outcome_compare_{sid}.png")),
+    file.path(dir_weight_compare, glue::glue("weight_compare_{sid}.png")),
     plot   = p,
     units  = "px",
     width  = 4000,
