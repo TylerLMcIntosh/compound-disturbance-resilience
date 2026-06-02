@@ -1,5 +1,5 @@
 ---
-title: "06_dydid"
+title: "06_dydid_plots"
 author: Tyler L. McIntosh
 date: last-modified
 format:

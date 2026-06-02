@@ -514,68 +514,7 @@ with(
 )
 
 
-test_dats_sn2 <- test_dats_sn |>
-  dplyr::mutate(
-    b10_pdsin3t1_ctrl = as.character(b10_pdsin3t1),
-    b10_pdsin3t1_ctrl = tidyr::replace_na(b10_pdsin3t1_ctrl, "control"),
-    b10_pdsin3t1_ctrl = factor(
-      b10_pdsin3t1_ctrl,
-      levels = c("control", "f", "bf", "df", "bdf")
-    )
-  )
-
-# Try with control group
-est_sunab <- feols(
-  rap_tree ~ sunab(FirstTreat, year, ref.p = -6, no_agg = TRUE):b10_pdsin3t1 | pt_id + year,
-  data = test_dats_sn2,
-  mem.clean = TRUE,
-  lean = FALSE,
-  cluster = ~ pt_id
-)
-
-cn <- names(coef(est_sunab, agg = FALSE))
-cat(cn, sep = "\n")
-
-agg_cd_event <- aggregate(
-  est_sunab,
-  agg = "(year::-?[0-9]+):cohort::[0-9]+:(b10_pdsin3t1.*)"
-)
-
-
-es_df <- as.data.frame(agg_cd_event) |>
-  rownames_to_column("term") |>
-  rename(
-    estimate = Estimate,
-    se = `Std. Error`
-  ) |>
-  mutate(
-    event_time = as.integer(str_extract(term, "(?<=year::)-?[0-9]+")),
-    b10_pdsin3t1 = str_extract(term, "b10_pdsin3t1.*$"),
-    conf_low = estimate - 1.96 * se,
-    conf_high = estimate + 1.96 * se
-  )
-
-ggplot(es_df, aes(x = event_time, y = estimate, color = b10_pdsin3t1)) +
-  geom_hline(yintercept = 0, linewidth = 0.3) +
-  geom_vline(xintercept = -1, linetype = "dashed", linewidth = 0.3) +
-  geom_ribbon(
-    aes(ymin = conf_low, ymax = conf_high, fill = b10_pdsin3t1),
-    alpha = 0.15,
-    color = NA
-  ) +
-  geom_line() +
-  geom_point() +
-  labs(
-    x = "Years since treatment",
-    y = "Estimated effect on rap_tree",
-    color = "Group",
-    fill = "Group"
-  ) +
-  theme_minimal()
-
-
-# Compare results to separate dummy version
-
+# DUMMY VERSION
 
 test_dats_sn2 <- test_dats_sn |>
   dplyr::mutate(
@@ -604,6 +543,64 @@ est_sunab_dummy <- feols(
   data = test_dats_sn2_small,
   cluster = ~ pt_id
 )
+
+# reference and differences
+test_dats_sn2_small2 <- test_dats_sn2_small |>
+  dplyr::mutate(
+    b10_pdsin3t1 = relevel(factor(b10_pdsin3t1), ref = "f")
+  )
+
+est_diff <- feols(
+  rap_tree ~
+    sunab(FirstTreat, year, ref.p = -6) +
+    sunab(FirstTreat, year, ref.p = -6):b10_pdsin3t1 |
+    pt_id + year,
+  data = test_dats_sn2_small2,
+  cluster = ~ pt_id
+)
+
+# factorized
+test_dats_sn2_small3 <- test_dats_sn2_small |>
+  dplyr::mutate(
+    cd_group = dplyr::case_when(
+      b10_pdsin3t1 %in% c("f", "bf", "df", "bdf") ~ b10_pdsin3t1,
+      TRUE ~ NA_character_
+    ),
+    cd_group = factor(cd_group, levels = c("f", "bf", "df", "bdf"))
+  )
+
+
+est_cell <- fixest::feols(
+  rap_tree ~
+    sunab(FirstTreat, year, ref.p = -6, no_agg = FALSE):cd_group |
+    pt_id + year,
+  data = test_dats_sn2_small3,
+  cluster = ~ pt_id
+)
+
+# Compare all three - the diff and cell estimations drop the never-treated units; dummy approach is safer and seems to be the right way to do it
+nobs(est_sunab_dummy)
+nobs(est_diff)
+nobs(est_cell)
+
+
+
+# est_sunab_dummy_conley <- feols(
+#   rap_tree ~
+#     sunab(FirstTreat, year, ref.p = -6, no_agg = FALSE):cd_f +
+#     sunab(FirstTreat, year, ref.p = -6, no_agg = FALSE):cd_bf +
+#     sunab(FirstTreat, year, ref.p = -6, no_agg = FALSE):cd_df +
+#     sunab(FirstTreat, year, ref.p = -6, no_agg = FALSE):cd_bdf |
+#     pt_id + year,
+#   data = test_dats_sn2_small,
+#   vcov = fixest::vcov_conley(
+#       lat      = "lat",
+#       lon      = "long",
+#       cutoff   = 20,
+#       pixel    = 3,
+#       distance = "triangular"
+#     )
+# )
 
 
 cn_dummy <- names(coef(est_sunab_dummy, agg = FALSE))
@@ -702,7 +699,7 @@ groups <- c("cd_f", "cd_bf", "cd_df", "cd_bdf")
 pretrend_tests <- purrr::map_dfr(groups, \(g) {
   out <- fixest::wald(
     est_sunab_dummy,
-    keep = paste0("^year::-(?:7|8|9|10|11|12|13|14|15):cohort::[0-9]+:", g, "$"),
+    keep = paste0("^year::-(?:6|7|8|9|10|11|12|13|14|15):cohort::[0-9]+:", g, "$"),
     print = FALSE
   )
 
@@ -764,7 +761,7 @@ build_agg_eventstudy <- function(model) {
 
 agg_es <- build_agg_eventstudy(est_sunab_dummy)
 
-wald_zero_pretrend <- function(agg_obj, group, pre_years = -15:-7) {
+wald_zero_pretrend <- function(agg_obj, group, pre_years = -15:-6) {
   idx <- which(
     agg_obj$groups$cd == group &
       agg_obj$groups$event_time %in% pre_years
@@ -810,7 +807,7 @@ pretrend_tests
 
 
 
-wald_pretrend_slope <- function(agg_obj, group, pre_years = -15:-7) {
+wald_pretrend_slope <- function(agg_obj, group, pre_years = -15:-6) {
   idx <- which(
     agg_obj$groups$cd == group &
       agg_obj$groups$event_time %in% pre_years
@@ -1542,7 +1539,7 @@ ggplot(es_df_dummy, aes(x = event_time, y = estimate, color = cd)) +
 
 
 
-# Try split test
+# Try split test - gets RAM-heavy using split; for large dataset, makes sense to run separate models
 
 est_sunab_dummy_splittest <- feols(
   rap_tree ~
