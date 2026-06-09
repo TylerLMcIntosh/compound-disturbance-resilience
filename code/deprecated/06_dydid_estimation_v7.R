@@ -8,19 +8,18 @@
 #   4.  Outcome specs
 #   5.  Treatment group specs  (group_fun produces group_col + all dummy_cols)
 #   6.  Weighting specs
-#   7.  Model specs
+#   7.  Model specs            (formula_template contains full dummy interaction)
 #   8.  Vcov specs
-#   9.  Aggregation specs      (agg_spec x vcov_spec run inside estimation)
-#   10. Preview run grid
-#   11. Run weighting experiment
-#   12. Run estimation experiment
-#   13. Rebuild merged tables
+#   9.  Preview run grid
+#   10. Run weighting experiment
+#   11. Run estimation experiment
+#   12. Rebuild merged tables
 # -------------------------------------------------------
 
-# Sys.setenv(LD_LIBRARY_PATH = paste("/opt/conda/lib", Sys.getenv("LD_LIBRARY_PATH"), sep = ":"))
-# Sys.setenv(PATH = paste("/usr/bin:/bin:/usr/local/bin", Sys.getenv("PATH"), sep = ":"))
-# Sys.setenv(PKG_CONFIG_PATH = "/usr/lib/x86_64-linux-gnu/pkgconfig")
-# 
+Sys.setenv(LD_LIBRARY_PATH = paste("/opt/conda/lib", Sys.getenv("LD_LIBRARY_PATH"), sep = ":"))
+Sys.setenv(PATH = paste("/usr/bin:/bin:/usr/local/bin", Sys.getenv("PATH"), sep = ":"))
+Sys.setenv(PKG_CONFIG_PATH = "/usr/lib/x86_64-linux-gnu/pkgconfig")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. Environment setup ----
@@ -34,18 +33,15 @@ here::i_am("code/06_dydid_estimation_v7.R")
 
 required_pkgs <- c(
   "dplyr", "ggplot2", "tidyr", "readr", "purrr", "tibble", "stringr",
-  "forcats", "fixest", "arrow", "glue", "here", "WeightIt", "tictoc"
+  "forcats", "fixest", "arrow", "glue", "here", "WeightIt"
 )
 missing_pkgs <- required_pkgs[!vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)]
 if (length(missing_pkgs) > 0) install.packages(missing_pkgs)
 
-library(dplyr); library(ggplot2); library(tidyr);  library(readr)
+library(dplyr); library(ggplot2); library(tidyr); library(readr)
 library(tibble); library(purrr);  library(stringr); library(forcats)
 library(fixest); library(arrow);  library(glue);    library(WeightIt)
-library(tictoc)
 
-# sunab_aggregate_vcov must be sourced before the pipeline file
-source(here::here("code", "sunab_aggregate_vcov.R"))
 source(here::here("code", "weight_dydid_pipeline_v7.R"))
 
 seed <- 1234
@@ -54,7 +50,7 @@ set.seed(seed)
 
 # ── Directory layout ──────────────────────────────────────────────────────────
 
-run_name <- "GEE_resilience_v6_operational_ss500_ts50000"
+run_name <- "GEE_resilience_v7_operational_ss500_ts50000"
 version  <- "v7"
 cyverse  <- FALSE
 
@@ -78,68 +74,6 @@ dir_parquet_short <- file.path(dir_data, "parquet_short_filtered")
 
 dir_ensure_local(c(dir_data, dir_parquet_long, dir_raw, dir_manual, dir_results, dir_figs))
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 1.5. Test datasets ----
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-create_test_set <- function(long, short) {
-
-  dir_parquet_long_test  <- file.path(dir_data, "parquet_long_filtered_test")
-  dir_parquet_short_test <- file.path(dir_data, "parquet_short_filtered_test")
-  dir_ensure_local(c(dir_parquet_long_test, dir_parquet_short_test))
-
-  short_file <- file.path(dir_parquet_short_test, basename(short))
-  long_file <- file.path(dir_parquet_long_test, basename(long))
-
-  if(!file.exists(short_file) | !file.exists(long_file)) {
-
-    dl <- arrow::read_parquet(long)
-    ds <- arrow::read_parquet(short)
-
-    set.seed(123)
-
-    sample_pt_ids <- sample(unique(ds$pt_id), round(dplyr::n_distinct(ds$pt_id) * 0.1))
-
-    dl_t <- dl |>
-      dplyr::mutate(event_time = year - FirstTreat) |>
-      dplyr::filter(
-        dplyr::between(event_time, -15, 20) | FirstTreat == 1000    # Filtering to -15-20 drops about 1.3 million points
-      ) |>
-      dplyr::filter(pt_id %in% sample_pt_ids)
-
-    ds_t <- ds |>
-      dplyr::filter(pt_id %in% sample_pt_ids)
-
-
-    arrow::write_parquet(ds_t, short_file)
-    arrow::write_parquet(dl_t, long_file)
-  }
-
-}
-
-
-# run to create the test dataset
-
-long_files <- list.files(dir_parquet_long, full.names = TRUE)
-short_files <- list.files(dir_parquet_short, full.names = TRUE)
-
-stopifnot(length(long_files) == length(short_files))
-
-purrr::pmap(
-  .l = list(
-    long = long_files,
-    short = short_files
-  ),
-  .f = create_test_set
-)
-
-dir_parquet_long  <- file.path(dir_data, "parquet_long_filtered_test")
-dir_parquet_short <- file.path(dir_data, "parquet_short_filtered_test")
-
-dir_results <- file.path(dir_results, "test_10perc")
-dir_figs <- file.path(dir_results, "test_10perc")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 2. Dataset spec ----
@@ -189,21 +123,20 @@ all_data_subset_spec <- make_analysis_subset_spec(
   short_data_source = dir_parquet_short
 )
 
-
-# all_data_temporalsplit_subset_specs <- dplyr::bind_rows(
-#   make_analysis_subset_spec(
-#     subset_id         = "burnyear_2000_2009",
-#     long_data_source  = dir_parquet_long,
-#     data_filter       = ~ burn_year >= 2000 & burn_year < 2010,
-#     short_data_source = dir_parquet_short
-#   ),
-#   make_analysis_subset_spec(
-#     subset_id         = "burnyear_2010_2019",
-#     long_data_source  = dir_parquet_long,
-#     data_filter       = ~ burn_year >= 2010 & burn_year < 2020,
-#     short_data_source = dir_parquet_short
-#   )
-# )
+all_data_temporalsplit_subset_specs <- dplyr::bind_rows(
+  make_analysis_subset_spec(
+    subset_id         = "burnyear_2000_2009",
+    long_data_source  = dir_parquet_long,
+    data_filter       = ~ burn_year >= 2000 & burn_year < 2010,
+    short_data_source = dir_parquet_short
+  ),
+  make_analysis_subset_spec(
+    subset_id         = "burnyear_2010_2019",
+    long_data_source  = dir_parquet_long,
+    data_filter       = ~ burn_year >= 2010 & burn_year < 2020,
+    short_data_source = dir_parquet_short
+  )
+)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -217,23 +150,25 @@ outcome_specs <- tibble::tibble(outcome = c("rap_tree", "vcf_tree"))
 # 5. Treatment group specs ----
 # ══════════════════════════════════════════════════════════════════════════════
 #
-# set_cd_groups() produces:
-#   - group_col: multi-valued factor (f/bf/df/bdf/control) for WeightIt
+# group_fun (set_cd_groups) must produce:
+#   - group_col: multi-valued factor (f/bf/df/bdf/control) used by WeightIt
 #   - dummy_cols: binary integer columns (cd_f, cd_bf, cd_df, cd_bdf) for feols
 #
-# The four treatment categories are exhaustive: every fire==1 unit belongs to
-# exactly one. Units where fire==1 and all dummies==0 after grouping indicate
-# a data issue and will be dropped with a warning by run_one_estimation().
+# The four categories are designed to be exhaustive for all treated units
+# (fire == 1 will always be assigned to exactly one of f/bf/df/bdf).
+# Units where fire == 1 and all dummies == 0 after replacement indicate a data
+# issue and will be dropped with a warning by run_one_estimation().
 
 set_cd_groups <- function(df,
-                           group_col,
-                           b_nm,
-                           d_nm,
-                           b_threshold,
-                           d_threshold,
-                           dummy_cols      = c("cd_f", "cd_bf", "cd_df", "cd_bdf"),
-                           include_control = FALSE) {
-
+                          group_col,
+                          b_nm,
+                          d_nm,
+                          b_threshold,
+                          d_threshold,
+                          dummy_cols      = c("cd_f", "cd_bf", "cd_df", "cd_bdf"),
+                          include_control = FALSE) {
+  
+  # multi-valued group assignment for WeightIt
   if (d_threshold < 0) {
     df_new <- df |>
       dplyr::mutate(
@@ -259,11 +194,11 @@ set_cd_groups <- function(df,
         )
       )
   }
-
-  # f as reference level for WeightIt factor
+  
+  # "f" as reference level for WeightIt factor
   df_new <- df_new |>
     dplyr::mutate("{group_col}" := relevel(factor(.data[[group_col]]), ref = "f"))
-
+  
   # binary dummies for feols; NAs become 0 (control units get 0 for all dummies)
   level_names <- c("f", "bf", "df", "bdf")
   for (i in seq_along(dummy_cols)) {
@@ -273,7 +208,7 @@ set_cd_groups <- function(df,
       0L
     )
   }
-
+  
   df_new
 }
 
@@ -358,8 +293,15 @@ weighting_specs <- dplyr::bind_rows(
 # ══════════════════════════════════════════════════════════════════════════════
 #
 # formula_template contains the full unified dummy interaction structure.
-# no_agg = TRUE gives cohort-specific coefficients required by agg_specs.
-# mem.clean = TRUE is recommended for models of this size.
+# no_agg = TRUE gives cohort-specific coefficients as the primary output,
+# which are needed for cohort-group aggregation in Script 3.
+#
+# primary_vcov_id identifies which vcov spec is stored in the lean model
+# and used for cohort-group aggregation in Script 3.
+#
+# mem.clean = TRUE is strongly recommended for models of this size.
+
+# ── Unweighted Sun-Abraham (primary model) ─────────────────────────────────
 
 sunab_formula_b10_pdsisumn10 <- paste0(
   "{outcome} ~ ",
@@ -371,25 +313,27 @@ sunab_formula_b10_pdsisumn10 <- paste0(
 )
 
 initial_model_specs <- dplyr::bind_rows(
-
+  
   make_model_spec(
     model_id         = "sunab_twfe_unweighted",
     formula_template = sunab_formula_b10_pdsisumn10,
     estimator_type   = "sunab",
     term_pattern     = "^year::",
     weights_col      = NA_character_,
+    primary_vcov_id  = "cluster_pt",
     feols_args       = list(mem.clean = TRUE)
   ),
-
+  
   make_model_spec(
     model_id         = "sunab_twfe_glmatotopoclimnfg",
     formula_template = sunab_formula_b10_pdsisumn10,
     estimator_type   = "sunab",
     term_pattern     = "^year::",
     weights_col      = "glm_ato_topoclimnfg_weights",
+    primary_vcov_id  = "cluster_pt",
     feols_args       = list(mem.clean = TRUE)
   )
-
+  
 )
 
 
@@ -437,64 +381,7 @@ regionwide_vcov_specs <- tibble::tibble(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 9. Aggregation specs ----
-# ══════════════════════════════════════════════════════════════════════════════
-#
-# Each spec runs sunab_aggregate_vcov() for every (run x vcov_spec) combination.
-# group_fun must produce event_time (integer) and dummy_group (character) at
-# minimum — these column names are required by Script 3 inference functions.
-# Additional columns (e.g. cohort_bin) define finer aggregation strata loaded
-# in Script 3 via subset_agg_by_cohort_group().
-#
-# Coefficient names look like: year::2:cohort::2005:cd_bf
-
-agg_specs <- list(
-
-  # Standard event study: cohort-averaged ATT per event_time x dummy_group.
-  # Primary aggregation for pre-trend tests, ATT windows, and pairwise comparisons.
-  make_agg_spec(
-    id    = "event_study",
-    agg   = "(year::-?[0-9]+):cohort::[0-9]+:(cd_.*)",
-    group_fun = function(x) {
-      x |>
-        dplyr::mutate(
-          event_time  = as.integer(stringr::str_extract(group_1, "-?[0-9]+")),
-          dummy_group = group_2
-        ) |>
-        dplyr::select(term, event_time, dummy_group)
-    },
-    label = "Cohort-averaged event study by dummy group"
-  )#,
-
-  # # Cohort-bin event study: same estimates further stratified by cohort bin.
-  # # Script 3 subsets by cohort_bin to run cohort-stratified inference.
-  # # Adjust min/max cohort years to match your data.
-  # make_agg_spec(
-  #   id    = "cohort_early_late",
-  #   agg   = "(year::-?[0-9]+):cohort::([0-9]+):(cd_.*)",
-  #   group_fun = function(x) {
-  #     x |>
-  #       dplyr::mutate(
-  #         event_time  = as.integer(stringr::str_extract(group_1, "-?[0-9]+")),
-  #         cohort      = as.integer(group_2),
-  #         dummy_group = group_3,
-  #         cohort_bin  = dplyr::case_when(
-  #           cohort >= 2000 & cohort <= 2010 ~ "early",
-  #           cohort >= 2011 & cohort <= 2020 ~ "late",
-  #           TRUE ~ NA_character_
-  #         )
-  #       ) |>
-  #       dplyr::filter(!is.na(cohort_bin)) |>
-  #       dplyr::select(term, event_time, cohort_bin, dummy_group)
-  #   },
-  #   label = "Event study by cohort bin (early 2000-2010 / late 2011-2020) and dummy group"
-  # )
-
-)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Group palette (keyed on dummy column names)
+# Optional: group palette (keyed on dummy column names)
 # ══════════════════════════════════════════════════════════════════════════════
 
 group_palette <- c(
@@ -506,51 +393,42 @@ group_palette <- c(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 10. Preview run grid ----
+# 9. Preview run grid ----
 # ══════════════════════════════════════════════════════════════════════════════
 
 preview_run_grid <- function(subset_specs, outcome_specs, treatment_group_specs,
-                              model_specs, vcov_specs, agg_specs) {
+                             model_specs, vcov_specs) {
   grid <- tidyr::crossing(
     subset_specs |> dplyr::select(subset_id),
     outcome_specs,
     treatment_group_specs |> dplyr::select(group_id, dummy_cols),
-    model_specs |> dplyr::select(model_id, estimator_type, weights_col)
+    model_specs |> dplyr::select(model_id, estimator_type, weights_col, primary_vcov_id)
   ) |>
-    dplyr::mutate(run_id     = glue::glue("{subset_id}__{outcome}__{group_id}__{model_id}"),
+    dplyr::mutate(run_id = glue::glue("{subset_id}__{outcome}__{group_id}__{model_id}"),
                   dummy_cols = purrr::map_chr(dummy_cols, \(dc) paste(dc, collapse = ",")))
-
+  
   message(glue::glue("Total runs planned: {nrow(grid)}"))
   message(glue::glue("Vcov specs per run: {paste(vcov_specs$vcov_id, collapse = ', ')}"))
-  message(glue::glue("Agg specs per run:  {paste(purrr::map_chr(agg_specs, 'id'), collapse = ', ')}"))
-  print(grid |> dplyr::select(subset_id, outcome, group_id, model_id,
-                               weights_col, dummy_cols))
+  print(grid |> dplyr::select(subset_id, outcome, group_id, model_id, weights_col,
+                              primary_vcov_id, dummy_cols))
 }
 
-
-# SIMPLIFY
-
-# ecoregion_subset_specs <- ecoregion_subset_specs[11,]
-# outcome_specs <- outcome_specs[1,]
-ecor_vcov_specs <- ecor_vcov_specs[1,]
-
 preview_run_grid(ecoregion_subset_specs, outcome_specs, initial_treatment_group_specs,
-                 initial_model_specs, ecor_vcov_specs, agg_specs)
+                 initial_model_specs, ecor_vcov_specs)
 
 preview_run_grid(all_data_subset_spec, outcome_specs, initial_treatment_group_specs,
-                 initial_model_specs, regionwide_vcov_specs, agg_specs)
+                 initial_model_specs, regionwide_vcov_specs)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 11. Run weighting experiment ----
+# 10. Run weighting experiment ----
 # ══════════════════════════════════════════════════════════════════════════════
 
 weighting_subsets <- dplyr::bind_rows(
-  ecoregion_subset_specs#,
-  #all_data_temporalsplit_subset_specs
+  ecoregion_subset_specs,
+  all_data_temporalsplit_subset_specs
 )
 
-tic('weighting')
 results_weighting <- run_weighting_experiment(
   dataset_spec          = dataset_spec,
   analysis_subset_specs = weighting_subsets,
@@ -561,7 +439,6 @@ results_weighting <- run_weighting_experiment(
   verbose_timing        = TRUE,
   .progress             = TRUE
 )
-toc()
 
 failed_weighting <- purrr::keep(results_weighting$run_results, \(r) !is.null(r$error))
 if (length(failed_weighting) > 0) {
@@ -573,10 +450,9 @@ rebuild_weighting_tables(dir_out = dir_results, write_csv = TRUE)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 12. Run estimation experiment ----
+# 11. Run estimation experiment ----
 # ══════════════════════════════════════════════════════════════════════════════
 
-tic('sunab estimation')
 results_sunab_ecor <- run_experiment(
   dataset_spec          = dataset_spec,
   analysis_subset_specs = ecoregion_subset_specs,
@@ -584,7 +460,6 @@ results_sunab_ecor <- run_experiment(
   treatment_group_specs = initial_treatment_group_specs,
   model_specs           = initial_model_specs,
   vcov_specs            = ecor_vcov_specs,
-  agg_specs             = agg_specs,
   dir_out               = dir_results,
   group_palette         = group_palette,
   ci_level              = 0.95,
@@ -595,7 +470,6 @@ results_sunab_ecor <- run_experiment(
   verbose_timing        = TRUE,
   .progress             = TRUE
 )
-toc()
 
 failed_ecor <- purrr::keep(results_sunab_ecor$run_results, \(r) !is.null(r$error))
 if (length(failed_ecor) > 0) {
@@ -613,7 +487,6 @@ if (length(failed_ecor) > 0) {
 #   treatment_group_specs = initial_treatment_group_specs,
 #   model_specs           = initial_model_specs,
 #   vcov_specs            = regionwide_vcov_specs,
-#   agg_specs             = agg_specs,
 #   dir_out               = dir_results,
 #   group_palette         = group_palette,
 #   ci_level              = 0.95,
@@ -626,17 +499,14 @@ if (length(failed_ecor) > 0) {
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 13. Rebuild merged output tables ----
+# 12. Rebuild merged output tables ----
 # ══════════════════════════════════════════════════════════════════════════════
 
 all_estimation_tables <- rebuild_estimation_tables(dir_out = dir_results, write_csv = TRUE)
 all_descriptive_tables <- rebuild_descriptive_tables(dir_out = dir_results, write_csv = TRUE)
 
 message(glue::glue(
-  "Coef rows:       {nrow(all_estimation_tables$coef_tbl)}\n",
-  "Agg specs found: {paste(names(all_estimation_tables$agg_tbls), collapse = ', ')}\n",
-  "Unique run_ids:  {dplyr::n_distinct(all_estimation_tables$run_registry$run_id)}"
+  "Coef rows:            {nrow(all_estimation_tables$coef_tbl)}\n",
+  "Agg event-study rows: {nrow(all_estimation_tables$agg_eventstudy)}\n",
+  "Unique run_ids:       {dplyr::n_distinct(all_estimation_tables$run_registry$run_id)}"
 ))
-
-relativize_result_paths(dir_results = dir_results, base = here::here())
-

@@ -241,13 +241,17 @@ test_dats_sn2_small <- test_dats_sn2 |>
 #   1. matching aggregate() estimates,
 #   2. matching aggregate() standard errors,
 #   3. direct verification of pairwise covariance entries.
+#
+# Function base/motivation:
+# This function builds on the approach discussed in fixest GitHub Issue #295:
+# https://github.com/lrberge/fixest/issues/295
 
 #' Extract aggregated Sun-Abraham coefficients and their covariance matrix
 #'
 #' @description
-#' `sunab_beta_vcv()` aggregates non-aggregated Sun-Abraham coefficients from a
-#' `fixest::feols()` model and returns both the aggregated coefficient estimates
-#' and the full variance-covariance matrix of the aggregated estimates.
+#' `sunab_aggregate_vcov()` aggregates non-aggregated Sun-Abraham coefficients
+#' from a `fixest::feols()` model and returns both the aggregated coefficient
+#' estimates and the full variance-covariance matrix of the aggregated estimates.
 #'
 #' The function is intended for models estimated with `fixest::sunab(...,
 #' no_agg = TRUE)`, especially when the Sun-Abraham terms are interacted with
@@ -305,18 +309,74 @@ test_dats_sn2_small <- test_dats_sn2 |>
 #' matches event times 2 through 15 but captures only the subgroup, so the output
 #' is aggregated over event time and cohort, with one row per subgroup.
 #'
-#' Aggregation weights are reconstructed from the model matrix following the
-#' same logic used by `aggregate()` for `fixest` objects: the function counts
-#' the observations contributing to each selected coefficient using
-#' `colSums(sign(model.matrix(...)))`. If the original model was estimated with
-#' weights, the function uses weighted counts:
+#' @section Aggregation weights:
+#' By default, `weight_method = "model_matrix"` reconstructs aggregation weights
+#' using the same model-matrix logic used by `aggregate()` for `fixest` objects:
+#'
+#' `colSums(sign(model.matrix(...)))`
+#'
+#' or, for weighted models:
 #'
 #' `colSums(weights * sign(model.matrix(...)))`.
 #'
-#' The resulting weights are normalized within each aggregation group. This means
-#' that the function produces model-matrix-weighted averages, not simple
-#' equal-weighted averages across coefficient names.
+#' The resulting coefficient-level weights are normalized within each aggregation
+#' group. This means that the function produces model-matrix-weighted averages,
+#' not simple equal-weighted averages across coefficient names.
 #'
+#' The `"model_matrix"` path is the safest reference path, but it can be
+#' memory-intensive for large models because it may materialize an `N x K` model
+#' matrix, where `N` is the number of observations and `K` is the number of
+#' selected non-aggregated coefficients.
+#'
+#' If `weight_method = "data_count"`, the function avoids calling
+#' `model.matrix()` and instead computes aggregation weights from `df_est` by
+#' counting, or weighted-counting, observations in each coefficient cell. This is
+#' much more memory-efficient, but it assumes coefficient names follow the usual
+#' `sunab(..., no_agg = TRUE):dummy` pattern, e.g.:
+#'
+#' `year::2:cohort::2005:cd_bf`
+#'
+#' In this case, the function counts observations where:
+#'
+#' - `period_var - cohort_var == 2`;
+#' - `cohort_var == 2005`;
+#' - `cd_bf != 0`.
+#'
+#' If the interaction column is signed rather than strictly 0/1, the data-count
+#' path uses `sign(interaction_value)`, matching the model-matrix weighting logic.
+#'
+#' @section Data-count weighting assumptions:
+#' The `data_count` path is a fast path for dummy- or signed-dummy-interacted
+#' Sun-Abraham designs where each selected coefficient corresponds to a cell
+#' defined by:
+#'
+#' - event time, parsed from the coefficient name;
+#' - cohort, parsed from the coefficient name;
+#' - an interaction column in `df_est`, parsed from the coefficient name.
+#'
+#' It assumes that `df_est` is the exact estimation sample used by `feols()`.
+#' If `feols()` dropped rows due to missingness, singleton fixed effects,
+#' collinearity handling, weights, or other preprocessing, `df_est` must already
+#' reflect those dropped rows.
+#'
+#' If the original `feols()` model was estimated with weights and
+#' `weight_method = "data_count"`, `weight_var` should be supplied and should
+#' point to the same weight variable used in `feols()`. Otherwise the aggregation
+#' weights will be unweighted and may not match `aggregate()`.
+#'
+#' The `data_count` path may not reproduce the model-matrix weights for
+#' continuous interactions, transformed variables, or specifications where the
+#' selected coefficient columns are not simple cohort-by-event-time-by-interaction
+#' cells.
+#'
+#' Always inspect `names(sunab_fixest$coefficients)` before using
+#' `weight_method = "data_count"`. If the coefficient names differ from the
+#' defaults, adjust `event_time_regex`, `cohort_regex`, and `interaction_regex`.
+#'
+#' The `data_count` path should be validated against `weight_method =
+#' "model_matrix"` on a smaller dataset before production use.
+#'
+#' @section Post-hoc covariance matrices:
 #' If `vcov_mat` is supplied, the function uses that covariance matrix instead
 #' of `sunab_fixest$cov.scaled`. This allows the same aggregation matrix to be
 #' applied to post-hoc covariance matrices, such as alternative clustered,
@@ -324,13 +384,17 @@ test_dats_sn2_small <- test_dats_sn2 |>
 #' matrix must correspond to the same non-aggregated coefficient vector and must
 #' have row and column names matching the model coefficient names.
 #'
+#' @section `group_fun`:
 #' `group_fun` can be used to modify the captured grouping variables before
 #' aggregation. This is useful for custom aggregations that cannot be expressed
 #' with regex capture groups alone, such as recoding cohort years into bins
-#' before aggregation. The function passed to `group_fun` receives a data frame
-#' containing the captured groups plus a `term` column. It must return a data
-#' frame that includes `term` and one or more grouping columns. Rows may be
-#' filtered to drop terms from the aggregation.
+#' before aggregation.
+#'
+#' The function passed to `group_fun` receives a data frame containing the
+#' captured groups plus a `term` column. It must return a data frame that
+#' includes `term` and one or more grouping columns. Rows may be filtered to drop
+#' terms from the aggregation, but `group_fun` may not add terms that were not
+#' selected by the original `agg` regex.
 #'
 #' The grouping columns returned by `group_fun`, excluding `term`, define the
 #' rows of the aggregated output. For example, returning columns `term`,
@@ -346,9 +410,11 @@ test_dats_sn2_small <- test_dats_sn2 |>
 #' not the target use case for this function.
 #'
 #' @section Dependencies:
-#' This function uses `dplyr::filter()` internally and the examples use several
-#' additional `dplyr` verbs. The `dplyr` package should be installed and
+#' This function uses `dplyr` internally. The `data_count` path additionally
+#' uses `stringr`, `tibble`, and `tidyr`. These packages should be installed and
 #' available.
+#'
+#' The examples use the native R pipe `|>` and additional `dplyr` verbs.
 #'
 #' @section Limitations:
 #' This function reconstructs the model-matrix-weighted aggregation used by
@@ -360,9 +426,9 @@ test_dats_sn2_small <- test_dats_sn2 |>
 #' periods may sometimes be more appropriate than model-matrix-weighted
 #' aggregation.
 #'
-#' The function assumes that `model.matrix(sunab_fixest)` can be reconstructed.
-#' It may fail for lean model objects or objects where the model matrix/data
-#' needed by `model.matrix()` have been removed.
+#' The `model_matrix` path assumes that `model.matrix(sunab_fixest)` can be
+#' reconstructed. It may fail for lean model objects or objects where the model
+#' matrix/data needed by `model.matrix()` have been removed.
 #'
 #' The supplied `vcov_mat`, if used, must correspond to the same non-aggregated
 #' coefficient vector and must use coefficient names matching
@@ -385,8 +451,9 @@ test_dats_sn2_small <- test_dats_sn2 |>
 #' <https://github.com/lrberge/fixest/issues/295>.
 #'
 #' This implementation generalizes that idea by allowing arbitrary regex-defined
-#' aggregation groups, optional post-hoc covariance matrices, and optional
-#' user-defined recoding of aggregation groups through `group_fun`.
+#' aggregation groups, optional post-hoc covariance matrices, optional
+#' user-defined recoding of aggregation groups through `group_fun`, and an
+#' optional data-count weighting path to avoid materializing the model matrix.
 #'
 #' @param sunab_fixest A `fixest` model object, typically returned by
 #'   `fixest::feols()`, estimated with one or more `fixest::sunab(...,
@@ -408,6 +475,41 @@ test_dats_sn2_small <- test_dats_sn2 |>
 #'   frame containing `term` and at least one grouping column. Rows may be
 #'   filtered to drop terms from the aggregation, but `group_fun` may not add
 #'   terms that were not selected by the original `agg` regex.
+#'
+#' @param weight_method Character. Either `"model_matrix"` or `"data_count"`.
+#'   `"model_matrix"` is the default and reproduces `aggregate()` weighting
+#'   using `model.matrix()`. `"data_count"` computes weights directly from
+#'   `df_est` and avoids materializing the model matrix.
+#'
+#' @param df_est Data frame used when `weight_method = "data_count"`. This
+#'   should be the exact estimation sample used by the `fixest` model.
+#'
+#' @param cohort_var Character. Name of the cohort/treatment-timing variable in
+#'   `df_est`, e.g. `"FirstTreat"`. Required for `weight_method = "data_count"`.
+#'
+#' @param period_var Character. Name of the time-period variable in `df_est`,
+#'   e.g. `"year"`. Required for `weight_method = "data_count"`.
+#'
+#' @param weight_var Optional character. Name of a column in `df_est` containing
+#'   estimation weights. If `NULL`, unweighted counts are used in the
+#'   `data_count` path. Use this only if the model was estimated with the same
+#'   weights.
+#'
+#' @param event_time_regex Character regex used by the `data_count` path to
+#'   parse event time from coefficient names. The first capture group must be
+#'   the event-time value. The default assumes coefficient names contain strings
+#'   like `"year::2"`.
+#'
+#' @param cohort_regex Character regex used by the `data_count` path to parse
+#'   cohort from coefficient names. The first capture group must be the cohort
+#'   value. The default assumes coefficient names contain strings like
+#'   `"cohort::2005"`.
+#'
+#' @param interaction_regex Character regex used by the `data_count` path to
+#'   parse the interacted variable from coefficient names. The first capture
+#'   group must be the interaction variable name, e.g. `"cd_bf"`. The default
+#'   assumes the interaction variable is the final colon-delimited component of
+#'   the coefficient name.
 #'
 #' @returns
 #' A list with the following elements:
@@ -431,6 +533,11 @@ test_dats_sn2_small <- test_dats_sn2 |>
 #'
 #'   \item{parsed_terms}{A data frame mapping each selected coefficient term to
 #'   its parsed and, if applicable, recoded aggregation group.}
+#'
+#'   \item{coef_weights}{The unnormalized coefficient-level weights used to
+#'   build the rows of `A`. These are useful for debugging and for validating
+#'   whether `model_matrix` and `data_count` produce the same aggregation
+#'   weights.}
 #' }
 #'
 #' @examples
@@ -447,31 +554,63 @@ test_dats_sn2_small <- test_dats_sn2 |>
 #'   cluster = ~ pt_id
 #' )
 #'
-#' # Aggregate over cohorts within event-time-by-subgroup cells
-#' agg_cd_event <- sunab_beta_vcv(
+#' # Aggregate over cohorts within event-time-by-subgroup cells.
+#' agg_cd_event <- sunab_aggregate_vcov(
 #'   est_sunab_dummy,
 #'   agg = "(year::-?[0-9]+):cohort::[0-9]+:(cd_.*)"
 #' )
 #'
-#' # Aggregate over cohorts and event times 2 through 6, separately by subgroup
-#' att_2_6_cd <- sunab_beta_vcv(
+#' # Aggregate over cohorts and event times 2 through 6, separately by subgroup.
+#' # The event-time window is matched but not captured.
+#' att_2_6_cd <- sunab_aggregate_vcov(
 #'   est_sunab_dummy,
 #'   agg = "year::[2-6]:cohort::[0-9]+:(cd_.*)"
 #' )
 #'
-#' # Use a post-hoc covariance matrix
+#' # Use a post-hoc covariance matrix.
 #' V_alt <- vcov(
 #'   est_sunab_dummy,
 #'   vcov = ~ pt_id + year
 #' )
 #'
-#' att_2_6_cd_alt <- sunab_beta_vcv(
+#' att_2_6_cd_alt <- sunab_aggregate_vcov(
 #'   est_sunab_dummy,
 #'   agg = "year::[2-6]:cohort::[0-9]+:(cd_.*)",
 #'   vcov_mat = V_alt
 #' )
 #'
-#' # Example: compare cd_bf versus cd_f for the event-time 2--6 average
+#' # Use the faster data-count path. `df_est` should be the exact estimation
+#' # sample used by feols().
+#' agg_cd_event_data <- sunab_aggregate_vcov(
+#'   est_sunab_dummy,
+#'   agg = "(year::-?[0-9]+):cohort::[0-9]+:(cd_.*)",
+#'   weight_method = "data_count",
+#'   df_est = test_dats_sn2_small,
+#'   cohort_var = "FirstTreat",
+#'   period_var = "year"
+#' )
+#'
+#' # Validate the data-count path against the model-matrix path on a smaller
+#' # dataset before using it in production.
+#' all.equal(
+#'   agg_cd_event$transform,
+#'   agg_cd_event_data$transform,
+#'   tolerance = 1e-12
+#' )
+#'
+#' all.equal(
+#'   agg_cd_event$beta,
+#'   agg_cd_event_data$beta,
+#'   tolerance = 1e-10
+#' )
+#'
+#' all.equal(
+#'   agg_cd_event$sigma,
+#'   agg_cd_event_data$sigma,
+#'   tolerance = 1e-10
+#' )
+#'
+#' # Example: compare cd_bf versus cd_f for the event-time 2--6 average.
 #' g <- att_2_6_cd$groups
 #'
 #' i_bf <- which(g$key == "cd_bf")
@@ -494,8 +633,8 @@ test_dats_sn2_small <- test_dats_sn2 |>
 #'   p = p
 #' )
 #'
-#' # Example: aggregate by event time, cohort bin, and subgroup
-#' es_by_cohort_bin <- sunab_beta_vcv(
+#' # Example: aggregate by event time, cohort bin, and subgroup.
+#' es_by_cohort_bin <- sunab_aggregate_vcov(
 #'   est_sunab_dummy,
 #'   agg = "(year::-?[0-9]+):cohort::([0-9]+):(cd_.*)",
 #'   group_fun = function(x) {
@@ -518,7 +657,7 @@ test_dats_sn2_small <- test_dats_sn2 |>
 #' # Example: aggregate event times 2 through 6 by cohort bin and subgroup.
 #' # The event-time window is matched but not captured, so the output rows are
 #' # cohort_bin x subgroup rather than event_time x cohort_bin x subgroup.
-#' att_2_6_by_cohort_bin <- sunab_beta_vcv(
+#' att_2_6_by_cohort_bin <- sunab_aggregate_vcov(
 #'   est_sunab_dummy,
 #'   agg = "year::[2-6]:cohort::([0-9]+):(cd_.*)",
 #'   group_fun = function(x) {
@@ -537,7 +676,7 @@ test_dats_sn2_small <- test_dats_sn2 |>
 #'   }
 #' )
 #'
-#' # Validate estimates and SEs against aggregate()
+#' # Validate estimates and SEs against aggregate().
 #' agg_check <- aggregate(
 #'   est_sunab_dummy,
 #'   agg = "(year::-?[0-9]+):cohort::[0-9]+:(cd_.*)"
@@ -555,14 +694,17 @@ test_dats_sn2_small <- test_dats_sn2 |>
 #'   tolerance = 1e-8
 #' )
 #'
-#' # Validate selected pairwise covariance entries
+#' # Validate selected pairwise covariance entries.
 #' A <- agg_cd_event$transform
 #' V <- est_sunab_dummy$cov.scaled[colnames(A), colnames(A), drop = FALSE]
 #'
 #' i <- 1
 #' j <- 2
 #'
-#' direct_cov_ij <- as.numeric(A[i, , drop = FALSE] %*% V %*% t(A[j, , drop = FALSE]))
+#' direct_cov_ij <- as.numeric(
+#'   A[i, , drop = FALSE] %*% V %*% t(A[j, , drop = FALSE])
+#' )
+#'
 #' stored_cov_ij <- agg_cd_event$sigma[i, j]
 #'
 #' all.equal(direct_cov_ij, stored_cov_ij, tolerance = 1e-8)
@@ -572,12 +714,22 @@ test_dats_sn2_small <- test_dats_sn2 |>
 #' [fixest::sunab()], [aggregate()], [fixest::vcov.fixest()]
 #'
 #' @export
-sunab_beta_vcv <- function(
+sunab_aggregate_vcov <- function(
     sunab_fixest,
     agg,
     vcov_mat = NULL,
-    group_fun = NULL
+    group_fun = NULL,
+    weight_method = c("model_matrix", "data_count"),
+    df_est = NULL,
+    cohort_var = NULL,
+    period_var = NULL,
+    weight_var = NULL,
+    event_time_regex = "year::(-?[0-9]+)",
+    cohort_regex = "cohort::([0-9]+)",
+    interaction_regex = ":([^:]+)$"
 ) {
+  
+  weight_method <- match.arg(weight_method)
   
   coef_vec <- sunab_fixest$coefficients
   coef_names <- names(coef_vec)
@@ -675,12 +827,28 @@ sunab_beta_vcv <- function(
     collapse = "::"
   )
   
-  mm <- model.matrix(sunab_fixest)[, agg_coef_names, drop = FALSE]
-  
-  if (!is.null(sunab_fixest$weights)) {
-    coef_wgt <- colSums(sunab_fixest$weights * sign(mm))
-  } else {
-    coef_wgt <- colSums(sign(mm))
+  if (weight_method == "model_matrix") {
+    
+    mm <- model.matrix(sunab_fixest)[, agg_coef_names, drop = FALSE]
+    
+    if (!is.null(sunab_fixest$weights)) {
+      coef_wgt <- colSums(sunab_fixest$weights * sign(mm))
+    } else {
+      coef_wgt <- colSums(sign(mm))
+    }
+    
+  } else if (weight_method == "data_count") {
+    
+    coef_wgt <- compute_sunab_coef_weights_from_data(
+      coef_names = agg_coef_names,
+      df_est = df_est,
+      cohort_var = cohort_var,
+      period_var = period_var,
+      weight_var = weight_var,
+      event_time_regex = event_time_regex,
+      cohort_regex = cohort_regex,
+      interaction_regex = interaction_regex
+    )
   }
   
   A <- matrix(
@@ -741,13 +909,178 @@ sunab_beta_vcv <- function(
     transform = A,
     groups = unique_groups,
     coef_names = agg_coef_names,
-    parsed_terms = groups
+    parsed_terms = groups,
+    coef_weights = coef_wgt
   )
+}
+
+
+#' Compute Sun-Abraham coefficient aggregation weights from estimation data
+#'
+#' @description
+#' Internal helper used by `sunab_aggregate_vcov()` when
+#' `weight_method = "data_count"`. It parses event time, cohort, and interaction
+#' variable names from non-aggregated Sun-Abraham coefficient names, then
+#' computes coefficient-level weights directly from the estimation data.
+#'
+#' @details
+#' This helper is intended for coefficient names like:
+#'
+#' `year::2:cohort::2005:cd_bf`
+#'
+#' and data columns like:
+#'
+#' - `FirstTreat`, the cohort/treatment-timing variable;
+#' - `year`, the period variable;
+#' - `cd_bf`, the interacted dummy/signed-dummy variable.
+#'
+#' The returned weights are designed to match:
+#'
+#' `colSums(sign(model.matrix(model)[, coef_names]))`
+#'
+#' or, when `weight_var` is supplied:
+#'
+#' `colSums(weights * sign(model.matrix(model)[, coef_names]))`.
+#'
+#' This helper should generally not be called directly by users.
+#'
+#' @param coef_names Character vector of coefficient names.
+#' @param df_est Data frame containing the exact estimation sample.
+#' @param cohort_var Character name of the cohort/treatment-timing variable.
+#' @param period_var Character name of the time-period variable.
+#' @param weight_var Optional character name of the model weight variable.
+#' @param event_time_regex Regex with first capture group identifying event time.
+#' @param cohort_regex Regex with first capture group identifying cohort.
+#' @param interaction_regex Regex with first capture group identifying the
+#'   interaction variable.
+#'
+#' @returns
+#' A named numeric vector of unnormalized coefficient-level aggregation weights.
+compute_sunab_coef_weights_from_data <- function(
+    coef_names,
+    df_est,
+    cohort_var,
+    period_var,
+    weight_var = NULL,
+    event_time_regex = "year::(-?[0-9]+)",
+    cohort_regex = "cohort::([0-9]+)",
+    interaction_regex = ":([^:]+)$"
+) {
+  
+  if (is.null(df_est)) {
+    stop("`df_est` must be supplied when `weight_method = 'data_count'`.")
+  }
+  
+  if (is.null(cohort_var) || is.null(period_var)) {
+    stop(
+      "`cohort_var` and `period_var` must be supplied when ",
+      "`weight_method = 'data_count'`."
+    )
+  }
+  
+  required_vars <- c(cohort_var, period_var)
+  
+  if (!is.null(weight_var)) {
+    required_vars <- c(required_vars, weight_var)
+  }
+  
+  missing_required <- setdiff(required_vars, names(df_est))
+  
+  if (length(missing_required) > 0) {
+    stop(
+      "`df_est` is missing required columns: ",
+      paste(missing_required, collapse = ", ")
+    )
+  }
+  
+  event_time <- stringr::str_match(coef_names, event_time_regex)[, 2]
+  cohort <- stringr::str_match(coef_names, cohort_regex)[, 2]
+  interaction_var <- stringr::str_match(coef_names, interaction_regex)[, 2]
+  
+  parsed <- tibble::tibble(
+    term = coef_names,
+    event_time = as.integer(event_time),
+    cohort = as.integer(cohort),
+    interaction_var = interaction_var
+  )
+  
+  if (anyNA(parsed$event_time)) {
+    bad <- parsed$term[is.na(parsed$event_time)]
+    stop(
+      "Could not parse event time from some coefficient names. Examples: ",
+      paste(utils::head(bad, 5), collapse = ", "),
+      if (length(bad) > 5) " ..."
+    )
+  }
+  
+  if (anyNA(parsed$cohort)) {
+    bad <- parsed$term[is.na(parsed$cohort)]
+    stop(
+      "Could not parse cohort from some coefficient names. Examples: ",
+      paste(utils::head(bad, 5), collapse = ", "),
+      if (length(bad) > 5) " ..."
+    )
+  }
+  
+  if (anyNA(parsed$interaction_var)) {
+    bad <- parsed$term[is.na(parsed$interaction_var)]
+    stop(
+      "Could not parse interaction variable from some coefficient names. Examples: ",
+      paste(utils::head(bad, 5), collapse = ", "),
+      if (length(bad) > 5) " ..."
+    )
+  }
+  
+  interaction_vars <- unique(parsed$interaction_var)
+  missing_interactions <- setdiff(interaction_vars, names(df_est))
+  
+  if (length(missing_interactions) > 0) {
+    stop(
+      "`df_est` is missing interaction/dummy columns parsed from coefficient names: ",
+      paste(utils::head(missing_interactions, 10), collapse = ", "),
+      if (length(missing_interactions) > 10) " ..."
+    )
+  }
+  
+  df_counts <- df_est |>
+    dplyr::mutate(
+      .event_time = .data[[period_var]] - .data[[cohort_var]],
+      .cohort = .data[[cohort_var]],
+      .row_weight = if (is.null(weight_var)) 1 else .data[[weight_var]]
+    ) |>
+    tidyr::pivot_longer(
+      cols = dplyr::all_of(interaction_vars),
+      names_to = "interaction_var",
+      values_to = ".interaction_value"
+    ) |>
+    dplyr::filter(.interaction_value != 0, !is.na(.interaction_value)) |>
+    dplyr::group_by(.event_time, .cohort, interaction_var) |>
+    dplyr::summarise(
+      coef_wgt = sum(.row_weight * sign(.interaction_value), na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  weights <- parsed |>
+    dplyr::left_join(
+      df_counts,
+      by = c(
+        "event_time" = ".event_time",
+        "cohort" = ".cohort",
+        "interaction_var" = "interaction_var"
+      )
+    ) |>
+    dplyr::mutate(
+      coef_wgt = tidyr::replace_na(coef_wgt, 0)
+    ) |>
+    dplyr::pull(coef_wgt)
+  
+  stats::setNames(weights, coef_names)
 }
 
 #Operate
 
-# Run disagregated, then compute estimates and vcov with new function at the period level for each subgroup
+# Run disaggregated, then compute estimates and vcov with new function
+# at the period level for each subgroup
 est_sunab_dummy <- feols(
   rap_tree ~
     sunab(FirstTreat, year, ref.p = -6, no_agg = TRUE):cd_f +
@@ -759,13 +1092,8 @@ est_sunab_dummy <- feols(
   cluster = ~ pt_id
 )
 
-# Run aggregation in feols() call and compare estimates and resulting vcov
 
-# Now compute a different cluster error (post-hoc), use it to aggregate using new funciton, and then compare it to computing that cluster error in main FEOLS call with built-in aggregation
-
-
-
-# Helpers
+# Helpers ----
 
 fixest_agg_to_df <- function(x) {
   
@@ -785,7 +1113,7 @@ fixest_agg_to_df <- function(x) {
   
   if (is.na(est_col) || is.na(se_col)) {
     stop(
-      "Could not identify estimate/SE columns in fixest::aggregate() output. ",
+      "Could not identify estimate/SE columns in aggregate() output. ",
       "Column names were: ",
       paste(names(out), collapse = ", ")
     )
@@ -799,6 +1127,7 @@ fixest_agg_to_df <- function(x) {
     )
 }
 
+
 custom_agg_to_df <- function(x) {
   
   x$groups |>
@@ -808,6 +1137,7 @@ custom_agg_to_df <- function(x) {
       se_custom = se
     )
 }
+
 
 compare_custom_to_fixest <- function(custom, fixest_agg, tolerance = 1e-8) {
   
@@ -828,26 +1158,111 @@ compare_custom_to_fixest <- function(custom, fixest_agg, tolerance = 1e-8) {
       se_match = se_abs_diff < tolerance
     )
   
+  unmatched <- comp |>
+    dplyr::filter(
+      is.na(estimate_custom) |
+        is.na(estimate_fixest) |
+        is.na(se_custom) |
+        is.na(se_fixest)
+    )
+  
+  matched <- comp |>
+    dplyr::filter(
+      !is.na(estimate_custom),
+      !is.na(estimate_fixest),
+      !is.na(se_custom),
+      !is.na(se_fixest)
+    )
+  
   list(
     comparison = comp,
-    estimates_match = all(comp$estimate_match, na.rm = FALSE),
-    ses_match = all(comp$se_match, na.rm = FALSE),
-    max_estimate_abs_diff = max(comp$estimate_abs_diff, na.rm = TRUE),
-    max_se_abs_diff = max(comp$se_abs_diff, na.rm = TRUE)
+    unmatched = unmatched,
+    estimates_match = nrow(unmatched) == 0 &&
+      nrow(matched) > 0 &&
+      all(matched$estimate_match),
+    ses_match = nrow(unmatched) == 0 &&
+      nrow(matched) > 0 &&
+      all(matched$se_match),
+    max_estimate_abs_diff = if (nrow(matched) == 0) NA_real_ else max(matched$estimate_abs_diff),
+    max_se_abs_diff = if (nrow(matched) == 0) NA_real_ else max(matched$se_abs_diff)
   )
 }
 
 
+compare_custom_outputs <- function(custom, reference, tolerance = 1e-8) {
+  
+  custom_names <- rownames(custom$beta)
+  reference_names <- rownames(reference$beta)
+  
+  missing_from_reference <- setdiff(custom_names, reference_names)
+  missing_from_custom <- setdiff(reference_names, custom_names)
+  
+  common_names <- intersect(custom_names, reference_names)
+  
+  if (length(common_names) == 0) {
+    stop("No common coefficient names between custom and reference outputs.")
+  }
+  
+  beta_custom <- custom$beta[common_names, , drop = FALSE]
+  beta_reference <- reference$beta[common_names, , drop = FALSE]
+  
+  sigma_custom <- custom$sigma[common_names, common_names, drop = FALSE]
+  sigma_reference <- reference$sigma[common_names, common_names, drop = FALSE]
+  
+  A_custom <- custom$transform[common_names, , drop = FALSE]
+  A_reference <- reference$transform[common_names, , drop = FALSE]
+  
+  se_custom <- sqrt(diag(sigma_custom))
+  se_reference <- sqrt(diag(sigma_reference))
+  
+  comparison <- tibble::tibble(
+    term = common_names,
+    estimate_custom = as.numeric(beta_custom),
+    estimate_reference = as.numeric(beta_reference),
+    se_custom = se_custom,
+    se_reference = se_reference,
+    estimate_diff = estimate_custom - estimate_reference,
+    se_diff = se_custom - se_reference,
+    estimate_abs_diff = abs(estimate_diff),
+    se_abs_diff = abs(se_diff)
+  )
+  
+  sigma_diff <- sigma_custom - sigma_reference
+  A_diff <- A_custom - A_reference
+  
+  list(
+    comparison = comparison,
+    missing_from_reference = missing_from_reference,
+    missing_from_custom = missing_from_custom,
+    estimates_match = length(missing_from_reference) == 0 &&
+      length(missing_from_custom) == 0 &&
+      all(comparison$estimate_abs_diff < tolerance),
+    ses_match = length(missing_from_reference) == 0 &&
+      length(missing_from_custom) == 0 &&
+      all(comparison$se_abs_diff < tolerance),
+    vcov_match = length(missing_from_reference) == 0 &&
+      length(missing_from_custom) == 0 &&
+      all(abs(sigma_diff) < tolerance),
+    transform_match = length(missing_from_reference) == 0 &&
+      length(missing_from_custom) == 0 &&
+      all(abs(A_diff) < tolerance),
+    max_estimate_abs_diff = max(comparison$estimate_abs_diff),
+    max_se_abs_diff = max(comparison$se_abs_diff),
+    max_vcov_abs_diff = max(abs(sigma_diff)),
+    max_transform_abs_diff = max(abs(A_diff))
+  )
+}
 
-# Test
-# ---- Test sunab_beta_vcv() against fixest::aggregate() ----
+
+# Test against aggregate() ----
 
 agg_cd_event <- "(year::-?[0-9]+):cohort::[0-9]+:(cd.*)"
 agg_2_6_cd <- "year::[2-6]:cohort::[0-9]+:(cd_.*)"
 
-custom_cd_event <- sunab_beta_vcv(
+custom_cd_event <- sunab_aggregate_vcov(
   est_sunab_dummy,
-  agg = agg_cd_event
+  agg = agg_cd_event,
+  weight_method = "model_matrix"
 )
 
 fixest_cd_event <- aggregate(
@@ -860,9 +1275,10 @@ check_cd_event <- compare_custom_to_fixest(
   fixest_agg = fixest_cd_event
 )
 
-custom_2_6_cd <- sunab_beta_vcv(
+custom_2_6_cd <- sunab_aggregate_vcov(
   est_sunab_dummy,
-  agg = agg_2_6_cd
+  agg = agg_2_6_cd,
+  weight_method = "model_matrix"
 )
 
 fixest_2_6_cd <- aggregate(
@@ -875,7 +1291,8 @@ check_2_6_cd <- compare_custom_to_fixest(
   fixest_agg = fixest_2_6_cd
 )
 
-# ---- Test post-hoc covariance matrix ----
+
+# Test post-hoc covariance matrix ----
 
 vcov_alt <- ~ pt_id + year
 
@@ -889,10 +1306,11 @@ est_sunab_dummy_alt <- summary(
   vcov = vcov_alt
 )
 
-custom_cd_event_alt <- sunab_beta_vcv(
+custom_cd_event_alt <- sunab_aggregate_vcov(
   est_sunab_dummy,
   agg = agg_cd_event,
-  vcov_mat = V_alt
+  vcov_mat = V_alt,
+  weight_method = "model_matrix"
 )
 
 fixest_cd_event_alt <- aggregate(
@@ -905,10 +1323,11 @@ check_cd_event_alt <- compare_custom_to_fixest(
   fixest_agg = fixest_cd_event_alt
 )
 
-custom_2_6_cd_alt <- sunab_beta_vcv(
+custom_2_6_cd_alt <- sunab_aggregate_vcov(
   est_sunab_dummy,
   agg = agg_2_6_cd,
-  vcov_mat = V_alt
+  vcov_mat = V_alt,
+  weight_method = "model_matrix"
 )
 
 fixest_2_6_cd_alt <- aggregate(
@@ -921,7 +1340,8 @@ check_2_6_cd_alt <- compare_custom_to_fixest(
   fixest_agg = fixest_2_6_cd_alt
 )
 
-# ---- Summary of checks ----
+
+# Summary of aggregate() checks ----
 
 test_summary <- tibble::tibble(
   test = c(
@@ -959,10 +1379,7 @@ test_summary <- tibble::tibble(
 print(test_summary)
 
 
-
-
-
-# validate off-diagonal vcov ----
+# Validate off-diagonal vcov ----
 
 validate_agg_vcov <- function(
     custom,
@@ -997,20 +1414,15 @@ validate_agg_vcov <- function(
     stop("Some columns of `A` are not in the covariance matrix.")
   }
   
-  # Align everything
   b <- b[colnames(A)]
   V <- V[colnames(A), colnames(A), drop = FALSE]
   
-  # Recompute from scratch
   beta_recomputed <- A %*% cbind(b)
   sigma_recomputed <- A %*% V %*% t(A)
   
-  # Compare against stored custom output
   beta_diff <- beta_recomputed - custom$beta[rownames(A), , drop = FALSE]
   sigma_diff <- sigma_recomputed - custom$sigma[rownames(A), rownames(A), drop = FALSE]
   
-  # Direct pairwise covariance checks
-  # Cov(a_i'b, a_j'b) = a_i' V a_j
   pairwise_cov <- matrix(
     NA_real_,
     nrow = nrow(A),
@@ -1129,10 +1541,25 @@ vcov_validation_summary <- tibble::tibble(
 print(vcov_validation_summary)
 
 
-# Check that custom group_fun parameter works ----
+# Check that group_fun parameter works against raw binned feols ----
 
+test_dats_sn2_small_2000_2020 <- test_dats_sn2_small |>
+  dplyr::filter(
+    FirstTreat == 1000 |
+      dplyr::between(FirstTreat, 2000, 2020)
+  )
 
-test_dats_sn2_small_bins <- test_dats_sn2_small |>
+est_sunab_dummy_2000_2020 <- feols(
+  rap_tree ~
+    sunab(FirstTreat, year, ref.p = -6, no_agg = TRUE):cd_f +
+    sunab(FirstTreat, year, ref.p = -6, no_agg = TRUE):cd_bf +
+    sunab(FirstTreat, year, ref.p = -6, no_agg = TRUE):cd_df +
+    sunab(FirstTreat, year, ref.p = -6, no_agg = TRUE):cd_bdf |
+    pt_id + year,
+  data = test_dats_sn2_small_2000_2020,
+  cluster = ~ pt_id
+)
+test_dats_sn2_small_bins <- test_dats_sn2_small_2000_2020 |>
   dplyr::mutate(
     cohort_bin = dplyr::case_when(
       FirstTreat >= 2000 & FirstTreat <= 2010 ~ "cohort_2000_2010",
@@ -1159,7 +1586,7 @@ test_dats_sn2_small_bins <- test_dats_sn2_small |>
       as.integer(cd_bdf == 1 & cohort_bin == "cohort_2011_2020")
   )
 
-x <- test_dats_sn2_small_bins |>
+bin_dummy_counts <- test_dats_sn2_small_bins |>
   dplyr::summarise(
     dplyr::across(
       dplyr::starts_with("cd_"),
@@ -1167,6 +1594,7 @@ x <- test_dats_sn2_small_bins |>
     )
   )
 
+print(bin_dummy_counts)
 
 est_sunab_dummy_bins_raw <- feols(
   rap_tree ~
@@ -1182,8 +1610,6 @@ est_sunab_dummy_bins_raw <- feols(
   data = test_dats_sn2_small_bins,
   cluster = ~ pt_id
 )
-
-
 
 agg_cd_event_cohort <- "(year::-?[0-9]+):cohort::([0-9]+):(cd_.*)"
 
@@ -1204,12 +1630,14 @@ cohort_bin_fun <- function(x) {
     dplyr::select(term, event_time, cohort_bin, cd)
 }
 
-custom_cd_event_cohort_bins <- sunab_beta_vcv(
-  est_sunab_dummy,
-  agg = agg_cd_event_cohort,
-  group_fun = cohort_bin_fun
-)
 
+
+custom_cd_event_cohort_bins <- sunab_aggregate_vcov(
+  est_sunab_dummy_2000_2020,
+  agg = agg_cd_event_cohort,
+  group_fun = cohort_bin_fun,
+  weight_method = "model_matrix"
+)
 
 agg_cd_event_bins_raw <- "(year::-?[0-9]+):cohort::[0-9]+:(cd_.*_cohort_[0-9_]+)"
 
@@ -1217,41 +1645,6 @@ fixest_cd_event_bins_raw <- aggregate(
   est_sunab_dummy_bins_raw,
   agg = agg_cd_event_bins_raw
 )
-
-
-
-
-fixest_agg_to_df <- function(x) {
-  
-  out <- as.data.frame(x)
-  out$term <- rownames(out)
-  rownames(out) <- NULL
-  
-  est_col <- intersect(
-    c("Estimate", "estimate", "Coef.", "Coefficient"),
-    names(out)
-  )[1]
-  
-  se_col <- intersect(
-    c("Std. Error", "Std. error", "SE", "se"),
-    names(out)
-  )[1]
-  
-  if (is.na(est_col) || is.na(se_col)) {
-    stop(
-      "Could not identify estimate/SE columns in fixest::aggregate() output. ",
-      "Column names were: ",
-      paste(names(out), collapse = ", ")
-    )
-  }
-  
-  out |>
-    dplyr::transmute(
-      term,
-      estimate_fixest = .data[[est_col]],
-      se_fixest = .data[[se_col]]
-    )
-}
 
 normalize_raw_bin_terms <- function(x) {
   
@@ -1269,15 +1662,12 @@ fixest_cd_event_bins_raw_df <- fixest_agg_to_df(
     term = normalize_raw_bin_terms(term)
   )
 
-
-
 custom_cd_event_cohort_bins_df <- custom_cd_event_cohort_bins$groups |>
   dplyr::transmute(
     term = key,
     estimate_custom = estimate,
     se_custom = se
   )
-
 
 check_group_fun_against_raw_feols <- custom_cd_event_cohort_bins_df |>
   dplyr::full_join(
@@ -1293,6 +1683,13 @@ check_group_fun_against_raw_feols <- custom_cd_event_cohort_bins_df |>
     se_match = se_abs_diff < 1e-8
   )
 
+
+# NOTE:
+# The failure of this text is expected. Splitting the interaction variables into cohort-bin-specific
+# regressors changes the design matrix and can induce a different pattern of
+# collinearity drops. Here, the original model and raw binned model dropped
+# substantially different numbers of coefficients.
+
 group_fun_raw_feols_summary <- tibble::tibble(
   test = "group_fun cohort bins vs raw binned feols",
   estimates_match = all(check_group_fun_against_raw_feols$estimate_match, na.rm = FALSE),
@@ -1306,4 +1703,169 @@ group_fun_raw_feols_summary <- tibble::tibble(
 )
 
 print(group_fun_raw_feols_summary)
+
+
+
+
+length(est_sunab_dummy_2000_2020$collin.var)
+length(est_sunab_dummy_bins_raw$collin.var)
+
+head(est_sunab_dummy_2000_2020$collin.var, 50)
+head(est_sunab_dummy_bins_raw$collin.var, 50)
+
+length(coef(est_sunab_dummy_2000_2020))
+length(coef(est_sunab_dummy_bins_raw))
+
+
+
+
+
+
+# Matrix-less data_count path checks ----
+# These validate that weight_method = "data_count" reproduces the reference
+# weight_method = "model_matrix" path on the same estimation data.
+
+custom_cd_event_data <- sunab_aggregate_vcov(
+  est_sunab_dummy,
+  agg = agg_cd_event,
+  weight_method = "data_count",
+  df_est = test_dats_sn2_small,
+  cohort_var = "FirstTreat",
+  period_var = "year"
+)
+
+custom_2_6_cd_data <- sunab_aggregate_vcov(
+  est_sunab_dummy,
+  agg = agg_2_6_cd,
+  weight_method = "data_count",
+  df_est = test_dats_sn2_small,
+  cohort_var = "FirstTreat",
+  period_var = "year"
+)
+
+custom_cd_event_alt_data <- sunab_aggregate_vcov(
+  est_sunab_dummy,
+  agg = agg_cd_event,
+  vcov_mat = V_alt,
+  weight_method = "data_count",
+  df_est = test_dats_sn2_small,
+  cohort_var = "FirstTreat",
+  period_var = "year"
+)
+
+custom_2_6_cd_alt_data <- sunab_aggregate_vcov(
+  est_sunab_dummy,
+  agg = agg_2_6_cd,
+  vcov_mat = V_alt,
+  weight_method = "data_count",
+  df_est = test_dats_sn2_small,
+  cohort_var = "FirstTreat",
+  period_var = "year"
+)
+
+check_data_cd_event <- compare_custom_outputs(
+  custom = custom_cd_event_data,
+  reference = custom_cd_event
+)
+
+check_data_2_6_cd <- compare_custom_outputs(
+  custom = custom_2_6_cd_data,
+  reference = custom_2_6_cd
+)
+
+check_data_cd_event_alt <- compare_custom_outputs(
+  custom = custom_cd_event_alt_data,
+  reference = custom_cd_event_alt
+)
+
+check_data_2_6_cd_alt <- compare_custom_outputs(
+  custom = custom_2_6_cd_alt_data,
+  reference = custom_2_6_cd_alt
+)
+
+data_count_test_summary <- tibble::tibble(
+  test = c(
+    "period x cd, original vcov, data_count vs model_matrix",
+    "event times 2-6 x cd, original vcov, data_count vs model_matrix",
+    "period x cd, post-hoc vcov, data_count vs model_matrix",
+    "event times 2-6 x cd, post-hoc vcov, data_count vs model_matrix"
+  ),
+  estimates_match = c(
+    check_data_cd_event$estimates_match,
+    check_data_2_6_cd$estimates_match,
+    check_data_cd_event_alt$estimates_match,
+    check_data_2_6_cd_alt$estimates_match
+  ),
+  ses_match = c(
+    check_data_cd_event$ses_match,
+    check_data_2_6_cd$ses_match,
+    check_data_cd_event_alt$ses_match,
+    check_data_2_6_cd_alt$ses_match
+  ),
+  vcov_match = c(
+    check_data_cd_event$vcov_match,
+    check_data_2_6_cd$vcov_match,
+    check_data_cd_event_alt$vcov_match,
+    check_data_2_6_cd_alt$vcov_match
+  ),
+  transform_match = c(
+    check_data_cd_event$transform_match,
+    check_data_2_6_cd$transform_match,
+    check_data_cd_event_alt$transform_match,
+    check_data_2_6_cd_alt$transform_match
+  ),
+  max_estimate_abs_diff = c(
+    check_data_cd_event$max_estimate_abs_diff,
+    check_data_2_6_cd$max_estimate_abs_diff,
+    check_data_cd_event_alt$max_estimate_abs_diff,
+    check_data_2_6_cd_alt$max_estimate_abs_diff
+  ),
+  max_se_abs_diff = c(
+    check_data_cd_event$max_se_abs_diff,
+    check_data_2_6_cd$max_se_abs_diff,
+    check_data_cd_event_alt$max_se_abs_diff,
+    check_data_2_6_cd_alt$max_se_abs_diff
+  ),
+  max_vcov_abs_diff = c(
+    check_data_cd_event$max_vcov_abs_diff,
+    check_data_2_6_cd$max_vcov_abs_diff,
+    check_data_cd_event_alt$max_vcov_abs_diff,
+    check_data_2_6_cd_alt$max_vcov_abs_diff
+  ),
+  max_transform_abs_diff = c(
+    check_data_cd_event$max_transform_abs_diff,
+    check_data_2_6_cd$max_transform_abs_diff,
+    check_data_cd_event_alt$max_transform_abs_diff,
+    check_data_2_6_cd_alt$max_transform_abs_diff
+  )
+)
+
+print(data_count_test_summary)
+
+
+# Optional: direct comparison of raw coefficient weights
+# This is useful when data_count fails, because it isolates the problem to the
+# coefficient-weight construction rather than the covariance propagation.
+
+coef_weight_check_cd_event <- tibble::tibble(
+  term = names(custom_cd_event$coef_weights),
+  weight_model_matrix = as.numeric(custom_cd_event$coef_weights),
+  weight_data_count = as.numeric(custom_cd_event_data$coef_weights[names(custom_cd_event$coef_weights)]),
+  weight_diff = weight_data_count - weight_model_matrix,
+  weight_abs_diff = abs(weight_diff)
+)
+
+coef_weight_check_cd_event |>
+  dplyr::arrange(dplyr::desc(weight_abs_diff)) |>
+  print(n = 20)
+
+coef_weight_summary_cd_event <- coef_weight_check_cd_event |>
+  dplyr::summarise(
+    weights_match = all(weight_abs_diff < 1e-8),
+    max_weight_abs_diff = max(weight_abs_diff, na.rm = TRUE)
+  )
+
+print(coef_weight_summary_cd_event)
+
+
 
