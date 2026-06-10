@@ -11,6 +11,8 @@ results/*
 !figs/dir_description.md
 !results/dir_description.md
 config/secrets/*
+logs/*
+models/*
 
 # Ignore all contents of data/, recursively
 data/*

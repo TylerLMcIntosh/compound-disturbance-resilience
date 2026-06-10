@@ -49,11 +49,11 @@ install_load_packages(c(
   "arrow",
   "tictoc"))
 
-devtools::install_github("grf-labs/sufrep")
+remotes::install_github("grf-labs/sufrep")
 library(sufrep)
 
 dir_figs <- here::here('figs')
-dir_derived <- here::here('data', 'derived')
+dir_derived <- here::here('data', 'derived', "GEE_resilience_v6_operational_ss500_ts50000")
 dir_raw <- here::here('data', 'raw')
 dir_manual <- here::here('data', 'manual')
 dir_ensure(c(dir_figs,
@@ -71,8 +71,25 @@ set.seed(seed)
 ```{r}
 
 #Short dats
-dats <- read_parquet(here(dir_derived, "test_dats_short.parquet"))
-ecoregions <- unique(dats$ecoregion)
+dats <- open_dataset(here(dir_derived, "parquet_short_filtered")) |> collect()
+
+##############
+## SET THIS ##
+##############
+percent_dataset_to_use <- 20 #must be in increments of 5
+
+
+# Filter dataset
+dats <- dats |>
+  filter(analysis_subset <= percent_dataset_to_use / 5)
+
+h3_lookup <- dats |>
+  dplyr::distinct(h3jsr_5) |>
+  dplyr::arrange(h3jsr_5) |>
+  dplyr::mutate(h3_int_id = dplyr::row_number())
+
+dats <- dats |>
+  dplyr::left_join(h3_lookup, by = "h3jsr_5")
 
 ```
 
@@ -122,16 +139,19 @@ sufrep_encode_append <- function(dats,
 
 ```{r}
 
-cont_covars <- c("aet", "def", "srtm", "tpi", "chili", "avg_rap_TRE_6_yr_pre_fire")
-cat_covars <- c("frg_reclass", "mock_burn_year", "ecoregion")
-outcomes <- dats |>
-  select(starts_with("post_fire")) |>
-  names()
+cont_covars <- c("aet", "def", "srtm", "tpi", "chili", "raw_avg_rap_tree_6_yr_pre_fire",
+                 "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+                 "pdsi_annual_year_of", "pdsi_annual_5_yrs_prior_sum_yot", "pdsi_annual_5_yrs_prior_threshold_n3_yot")
+cat_covars <- c("nfg_factor", "mock_burn_year", "ecoregion_code_name")
+outcomes <- c("raw_post_fire_rap_tree_difference_n6_3_yr"#,
+              #"raw_post_fire_rap_tree_difference_n6_15_yr",
+              #"raw_post_fire_rap_tree_increase_3_15_yr"
+              )
 trts <- c("fire", "burn_sev")
+cluster <- c("h3_int_id")
 
 
-
-all_cols <- c(cont_covars, cat_covars, outcomes, trts)
+all_cols <- c(cont_covars, cat_covars, outcomes, trts, cluster)
 
 # Scale all continuous covariates
 # filter out anything with NAs
@@ -142,16 +162,16 @@ dats_ml <- dats |>
   filter(dplyr::if_all(everything(), ~ !is.na(.x))) |>
   mutate(
     across(
-      all_of(cont_covar),
+      all_of(cont_covars),
       \(x) as.numeric(scale(x))
     )
   ) |>
   mutate(
     across(
-      all_of(cat_covar),
-      \(x) as.factor(x)
+      all_of(cat_covars),
+      \(x) forcats::fct_drop(as.factor(x))
     )
-  ) |>
+  )|>
   # fastDummies::dummy_cols(select_columns = c("frg_reclass"),
   #                         remove_first_dummy = FALSE, #Keep full one-hot encoding for tree-based methods
   #                         remove_selected_columns = TRUE) |> 
@@ -161,7 +181,11 @@ dats_ml <- dats |>
                        num_components = 2) |> 
   sufrep_encode_append(method = 'low_rank', # Use low-rank sufficient representation encoding to reduce to 2 dimensions
                        X_cols = cont_covars,
-                       G_col = "frg_reclass",
+                       G_col = "nfg_factor",
+                       num_components = 2) |> 
+  sufrep_encode_append(method = 'low_rank', # Use low-rank sufficient representation encoding to reduce to 2 dimensions
+                       X_cols = cont_covars,
+                       G_col = "ecoregion_code_name",
                        num_components = 2)
 
 enc_xvars <- dats_ml |>
@@ -191,29 +215,30 @@ The number of random parameter values considered when using the model to select 
 
 ```{r}
 
-df_test <- dats_ml |> filter(ecoregion == "Idaho Batholith")
 
 
 tic() # 253 seconds
 cf <- causal_forest(
-  X=df_test |> select(-fire, -post_fire_rap_TRE_difference_n2_3_yr, -ecoregion),
-  Y=df_test$post_fire_rap_TRE_difference_n2_3_yr,
-  W=df_test$fire,
+  X=dats_ml |> select(-all_of(outcomes), -all_of(trts), -all_of(cluster)),
+  Y=dats_ml$raw_post_fire_rap_tree_difference_n6_3_yr ,
+  W=dats_ml$fire,
+  clusters = dats_ml |> pull(cluster),
   tune.parameters = c("min.node.size","sample.fraction", "mtry"),
   tune.num.trees = 1000,
   tune.num.reps = 50,
   tune.num.draws = 1000,
   num.trees=2000,
-  seed=seed
+  seed=seed,
+  equalize.cluster.weights = FALSE
 )
 toc()
 
 
 tic() # 390 seconds
 cf <-causal_forest(
-  X=df_test |> select(-fire, -post_fire_rap_TRE_difference_n2_3_yr, -ecoregion),
-  Y=df_test$post_fire_rap_TRE_difference_n2_3_yr,
-  W=df_test$fire,
+  X=dats_ml |> select(-fire, -post_fire_rap_TRE_difference_n2_3_yr, -ecoregion),
+  Y=dats_ml$post_fire_rap_TRE_difference_n2_3_yr,
+  W=dats_ml$fire,
   tune.parameters = c("all"),
   tune.num.trees = 1000,
   tune.num.reps = 50,
@@ -224,7 +249,7 @@ cf <-causal_forest(
 toc()
 
 
-imp_raw <- sort(setNames(variable_importance(cf), names(df_test |> select(-fire, -post_fire_rap_TRE_difference_n2_3_yr, -ecoregion))))
+imp_raw <- sort(setNames(variable_importance(cf), names(dats_ml |> select(-all_of(outcomes), -all_of(trts), -all_of(cluster)))))
 imp_normalized <- imp_raw / sum(imp_raw)
 
 imp_df <- tibble(

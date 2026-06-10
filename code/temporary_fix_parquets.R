@@ -2,6 +2,7 @@ cyverse = FALSE
 
 run_name <- "GEE_resilience_v6_operational_ss500_ts50000"
 
+set.seed(123)
 
 if(cyverse) {
   Sys.setenv(LD_LIBRARY_PATH = paste(
@@ -105,3 +106,60 @@ pwalk(
   }
 )
 
+
+pwalk(
+  list(lf = long_files, sf = short_files),
+  function(lf, sf) {
+    
+    long_out_file  <- file.path(dir_long_filtered,  basename(lf))
+    short_out_file <- file.path(dir_short_filtered, basename(sf))
+    
+    short_dat <- arrow::read_parquet(sf) |>
+      dplyr::filter(burn_year >= 2002 | is.na(burn_year))
+    
+    short_dat$h3jsr_5 <- h3jsr::point_to_cell(
+      input = as.matrix(short_dat[, c("long", "lat")]),
+      res   = 5
+    )
+    
+    h3_lookup <- short_dat |>
+      dplyr::select(pt_id, h3jsr_5) |>
+      dplyr::distinct()
+    
+    # assign analysis_subset 1-20 within spatial groups for controls,
+    # within fire event groups for treated units
+    controls <- short_dat |>
+      dplyr::filter(fire != 1) |>
+      dplyr::group_by(h3jsr_5) |>
+      dplyr::mutate(
+        analysis_subset = sample(rep(1:20, length.out = dplyr::n()))
+      ) |>
+      dplyr::ungroup()
+    
+    treated <- short_dat |>
+      dplyr::filter(fire == 1) |>
+      dplyr::group_by(fireid) |>
+      dplyr::mutate(
+        analysis_subset = sample(rep(1:20, length.out = dplyr::n()))
+      ) |>
+      dplyr::ungroup()
+    
+    short_dat <- dplyr::bind_rows(controls, treated)
+    rm(controls, treated)
+    
+    subset_lookup <- short_dat |>
+      dplyr::select(pt_id, analysis_subset) |>
+      dplyr::distinct()
+    
+    long_dat <- arrow::read_parquet(lf) |>
+      dplyr::filter(
+        (year >= 1992 & burn_year >= 2002) |
+          (year > 1992 & is.na(burn_year))
+      ) |>
+      dplyr::left_join(h3_lookup,     by = "pt_id") |>
+      dplyr::left_join(subset_lookup, by = "pt_id")
+    
+    arrow::write_parquet(long_dat,  long_out_file)
+    arrow::write_parquet(short_dat, short_out_file)
+  }
+)

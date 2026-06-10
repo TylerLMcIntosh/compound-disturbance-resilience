@@ -19,7 +19,9 @@
 
 
 # Monitoring resources on Exosphere
-# AZ: ~60-70% of 125GB RAM used, using ~ 16 cores
+# AZ: ~60-70% of 125GB RAM used, using ~ 16 cores <- worked for weighted but crashed on unweighted
+## changed to max use 8 cores, jumped up to >75% of 125 GB RAM used (85%? ~ 100GB?), but hasn't crashed yet
+## stable at around 80gb
 
 
 # Sys.setenv(LD_LIBRARY_PATH = paste("/opt/conda/lib", Sys.getenv("LD_LIBRARY_PATH"), sep = ":"))
@@ -32,6 +34,7 @@
 # ══════════════════════════════════════════════════════════════════════════════
 
 rm(list = ls())
+
 
 if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
 library(here)
@@ -57,7 +60,15 @@ seed <- 1234
 set.seed(seed)
 
 # Set number of cores to use in FEOLS call
-fixest::setFixest_nthreads(32)
+fixest::setFixest_nthreads(48)
+
+# log any unhandled errors to the status file before R exits
+options(error = function() {
+  err_msg <- geterrmessage()
+  line    <- paste0(format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+                    " | FATAL | ", err_msg)
+  write(line, file = here::here("logs/status_file.txt"), append = TRUE)
+})
 
 # ── Directory layout ──────────────────────────────────────────────────────────
 
@@ -182,10 +193,20 @@ ecoregion_subset_specs <- expand_analysis_subset_specs_by_col(
   short_data_source = dir_parquet_short
 )
 
+# Only analyze forest groups with over 10,000 unique pt_ids
+nfg_code_names <- arrow::open_dataset(dir_parquet_short) |>
+  collect() |>
+  group_by(nfg_factor) |>
+  summarize(n = n()) |>
+  arrange(desc(n)) |>
+  filter(n >= 10000) |>
+  pull(nfg_factor)
+
 forestgroup_subset_specs <- expand_analysis_subset_specs_by_col(
   long_data_source  = dir_parquet_long,
   split_col         = "nfg_factor",
   id_prefix         = "nfg",
+  values = nfg_code_names,
   short_data_source = dir_parquet_short,
   check_all_files   = TRUE
 )
@@ -534,8 +555,8 @@ preview_run_grid <- function(subset_specs, outcome_specs, treatment_group_specs,
 
 # SIMPLIFY
 
-# ecoregion_subset_specs <- ecoregion_subset_specs[11,]
-# outcome_specs <- outcome_specs[1,]
+ecoregion_subset_specs <- ecoregion_subset_specs[11,]
+outcome_specs <- outcome_specs[1,]
 vcov_specs <- vcov_specs[1,]
 
 preview_run_grid(ecoregion_subset_specs, outcome_specs, initial_treatment_group_specs,
@@ -594,11 +615,6 @@ rebuild_weighting_tables(dir_out = dir_results, write_csv = TRUE)
 # 12. Run estimation experiment ----
 # ══════════════════════════════════════════════════════════════════════════════
 
-analysis_subset_specs <- dplyr::bind_rows(
-  ecoregion_subset_specs,
-  forestgroup_subset_specs
-)
-
 tic('sunab estimation')
 results_sunab_ecor <- run_experiment(
   dataset_spec          = dataset_spec,
@@ -653,7 +669,7 @@ if (length(failed_ecor) > 0) {
 # ══════════════════════════════════════════════════════════════════════════════
 
 all_estimation_tables <- rebuild_estimation_tables(dir_out = dir_results, write_csv = TRUE)
-all_descriptive_tables <- rebuild_descriptive_tables(dir_out = dir_results, write_csv = TRUE)
+#all_descriptive_tables <- rebuild_descriptive_tables(dir_out = dir_results, write_csv = TRUE)
 
 message(glue::glue(
   "Coef rows:       {nrow(all_estimation_tables$coef_tbl)}\n",

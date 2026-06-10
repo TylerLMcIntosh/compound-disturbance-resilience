@@ -8,6 +8,7 @@
     #   res = 5
     # )
 # 2 or 3 years post-burn for GAM, NOT minimum!
+# subset fraction
 
 
 
