@@ -82,64 +82,64 @@ dir_ensure_local(c(dir_data, dir_parquet_long, dir_raw, dir_manual, dir_results,
 # ══════════════════════════════════════════════════════════════════════════════
 # 1.5. Test datasets ----
 # ══════════════════════════════════════════════════════════════════════════════
-
-
-create_test_set <- function(long, short) {
-
-  dir_parquet_long_test  <- file.path(dir_data, "parquet_long_filtered_test")
-  dir_parquet_short_test <- file.path(dir_data, "parquet_short_filtered_test")
-  dir_ensure_local(c(dir_parquet_long_test, dir_parquet_short_test))
-
-  short_file <- file.path(dir_parquet_short_test, basename(short))
-  long_file <- file.path(dir_parquet_long_test, basename(long))
-
-  if(!file.exists(short_file) | !file.exists(long_file)) {
-
-    dl <- arrow::read_parquet(long)
-    ds <- arrow::read_parquet(short)
-
-    set.seed(123)
-
-    sample_pt_ids <- sample(unique(ds$pt_id), round(dplyr::n_distinct(ds$pt_id) * 0.1))
-
-    dl_t <- dl |>
-      dplyr::mutate(event_time = year - FirstTreat) |>
-      dplyr::filter(
-        dplyr::between(event_time, -15, 20) | FirstTreat == 1000    # Filtering to -15-20 drops about 1.3 million points
-      ) |>
-      dplyr::filter(pt_id %in% sample_pt_ids)
-
-    ds_t <- ds |>
-      dplyr::filter(pt_id %in% sample_pt_ids)
-
-
-    arrow::write_parquet(ds_t, short_file)
-    arrow::write_parquet(dl_t, long_file)
-  }
-
-}
-
-
-# run to create the test dataset
-
-long_files <- list.files(dir_parquet_long, full.names = TRUE)
-short_files <- list.files(dir_parquet_short, full.names = TRUE)
-
-stopifnot(length(long_files) == length(short_files))
-
-purrr::pmap(
-  .l = list(
-    long = long_files,
-    short = short_files
-  ),
-  .f = create_test_set
-)
-
-dir_parquet_long  <- file.path(dir_data, "parquet_long_filtered_test")
-dir_parquet_short <- file.path(dir_data, "parquet_short_filtered_test")
-
-dir_results <- file.path(dir_results, "test_10perc")
-dir_figs <- file.path(dir_results, "test_10perc")
+# 
+# 
+# create_test_set <- function(long, short) {
+# 
+#   dir_parquet_long_test  <- file.path(dir_data, "parquet_long_filtered_test")
+#   dir_parquet_short_test <- file.path(dir_data, "parquet_short_filtered_test")
+#   dir_ensure_local(c(dir_parquet_long_test, dir_parquet_short_test))
+# 
+#   short_file <- file.path(dir_parquet_short_test, basename(short))
+#   long_file <- file.path(dir_parquet_long_test, basename(long))
+# 
+#   if(!file.exists(short_file) | !file.exists(long_file)) {
+# 
+#     dl <- arrow::read_parquet(long)
+#     ds <- arrow::read_parquet(short)
+# 
+#     set.seed(123)
+# 
+#     sample_pt_ids <- sample(unique(ds$pt_id), round(dplyr::n_distinct(ds$pt_id) * 0.1))
+# 
+#     dl_t <- dl |>
+#       dplyr::mutate(event_time = year - FirstTreat) |>
+#       dplyr::filter(
+#         dplyr::between(event_time, -15, 20) | FirstTreat == 1000    # Filtering to -15-20 drops about 1.3 million points
+#       ) |>
+#       dplyr::filter(pt_id %in% sample_pt_ids)
+# 
+#     ds_t <- ds |>
+#       dplyr::filter(pt_id %in% sample_pt_ids)
+# 
+# 
+#     arrow::write_parquet(ds_t, short_file)
+#     arrow::write_parquet(dl_t, long_file)
+#   }
+# 
+# }
+# 
+# 
+# # run to create the test dataset
+# 
+# long_files <- list.files(dir_parquet_long, full.names = TRUE)
+# short_files <- list.files(dir_parquet_short, full.names = TRUE)
+# 
+# stopifnot(length(long_files) == length(short_files))
+# 
+# purrr::pmap(
+#   .l = list(
+#     long = long_files,
+#     short = short_files
+#   ),
+#   .f = create_test_set
+# )
+# 
+# dir_parquet_long  <- file.path(dir_data, "parquet_long_filtered_test")
+# dir_parquet_short <- file.path(dir_data, "parquet_short_filtered_test")
+# 
+# dir_results <- file.path(dir_results, "test_10perc")
+# dir_figs <- file.path(dir_results, "test_10perc")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 2. Dataset spec ----
@@ -184,7 +184,7 @@ forestgroup_subset_specs <- expand_analysis_subset_specs_by_col(
 )
 
 all_data_subset_spec <- make_analysis_subset_spec(
-  subset_id         = "all_ecoregions",
+  subset_id   = "all_ecoregions",
   long_data_source  = dir_parquet_long,
   short_data_source = dir_parquet_short
 )
@@ -397,43 +397,25 @@ initial_model_specs <- dplyr::bind_rows(
 # 8. Vcov specs ----
 # ══════════════════════════════════════════════════════════════════════════════
 
-ecor_vcov_specs <- tibble::tibble(
+vcov_specs <- tibble::tibble(
   vcov_id = c(
     "cluster_pt",
-    "cluster_eco4",
-    "conley_125km_20km"
+    "cluster_h3",
+    "conley_75km_5km"
   ),
   vcov_label = c(
     "Clustered SEs: pt_id",
-    "Clustered SEs: us_l4code",
-    "Conley SEs: 125 km cutoff, 20 km pixel"
+    "Clustered SEs: h3jsr_5",
+    "Conley SEs: 75 km cutoff, 5 km pixel"
   ),
   vcov = list(
     stats::as.formula("~ pt_id"),
-    stats::as.formula("~ us_l4code"),
-    fixest::vcov_conley(lat = "lat", lon = "long", cutoff = 125, pixel = 20, distance = "triangular")
+    stats::as.formula("~ h3jsr_5"),
+    fixest::vcov_conley(lat = "lat", lon = "long", cutoff = 75, pixel = 5, distance = "triangular")
   ),
-  vcov_vars = list("pt_id", "us_l4code", c("lat", "long"))
+  vcov_vars = list("pt_id", "h3jsr_5", c("lat", "long"))
 )
 
-regionwide_vcov_specs <- tibble::tibble(
-  vcov_id = c(
-    "cluster_pt",
-    "cluster_eco3",
-    "conley_125km_20km"
-  ),
-  vcov_label = c(
-    "Clustered SEs: pt_id",
-    "Clustered SEs: us_l3code",
-    "Conley SEs: 125 km cutoff, 20 km pixel"
-  ),
-  vcov = list(
-    stats::as.formula("~ pt_id"),
-    stats::as.formula("~ us_l3code"),
-    fixest::vcov_conley(lat = "lat", lon = "long", cutoff = 125, pixel = 20, distance = "triangular")
-  ),
-  vcov_vars = list("pt_id", "us_l3code", c("lat", "long"))
-)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -532,13 +514,13 @@ preview_run_grid <- function(subset_specs, outcome_specs, treatment_group_specs,
 
 # ecoregion_subset_specs <- ecoregion_subset_specs[11,]
 # outcome_specs <- outcome_specs[1,]
-ecor_vcov_specs <- ecor_vcov_specs[1,]
+vcov_specs <- vcov_specs[1,]
 
 preview_run_grid(ecoregion_subset_specs, outcome_specs, initial_treatment_group_specs,
-                 initial_model_specs, ecor_vcov_specs, agg_specs)
+                 initial_model_specs, vcov_specs, agg_specs)
 
 preview_run_grid(all_data_subset_spec, outcome_specs, initial_treatment_group_specs,
-                 initial_model_specs, regionwide_vcov_specs, agg_specs)
+                 initial_model_specs, vcov_specs, agg_specs)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -546,8 +528,8 @@ preview_run_grid(all_data_subset_spec, outcome_specs, initial_treatment_group_sp
 # ══════════════════════════════════════════════════════════════════════════════
 
 weighting_subsets <- dplyr::bind_rows(
-  ecoregion_subset_specs#,
-  #all_data_temporalsplit_subset_specs
+  ecoregion_subset_specs,
+  forestgroup_subset_specs
 )
 
 tic('weighting')
@@ -576,6 +558,11 @@ rebuild_weighting_tables(dir_out = dir_results, write_csv = TRUE)
 # 12. Run estimation experiment ----
 # ══════════════════════════════════════════════════════════════════════════════
 
+analysis_subset_specs <- dplyr::bind_rows(
+  ecoregion_subset_specs,
+  forestgroup_subset_specs
+)
+
 tic('sunab estimation')
 results_sunab_ecor <- run_experiment(
   dataset_spec          = dataset_spec,
@@ -583,7 +570,7 @@ results_sunab_ecor <- run_experiment(
   outcome_specs         = outcome_specs,
   treatment_group_specs = initial_treatment_group_specs,
   model_specs           = initial_model_specs,
-  vcov_specs            = ecor_vcov_specs,
+  vcov_specs            = vcov_specs,
   agg_specs             = agg_specs,
   dir_out               = dir_results,
   group_palette         = group_palette,

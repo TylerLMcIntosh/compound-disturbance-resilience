@@ -36,45 +36,6 @@ library(here)
 library(arrow)
 library(dplyr)
 library(purrr)
-# 
-# # check that filtering ends up with same thing
-# dir_long  <- here(dir_derived, "parquet_long")
-# dir_short <- here(dir_derived, "parquet_short")
-# 
-# long_file  <- list.files(dir_long, pattern = "\\.parquet$", full.names = TRUE)[1]
-# short_file <- list.files(dir_short, pattern = "\\.parquet$", full.names = TRUE)[1]
-# 
-# long_ids <- read_parquet(long_file) |>
-#   filter((year >= 1997 & burn_year >= 2002) | (year > 1997 & is.na(burn_year))) |>
-#   distinct(pt_id) |>
-#   arrange(pt_id)
-# 
-# short_ids <- read_parquet(short_file) |>
-#   filter(burn_year >= 2002 | is.na(burn_year)) |>
-#   distinct(pt_id) |>
-#   arrange(pt_id)
-# 
-# n_long  <- nrow(long_ids)
-# n_short <- nrow(short_ids)
-# 
-# ids_only_long  <- anti_join(long_ids, short_ids, by = "pt_id")
-# ids_only_short <- anti_join(short_ids, long_ids, by = "pt_id")
-# 
-# list(
-#   long_file        = basename(long_file),
-#   short_file       = basename(short_file),
-#   n_long_ptid      = n_long,
-#   n_short_ptid     = n_short,
-#   same_ids         = identical(long_ids$pt_id, short_ids$pt_id),
-#   only_in_long_n   = nrow(ids_only_long),
-#   only_in_short_n  = nrow(ids_only_short),
-#   only_in_long     = head(ids_only_long, 20),
-#   only_in_short    = head(ids_only_short, 20)
-# )
-# 
-# 
-# xxx <- read_parquet(short_file) |> filter(pt_id %in% ids_only_long$pt_id) |> select(pt_id, fire, burn_year)
-
 
 
 
@@ -89,21 +50,58 @@ dir.create(dir_long_filtered, recursive = TRUE, showWarnings = FALSE)
 dir.create(dir_short_filtered, recursive = TRUE, showWarnings = FALSE)
 
 long_files <- list.files(dir_long, pattern = "\\.parquet$", full.names = TRUE)
-
-walk(long_files, function(f) {
-  out_file <- file.path(dir_long_filtered, basename(f))
-  
-  read_parquet(f) |>
-    filter((year >= 1992 & burn_year >= 2002) | (year > 1992 & is.na(burn_year))) |>
-    write_parquet(out_file)
-})
-
 short_files <- list.files(dir_short, pattern = "\\.parquet$", full.names = TRUE)
 
-walk(short_files, function(f) {
-  out_file <- file.path(dir_short_filtered, basename(f))
-  
-  read_parquet(f) |>
-    filter(burn_year >= 2002 | is.na(burn_year)) |>
-    write_parquet(out_file)
-})
+
+
+# pwalk(list(long_files, short_files), function(lf, sf) {
+#   long_out_file <- file.path(dir_long_filtered, basename(lf))
+#   short_out_file <- file.path(dir_short_filtered, basename(sf))
+#   
+#   read_parquet(lf) |>
+#     filter((year >= 1992 & burn_year >= 2002) | (year > 1992 & is.na(burn_year))) |>
+#     write_parquet(long_out_file)
+#   
+#   read_parquet(sf) |>
+#     filter(burn_year >= 2002 | is.na(burn_year)) |>
+#     write_parquet(short_out_file)
+# })
+
+
+long_files <- sort(long_files)
+short_files <- sort(short_files)
+
+stopifnot(length(long_files) == length(short_files))
+
+pwalk(
+  list(lf = long_files, sf = short_files),
+  function(lf, sf) {
+    
+    long_out_file <- file.path(dir_long_filtered, basename(lf))
+    short_out_file <- file.path(dir_short_filtered, basename(sf))
+    
+    short_dat <- arrow::read_parquet(sf) |>
+      dplyr::filter(burn_year >= 2002 | is.na(burn_year))
+    
+    short_dat$h3jsr_5 <- h3jsr::point_to_cell(
+      input = as.matrix(short_dat[, c("long", "lat")]),
+      res = 5
+    )
+    
+    h3_lookup <- short_dat |>
+      dplyr::select(pt_id, h3jsr_5) |>
+      dplyr::distinct()
+
+    
+    long_dat <- arrow::read_parquet(lf) |>
+      dplyr::filter(
+        (year >= 1992 & burn_year >= 2002) |
+          (year > 1992 & is.na(burn_year))
+      ) |>
+      dplyr::left_join(h3_lookup, by = "pt_id")
+    
+    arrow::write_parquet(long_dat, long_out_file)
+    arrow::write_parquet(short_dat, short_out_file)
+  }
+)
+

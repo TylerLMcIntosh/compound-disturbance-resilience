@@ -1,4 +1,17 @@
 
+# NOTES
+# Need to implement:
+# filter((year >= 1992 & burn_year >= 2002) | (year > 1992 & is.na(burn_year)))
+# h3jsr assignment
+    # short_dat$h3jsr_5 <- h3jsr::point_to_cell(
+    #   input = as.matrix(short_dat[, c("long", "lat")]),
+    #   res = 5
+    # )
+# 2 or 3 years post-burn for GAM, NOT minimum!
+
+
+
+
 # 5.6 hours in series locally
 
 
