@@ -555,7 +555,7 @@ preview_run_grid <- function(subset_specs, outcome_specs, treatment_group_specs,
 
 # SIMPLIFY
 
-ecoregion_subset_specs <- ecoregion_subset_specs[11,]
+ecoregion_subset_specs <- ecoregion_subset_specs[1,] #11 - sierra nevada; 
 outcome_specs <- outcome_specs[1,]
 vcov_specs <- vcov_specs[1,]
 

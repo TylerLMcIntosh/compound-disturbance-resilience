@@ -217,7 +217,7 @@ The number of random parameter values considered when using the model to select 
 
 
 
-tic() # 253 seconds
+tic() # 4916.09 sec elapsed using full 20% sample
 cf <- causal_forest(
   X=dats_ml |> select(-all_of(outcomes), -all_of(trts), -all_of(cluster)),
   Y=dats_ml$raw_post_fire_rap_tree_difference_n6_3_yr ,
@@ -234,19 +234,19 @@ cf <- causal_forest(
 toc()
 
 
-tic() # 390 seconds
-cf <-causal_forest(
-  X=dats_ml |> select(-fire, -post_fire_rap_TRE_difference_n2_3_yr, -ecoregion),
-  Y=dats_ml$post_fire_rap_TRE_difference_n2_3_yr,
-  W=dats_ml$fire,
-  tune.parameters = c("all"),
-  tune.num.trees = 1000,
-  tune.num.reps = 50,
-  tune.num.draws = 1000,
-  num.trees=2000,
-  seed=seed
-)
-toc()
+# tic() # 390 seconds
+# cf <-causal_forest(
+#   X=dats_ml |> select(-fire, -post_fire_rap_TRE_difference_n2_3_yr, -ecoregion),
+#   Y=dats_ml$post_fire_rap_TRE_difference_n2_3_yr,
+#   W=dats_ml$fire,
+#   tune.parameters = c("all"),
+#   tune.num.trees = 1000,
+#   tune.num.reps = 50,
+#   tune.num.draws = 1000,
+#   num.trees=2000,
+#   seed=seed
+# )
+# toc()
 
 
 imp_raw <- sort(setNames(variable_importance(cf), names(dats_ml |> select(-all_of(outcomes), -all_of(trts), -all_of(cluster)))))
