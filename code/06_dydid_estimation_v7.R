@@ -17,6 +17,11 @@
 #   13. Rebuild merged tables
 # -------------------------------------------------------
 
+
+# Monitoring resources on Exosphere
+# AZ: ~60-70% of 125GB RAM used, using ~ 16 cores
+
+
 # Sys.setenv(LD_LIBRARY_PATH = paste("/opt/conda/lib", Sys.getenv("LD_LIBRARY_PATH"), sep = ":"))
 # Sys.setenv(PATH = paste("/usr/bin:/bin:/usr/local/bin", Sys.getenv("PATH"), sep = ":"))
 # Sys.setenv(PKG_CONFIG_PATH = "/usr/lib/x86_64-linux-gnu/pkgconfig")
@@ -51,6 +56,8 @@ source(here::here("code", "weight_dydid_pipeline_v7.R"))
 seed <- 1234
 set.seed(seed)
 
+# Set number of cores to use in FEOLS call
+fixest::setFixest_nthreads(32)
 
 # ── Directory layout ──────────────────────────────────────────────────────────
 
@@ -352,6 +359,21 @@ weighting_specs <- dplyr::bind_rows(
   )
 )
 
+forest_group_weighting_specs <- dplyr::bind_rows(
+  make_weighting_spec(
+    weighting_id   = "glm_ato_topoclimnfg",
+    weight_formula = ~ aet + srtm + tpi + def + chili,
+    method         = "glm",
+    estimand       = "ATO"
+  ),
+  make_weighting_spec(
+    weighting_id   = "glm_ato_topoclimnfgrap",
+    weight_formula = ~ aet + srtm + tpi + def + chili + gam_rap_tree_pre6_fit,
+    method         = "glm",
+    estimand       = "ATO"
+  )
+)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 7. Model specs ----
@@ -527,15 +549,10 @@ preview_run_grid(all_data_subset_spec, outcome_specs, initial_treatment_group_sp
 # 11. Run weighting experiment ----
 # ══════════════════════════════════════════════════════════════════════════════
 
-weighting_subsets <- dplyr::bind_rows(
-  ecoregion_subset_specs,
-  forestgroup_subset_specs
-)
-
-tic('weighting')
-results_weighting <- run_weighting_experiment(
+tic('weighting ecoregions')
+ecoregion_results_weighting <- run_weighting_experiment(
   dataset_spec          = dataset_spec,
-  analysis_subset_specs = weighting_subsets,
+  analysis_subset_specs = ecoregion_subset_specs,
   treatment_group_specs = initial_treatment_group_specs,
   weighting_specs       = weighting_specs,
   dir_out               = dir_results,
@@ -545,7 +562,26 @@ results_weighting <- run_weighting_experiment(
 )
 toc()
 
-failed_weighting <- purrr::keep(results_weighting$run_results, \(r) !is.null(r$error))
+failed_weighting <- purrr::keep(ecoregion_results_weighting$run_results, \(r) !is.null(r$error))
+if (length(failed_weighting) > 0) {
+  message("Failed weighting runs:")
+  purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
+}
+
+tic('weighting forest groups')
+forestgroup_results_weighting <- run_weighting_experiment(
+  dataset_spec          = dataset_spec,
+  analysis_subset_specs = forestgroup_subset_specs,
+  treatment_group_specs = initial_treatment_group_specs,
+  weighting_specs       = forest_group_weighting_specs,
+  dir_out               = dir_results,
+  skip_existing         = TRUE,
+  verbose_timing        = TRUE,
+  .progress             = TRUE
+)
+toc()
+
+failed_weighting <- purrr::keep(forestgroup_results_weighting$run_results, \(r) !is.null(r$error))
 if (length(failed_weighting) > 0) {
   message("Failed weighting runs:")
   purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))

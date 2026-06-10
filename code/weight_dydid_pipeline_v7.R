@@ -452,8 +452,10 @@ run_one_weighting <- function(short_data_source, data_filter, dataset_spec,
   love_plot_file            <- file.path(run_dir, "love_plot.png")
   love_plot_fullpairwise_file <- file.path(run_dir, "love_plot_fullpairwise.png")
   run_spec_file             <- file.path(run_dir, "weight_run_spec.rds")
+  weightit_file <- file.path(run_dir, "weightit_object.rds")
+  
 
-  if (skip_existing && all(file.exists(c(weights_file, registry_file, bal_rds_file, love_plot_file, run_spec_file)))) {
+  if (skip_existing && all(file.exists(c(weights_file, registry_file, bal_rds_file, love_plot_file, run_spec_file, weightit_file)))) {
     return(list(weight_run_id = weight_run_id, weights_file = weights_file,
                 registry_file = registry_file, skipped = TRUE, error = NULL))
   }
@@ -517,7 +519,8 @@ run_one_weighting <- function(short_data_source, data_filter, dataset_spec,
     group_levels      = paste(sort(unique(df_grouped[[group_col]])), collapse = ","),
     run_started       = run_started, run_finished = run_finished,
     weights_file      = weights_file, registry_file = registry_file,
-    bal_rds_file      = bal_rds_file, love_plot_file = love_plot_file, run_spec_file = run_spec_file
+    bal_rds_file      = bal_rds_file, love_plot_file = love_plot_file, run_spec_file = run_spec_file,
+    weightit_file = weightit_file
   )
 
   run_spec <- list(weight_run_id = weight_run_id, run_stub = run_stub,
@@ -531,6 +534,8 @@ run_one_weighting <- function(short_data_source, data_filter, dataset_spec,
   arrow::write_parquet(registry_tbl, registry_file)
   saveRDS(bal_obj, bal_rds_file)
   saveRDS(run_spec, run_spec_file)
+  saveRDS(w_out, weightit_file)
+  
   rm(df_short, df_grouped, weights_tbl, registry_tbl, run_spec, w_out, bal_obj); gc()
 
   list(weight_run_id = weight_run_id, weights_file = weights_file,
@@ -804,7 +809,14 @@ run_one_estimation <- function(data_source,
                                ci_level       = 0.95,
                                skip_existing  = TRUE,
                                feols_args     = list()) {
-
+  
+  on.exit({
+    suppressWarnings(rm(df, df_grouped, df_est, model, V_list,
+                        coef_rows, pq_rows, agg_pq_tbl,
+                        coef_tbl, dummy_group_tbl, support_tbl))
+    gc()
+  }, add = TRUE)
+  
   # ── Logging ──────────────────────────────────────────────────────────────────
   status_file <- file.path(here::here(), "status_file.txt")
   log_status <- function(msg) {
@@ -813,39 +825,39 @@ run_one_estimation <- function(data_source,
     write(line, file = status_file, append = TRUE)
   }
   log_mem <- function(msg) {
-    g       <- gc(reset = FALSE, verbose = FALSE)
+    # full = TRUE forces a complete collection before reading heap size
+    g       <- gc(reset = FALSE, verbose = FALSE, full = TRUE)
     used_mb <- round(sum(g[, 2]) / 1024, 1)
     max_mb  <- round(sum(g[, 4]) / 1024, 1)
     log_status(glue::glue("{msg} | heap_used={used_mb}MB heap_max={max_mb}MB"))
   }
-
+  
   # ── Output paths ─────────────────────────────────────────────────────────────
   run_dir <- file.path(dir_out, "tables", "by_run", run_stub)
   dir_ensure_local(run_dir)
   log_status(glue::glue("START run_stub={run_stub} fixest_version={packageVersion('fixest')}"))
-
+  
   coef_file        <- file.path(run_dir, "coef.parquet")
   dummy_group_file <- file.path(run_dir, "dummy_group.parquet")
   support_file     <- file.path(run_dir, "support.parquet")
   registry_file    <- file.path(run_dir, "registry.parquet")
   run_spec_file    <- file.path(run_dir, "run_spec.rds")
-
-  # run_spec_file is the completion sentinel — if it exists the run is done
+  
   if (skip_existing && file.exists(run_spec_file)) {
     log_status("SKIP run_spec.rds exists")
     return(list(coef_file = coef_file, dummy_group_file = dummy_group_file,
                 support_file = support_file, registry_file = registry_file,
                 run_spec_file = run_spec_file, skipped_existing = TRUE))
   }
-
+  
   fit_started <- Sys.time()
-
+  
   # ── Load data ────────────────────────────────────────────────────────────────
   log_mem("before load_arrow_data")
   df <- load_arrow_data(data_source, data_filter)
   n_rows_read <- nrow(df)
   log_mem(glue::glue("after load n_rows={n_rows_read}"))
-
+  
   # ── Join weights ─────────────────────────────────────────────────────────────
   if (!is.na(weights_col) && !is.null(weights_parquet_path)) {
     log_status(glue::glue("joining weights col={weights_col}"))
@@ -856,20 +868,20 @@ run_one_estimation <- function(data_source,
     if (n_na_w > 0) warning(glue::glue("[{run_id}] {n_na_w} rows have NA weights."))
     log_mem("after weights join")
   }
-
+  
   # ── Apply grouping ────────────────────────────────────────────────────────────
   log_mem("before apply_treatment_grouping")
   df_grouped <- apply_treatment_grouping(df = df, group_fun = group_fun,
-                                          group_col = group_col, group_args = group_args)
+                                         group_col = group_col, group_args = group_args)
   rm(df)
   log_mem("after grouping rm(df)")
-
+  
   missing_dummy <- setdiff(dummy_cols, names(df_grouped))
   if (length(missing_dummy) > 0) {
     stop(glue::glue("group_fun did not produce expected dummy columns: ",
                     paste(missing_dummy, collapse = ", ")))
   }
-
+  
   # ── Drop treated units assigned to no group ──────────────────────────────────
   trt_col       <- dataset_spec$trt_col
   all_zero_mask <- df_grouped[[trt_col]] == 1 &
@@ -880,7 +892,7 @@ run_one_estimation <- function(data_source,
     df_grouped <- df_grouped[!all_zero_mask, ]
   }
   log_status(glue::glue("orphan treated units dropped: {n_orphan}"))
-
+  
   # ── Build formula and prune columns ──────────────────────────────────────────
   model_formula <- build_model_formula(formula_template, outcome)
   needed_cols   <- get_needed_columns(
@@ -892,11 +904,11 @@ run_one_estimation <- function(data_source,
   check_required_columns(df_grouped, needed_cols, context = run_id)
   df_grouped <- df_grouped |> dplyr::select(dplyr::all_of(needed_cols))
   log_status(glue::glue("columns pruned [{ncol(df_grouped)}]"))
-
+  
   feols_weights <- if (!is.na(weights_col) && weights_col %in% names(df_grouped)) {
     stats::as.formula(paste("~", weights_col))
   } else NULL
-
+  
   # ── Fit model ─────────────────────────────────────────────────────────────────
   log_mem("before feols")
   model <- do.call(
@@ -904,18 +916,17 @@ run_one_estimation <- function(data_source,
     c(list(fml = model_formula, data = df_grouped, weights = feols_weights), feols_args)
   )
   log_mem("after feols")
-
+  
   # ── Recover exact estimation sample ──────────────────────────────────────────
-  # obs() returns the row indices used in estimation; excludes singletons etc.
   df_est <- df_grouped[fixest::obs(model), , drop = FALSE]
   rm(df_grouped)
   log_mem("after rm(df_grouped)")
-
+  
   # ── Precompute all vcov matrices (requires scores; must precede rm(model)) ────
   log_status("precomputing vcov matrices")
   V_list <- vector("list", nrow(vcov_specs))
   names(V_list) <- vcov_specs$vcov_id
-
+  
   for (vi in seq_len(nrow(vcov_specs))) {
     v_id   <- vcov_specs$vcov_id[[vi]]
     v_spec <- vcov_specs$vcov[[vi]]
@@ -928,18 +939,19 @@ run_one_estimation <- function(data_source,
     )
     log_status(glue::glue("vcov {v_id}: {if (!is.null(V_list[[v_id]])) 'OK' else 'FAILED'}"))
   }
-
-  # ── Raw coef tables for Script 4 (all vcov_ids) ───────────────────────────────
-  # Pass precomputed V directly so coeftable() skips the sandwich recomputation.
+  
+  # ── Raw coef tables — write immediately and clear before aggregation loop ─────
+  # coef_rows is not needed by the aggregation loop; clearing it here frees
+  # several hundred MB before the most memory-intensive phase begins
   log_status("extracting coef tables")
   coef_rows <- vector("list", nrow(vcov_specs))
-
+  
   for (vi in seq_len(nrow(vcov_specs))) {
     v_id    <- vcov_specs$vcov_id[[vi]]
     v_label <- vcov_specs$vcov_label[[vi]]
     V       <- V_list[[v_id]]
     if (is.null(V)) next
-
+    
     ct <- tryCatch(
       fixest::coeftable(model, vcov = V),
       error = function(e) {
@@ -948,7 +960,7 @@ run_one_estimation <- function(data_source,
       }
     )
     if (is.null(ct)) next
-
+    
     coef_rows[[vi]] <- coeftable_to_tbl(
       ct           = ct,
       vcov_id      = v_id,
@@ -962,26 +974,29 @@ run_one_estimation <- function(data_source,
       run_id       = run_id
     )
   }
-
+  
+  coef_tbl <- dplyr::bind_rows(purrr::compact(coef_rows))
+  arrow::write_parquet(coef_tbl, coef_file)
+  rm(coef_rows, coef_tbl)
+  gc()
+  log_mem("after coef write rm(coef_rows coef_tbl)")
+  
   # ── Aggregation loop: agg_spec x vcov_spec ────────────────────────────────────
-  # sunab_aggregate_vcov() must be available in the environment (source it alongside
-  # this pipeline file). Uses weight_method = "data_count" throughout to avoid
-  # materialising the full model matrix.
   log_status(glue::glue(
     "running aggregations: {length(agg_specs)} agg_specs x {nrow(vcov_specs)} vcov_specs"
   ))
-
+  
   for (ai in seq_along(agg_specs)) {
     agg_spec    <- agg_specs[[ai]]
     agg_id_safe <- safe_path_component(agg_spec$id)
     pq_rows     <- vector("list", nrow(vcov_specs))
-
+    
     for (vi in seq_len(nrow(vcov_specs))) {
       v_id    <- vcov_specs$vcov_id[[vi]]
       v_label <- vcov_specs$vcov_label[[vi]]
       V       <- V_list[[v_id]]
       if (is.null(V)) next
-
+      
       result <- tryCatch(
         sunab_aggregate_vcov(
           sunab_fixest  = model,
@@ -1000,26 +1015,20 @@ run_one_estimation <- function(data_source,
         }
       )
       if (is.null(result)) next
-
-      # Standard agg_obj structure consumed by Script 3 inference functions:
-      #   $coef   — numeric vector (one entry per row of $groups)
-      #   $vcov   — aggregated covariance matrix (dim = length(coef) x length(coef))
-      #   $groups — tibble with at least event_time and dummy_group columns
+      
       agg_obj <- list(
         coef   = as.numeric(result$beta),
         vcov   = result$sigma,
         groups = result$groups
       )
       agg_rds_file <- file.path(run_dir,
-        glue::glue("agg_{agg_id_safe}__{safe_path_component(v_id)}.rds"))
+                                glue::glue("agg_{agg_id_safe}__{safe_path_component(v_id)}.rds"))
       saveRDS(agg_obj, agg_rds_file)
       log_status(glue::glue("saved {basename(agg_rds_file)}"))
-
-      # collect rows for the per-agg-spec parquet (Script 4 plots)
+      
       z_val <- stats::qnorm(1 - (1 - ci_level) / 2)
       pq_rows[[vi]] <- result$groups |>
         dplyr::mutate(
-          # result$groups already carries estimate and se from sunab_aggregate_vcov()
           ci_lower   = estimate - z_val * se,
           ci_upper   = estimate + z_val * se,
           vcov_id    = v_id,
@@ -1033,24 +1042,28 @@ run_one_estimation <- function(data_source,
           run_id     = run_id
         )
     }
-
-    # one parquet per agg_spec with all vcov_ids stacked
+    
     agg_pq_tbl <- dplyr::bind_rows(purrr::compact(pq_rows))
     if (nrow(agg_pq_tbl) > 0) {
       agg_pq_file <- file.path(run_dir, glue::glue("agg_{agg_id_safe}.parquet"))
       arrow::write_parquet(agg_pq_tbl, agg_pq_file)
       log_status(glue::glue("saved {basename(agg_pq_file)} [{nrow(agg_pq_tbl)} rows]"))
     }
+    
+    # clear per-agg-spec objects before next iteration
+    rm(pq_rows, agg_pq_tbl)
+    gc()
+    log_mem(glue::glue("after agg_spec={agg_spec$id}"))
   }
-
+  
   # ── Discard model — scores no longer needed ───────────────────────────────────
   rm(model)
   V_list <- NULL
   gc()
   log_mem("after rm(model) gc()")
-
+  
   fit_finished <- Sys.time()
-
+  
   # ── N stats and event-time support ───────────────────────────────────────────
   dummy_group_tbl <- make_dummy_group_summary(
     df_est = df_est, dummy_cols = dummy_cols, trt_col = trt_col,
@@ -1061,7 +1074,7 @@ run_one_estimation <- function(data_source,
                 weights_col = weights_col, group_palette = group_palette),
     run_id = run_id
   )
-
+  
   support_tbl <- make_event_time_support_unified(
     df_est     = df_est,     dummy_cols = dummy_cols, trt_col  = trt_col,
     unit_id    = dataset_spec$unit_id, event_id = dataset_spec$event_id,
@@ -1069,12 +1082,11 @@ run_one_estimation <- function(data_source,
   ) |>
     dplyr::mutate(subset_id = subset_id, outcome = outcome,
                   group_id  = group_id,  model_id = model_id, run_id = run_id)
-
+  
   rm(df_est); gc()
   log_mem("after rm(df_est) gc()")
-
+  
   # ── Registry and run spec ─────────────────────────────────────────────────────
-  coef_tbl     <- dplyr::bind_rows(purrr::compact(coef_rows))
   registry_tbl <- make_estimation_registry(
     run_id               = run_id,
     subset_id            = subset_id,
@@ -1104,7 +1116,7 @@ run_one_estimation <- function(data_source,
     registry_file        = registry_file,
     run_spec_file        = run_spec_file
   )
-
+  
   run_spec <- list(
     run_id = run_id, run_stub = run_stub, subset_id = subset_id, outcome = outcome,
     group_id = group_id, model_id = model_id, group_col = group_col, dummy_cols = dummy_cols,
@@ -1116,18 +1128,17 @@ run_one_estimation <- function(data_source,
     vcov_specs = vcov_specs, agg_specs = agg_specs,
     group_palette = group_palette, ci_level = ci_level
   )
-
+  
   log_status("writing final parquet outputs")
-  arrow::write_parquet(coef_tbl,        coef_file)
   arrow::write_parquet(dummy_group_tbl, dummy_group_file)
   arrow::write_parquet(support_tbl,     support_file)
   arrow::write_parquet(registry_tbl,    registry_file)
   saveRDS(run_spec, run_spec_file)
-
-  rm(coef_tbl, dummy_group_tbl, support_tbl, registry_tbl, run_spec, coef_rows)
+  
+  rm(dummy_group_tbl, support_tbl, registry_tbl, run_spec)
   gc()
   log_mem("END outputs written")
-
+  
   list(coef_file = coef_file, dummy_group_file = dummy_group_file,
        support_file = support_file, registry_file = registry_file,
        run_spec_file = run_spec_file, skipped_existing = FALSE)
