@@ -555,9 +555,9 @@ preview_run_grid <- function(subset_specs, outcome_specs, treatment_group_specs,
 
 # SIMPLIFY
 
-ecoregion_subset_specs <- ecoregion_subset_specs[2,] #11 - sierra nevada; 
-outcome_specs <- outcome_specs[1,]
-vcov_specs <- vcov_specs[1,]
+# ecoregion_subset_specs <- ecoregion_subset_specs[2,] #11 - sierra nevada; 
+# outcome_specs <- outcome_specs[1,]
+# vcov_specs <- vcov_specs[1,]
 
 preview_run_grid(ecoregion_subset_specs, outcome_specs, initial_treatment_group_specs,
                  initial_model_specs, vcov_specs, agg_specs)
@@ -615,7 +615,7 @@ rebuild_weighting_tables(dir_out = dir_results, write_csv = TRUE)
 # 12. Run estimation experiment ----
 # ══════════════════════════════════════════════════════════════════════════════
 
-tic('sunab estimation')
+tic('sunab estimation ecoregions')
 results_sunab_ecor <- run_experiment(
   dataset_spec          = dataset_spec,
   analysis_subset_specs = ecoregion_subset_specs,
@@ -628,7 +628,7 @@ results_sunab_ecor <- run_experiment(
   group_palette         = group_palette,
   ci_level              = 0.95,
   run_estimation        = TRUE,
-  run_descriptive       = FALSE,
+  run_descriptive       = TRUE,
   descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
   skip_existing         = TRUE,
   verbose_timing        = TRUE,
@@ -640,6 +640,35 @@ failed_ecor <- purrr::keep(results_sunab_ecor$run_results, \(r) !is.null(r$error
 if (length(failed_ecor) > 0) {
   message("Failed estimation runs:")
   purrr::walk(failed_ecor, \(r) message("  ", r$run_id, ": ", r$error))
+}
+
+
+
+tic('sunab estimation forest groups')
+results_sunab_forestgroup <- run_experiment(
+  dataset_spec          = dataset_spec,
+  analysis_subset_specs = forestgroup_subset_specs,
+  outcome_specs         = outcome_specs,
+  treatment_group_specs = initial_treatment_group_specs,
+  model_specs           = initial_model_specs,
+  vcov_specs            = vcov_specs,
+  agg_specs             = agg_specs,
+  dir_out               = dir_results,
+  group_palette         = group_palette,
+  ci_level              = 0.95,
+  run_estimation        = TRUE,
+  run_descriptive       = TRUE,
+  descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
+  skip_existing         = TRUE,
+  verbose_timing        = TRUE,
+  .progress             = TRUE
+)
+toc()
+
+failed_forestgroup <- purrr::keep(results_sunab_forestgroup$run_results, \(r) !is.null(r$error))
+if (length(failed_forestgroup) > 0) {
+  message("Failed estimation runs:")
+  purrr::walk(failed_forestgroup, \(r) message("  ", r$run_id, ": ", r$error))
 }
 
 
@@ -669,7 +698,7 @@ if (length(failed_ecor) > 0) {
 # ══════════════════════════════════════════════════════════════════════════════
 
 all_estimation_tables <- rebuild_estimation_tables(dir_out = dir_results, write_csv = TRUE)
-#all_descriptive_tables <- rebuild_descriptive_tables(dir_out = dir_results, write_csv = TRUE)
+all_descriptive_tables <- rebuild_descriptive_tables(dir_out = dir_results, write_csv = TRUE)
 
 message(glue::glue(
   "Coef rows:       {nrow(all_estimation_tables$coef_tbl)}\n",
