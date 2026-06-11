@@ -608,6 +608,25 @@ if (length(failed_weighting) > 0) {
   purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
 }
 
+tic('weighting all')
+all_results_weighting <- run_weighting_experiment(
+  dataset_spec          = dataset_spec,
+  analysis_subset_specs = all_data_subset_spec,
+  treatment_group_specs = initial_treatment_group_specs,
+  weighting_specs       = weighting_specs,
+  dir_out               = dir_results,
+  skip_existing         = TRUE,
+  verbose_timing        = TRUE,
+  .progress             = TRUE
+)
+toc()
+
+failed_weighting <- purrr::keep(all_results_weighting$run_results, \(r) !is.null(r$error))
+if (length(failed_weighting) > 0) {
+  message("Failed weighting runs:")
+  purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
+}
+
 rebuild_weighting_tables(dir_out = dir_results, write_csv = TRUE)
 
 
@@ -672,25 +691,35 @@ if (length(failed_forestgroup) > 0) {
 }
 
 
-# ── Optional: pooled all-ecoregion run ────────────────────────────────────────
 
-# results_sunab_all <- run_experiment(
-#   dataset_spec          = dataset_spec,
-#   analysis_subset_specs = all_data_subset_spec,
-#   outcome_specs         = outcome_specs,
-#   treatment_group_specs = initial_treatment_group_specs,
-#   model_specs           = initial_model_specs,
-#   vcov_specs            = regionwide_vcov_specs,
-#   agg_specs             = agg_specs,
-#   dir_out               = dir_results,
-#   group_palette         = group_palette,
-#   ci_level              = 0.95,
-#   run_estimation        = TRUE,
-#   run_descriptive       = FALSE,
-#   skip_existing         = TRUE,
-#   verbose_timing        = TRUE,
-#   .progress             = TRUE
-# )
+tic('sunab estimation all')
+results_sunab_all <- run_experiment(
+  dataset_spec          = dataset_spec,
+  analysis_subset_specs = all_data_subset_spec,
+  outcome_specs         = outcome_specs,
+  treatment_group_specs = initial_treatment_group_specs,
+  model_specs           = initial_model_specs,
+  vcov_specs            = vcov_specs,
+  agg_specs             = agg_specs,
+  dir_out               = dir_results,
+  group_palette         = group_palette,
+  ci_level              = 0.95,
+  run_estimation        = TRUE,
+  run_descriptive       = TRUE,
+  descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
+  skip_existing         = TRUE,
+  verbose_timing        = TRUE,
+  .progress             = TRUE
+)
+toc()
+
+failed_all <- purrr::keep(results_sunab_all$run_results, \(r) !is.null(r$error))
+if (length(failed_all) > 0) {
+  message("Failed estimation runs:")
+  purrr::walk(failed_all, \(r) message("  ", r$run_id, ": ", r$error))
+}
+
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
