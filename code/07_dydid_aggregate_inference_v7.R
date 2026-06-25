@@ -46,7 +46,7 @@ source(here::here("code", "weight_dydid_pipeline_v7.R"))
 
 run_name    <- "GEE_resilience_v7_operational_ss500_ts50000"
 version     <- "v7"
-dir_results <- here::here("results", version, "test_10perc")
+dir_results <- here::here("results-exo", version)
 dir_infout  <- file.path(dir_results, "tables", "inference", "all")
 dir.create(dir_infout, recursive = TRUE, showWarnings = FALSE)
 

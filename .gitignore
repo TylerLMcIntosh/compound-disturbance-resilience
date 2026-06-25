@@ -8,8 +8,10 @@
 figs/*
 data/*
 results/*
+results-exo/*
 !figs/dir_description.md
 !results/dir_description.md
+!results-exo/dir_description.md
 config/secrets/*
 logs/*
 models/*

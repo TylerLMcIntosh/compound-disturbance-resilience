@@ -19,9 +19,11 @@
 
 
 # Monitoring resources on Exosphere
-# AZ: ~60-70% of 125GB RAM used, using ~ 16 cores <- worked for weighted but crashed on unweighted
-## changed to max use 8 cores, jumped up to >75% of 125 GB RAM used (85%? ~ 100GB?), but hasn't crashed yet
-## stable at around 80gb
+# 1TB RAM instance:
+# Highest RAM usage for all runs was ~25% (250GB)
+# EXCEPT for all-data run - which spiked to 1TB and crashed...
+# appeared to cruise for a while at 850GB
+# Full dataset: 14.27 million pixel-time units, 425,743 pt_ids; 1993-2025 (~30 years)
 
 
 # Sys.setenv(LD_LIBRARY_PATH = paste("/opt/conda/lib", Sys.getenv("LD_LIBRARY_PATH"), sep = ":"))
@@ -88,7 +90,7 @@ if (cyverse) {
   dir_data    <- here::here("data", "derived", run_name)
   dir_raw     <- here::here("data", "raw")
   dir_manual  <- here::here("data", "manual")
-  dir_results <- here::here("results", version)
+  dir_results <- here::here("results-exo", version)
   dir_figs    <- here::here("figs",    version)
 }
 
@@ -97,6 +99,14 @@ dir_parquet_short <- file.path(dir_data, "parquet_short_filtered")
 
 dir_ensure_local(c(dir_data, dir_parquet_long, dir_raw, dir_manual, dir_results, dir_figs))
 
+x <- arrow::open_dataset(dir_parquet_long) |> collect()
+summary <- x |> group_by(nfg_factor) |> summarize(n = n())
+length(unique(x$pt_id))
+
+x_s <- arrow::open_dataset(dir_parquet_short) |> collect()
+summary_s <- x_s |> group_by(nfg_factor, fire) |> summarize(n = n())
+
+analysis_portion <- c(1:15)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 1.5. Test datasets ----
@@ -177,6 +187,34 @@ dataset_spec <- make_dataset_spec(
 # 3. Analysis subset specs ----
 # ══════════════════════════════════════════════════════════════════════════════
 
+
+conifer_nfg <- c(
+  "Pinyon/Juniper Group",
+  "Douglas-fir Group",
+  "Ponderosa Pine Group",
+  "Fir/Spruce/Mountain Hemlock Group",
+  "Other Western Softwood Group",
+  "Lodgepole Pine Group",
+  "Western Larch Group",
+  "Hemlock/Sitka Spruce Group",
+  "California Mixed Conifer Group",
+  "Western White Pine Group",
+  "Redwood Group"
+)
+
+broadleaf_nfg <- c(
+  "Western Oak Group",
+  "Other Western Hardwoods Group",
+  "Aspen/Birch Group",
+  "Elm/Ash/Cottonwood Group",
+  "Alder/Maple Group",
+  "Tanoak/Laurel Group",
+  "Oak/Hickory Group",
+  "Tanoak/Laurel Group"
+)
+
+
+
 ecoregion_code_names <- c(
   "bluemtns", "cascades", "coastrange", "eastcascades",
   "klamathmtns", "northcascades", "pugetlowland",
@@ -186,13 +224,13 @@ ecoregion_code_names <- c(
   "wasatchuintamtns", "aznmmtns", "coloradoplateaus"
 )
 
-ecoregion_subset_specs <- expand_analysis_subset_specs_by_col(
-  long_data_source  = dir_parquet_long,
-  split_col         = "ecoregion_code_name",
-  id_prefix         = "ecor",
-  values            = ecoregion_code_names,
-  short_data_source = dir_parquet_short
-)
+# ecoregion_subset_specs <- expand_analysis_subset_specs_by_col(
+#   long_data_source  = dir_parquet_long,
+#   split_col         = "ecoregion_code_name",
+#   id_prefix         = "ecor",
+#   values            = ecoregion_code_names,
+#   short_data_source = dir_parquet_short
+# )
 
 # Only analyze forest groups with over 10,000 unique pt_ids
 nfg_code_names <- arrow::open_dataset(dir_parquet_short) |>
@@ -203,13 +241,24 @@ nfg_code_names <- arrow::open_dataset(dir_parquet_short) |>
   filter(n >= 10000) |>
   pull(nfg_factor)
 
+extended_nfg_code_names <- arrow::open_dataset(dir_parquet_short) |>
+  collect() |>
+  group_by(nfg_factor) |>
+  summarize(n = n()) |>
+  arrange(desc(n)) |>
+  pull(nfg_factor)
+
 forestgroup_subset_specs <- expand_analysis_subset_specs_by_col(
   long_data_source  = dir_parquet_long,
   split_col         = "nfg_factor",
   id_prefix         = "nfg",
-  values = nfg_code_names,
+  values            = nfg_code_names,
   short_data_source = dir_parquet_short,
-  check_all_files   = TRUE
+  check_all_files   = TRUE,
+  base_filter       = ~ fire == 0 | 
+    (fire == 1 & year_from_fire_index >= -20 & 
+       year_from_fire_index <= 20 & 
+       analysis_subset %in% analysis_portion)
 )
 
 all_data_subset_spec <- make_analysis_subset_spec(
@@ -234,6 +283,29 @@ all_data_subset_spec <- make_analysis_subset_spec(
 #   )
 # )
 
+
+# nfg_temporalsplit_subset_specs <- dplyr::bind_rows(
+#   # early burn cohort (2000-2009) x nfg group
+#   expand_analysis_subset_specs_by_col(
+#     long_data_source  = dir_parquet_long,
+#     split_col         = "nfg_factor",
+#     id_prefix         = "nfg_early",
+#     values            = nfg_code_names,
+#     short_data_source = dir_parquet_short,
+#     check_all_files   = TRUE,
+#     base_filter       = ~ burn_year >= 2000 & burn_year < 2010
+#   ),
+#   # late burn cohort (2010-2019) x nfg group
+#   expand_analysis_subset_specs_by_col(
+#     long_data_source  = dir_parquet_long,
+#     split_col         = "nfg_factor",
+#     id_prefix         = "nfg_late",
+#     values            = nfg_code_names,
+#     short_data_source = dir_parquet_short,
+#     check_all_files   = TRUE,
+#     base_filter       = ~ burn_year >= 2010 & burn_year < 2020
+#   )
+# )
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 4. Outcome specs ----

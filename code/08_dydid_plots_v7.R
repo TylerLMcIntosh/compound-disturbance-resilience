@@ -20,9 +20,14 @@ source(here::here("code", "weight_dydid_pipeline_v7.R"))
 
 run_name    <- "GEE_resilience_v7_operational_ss500_ts50000"
 version     <- "v7"
-dir_results <- here::here("results", version, "test_10perc")
-dir_figs    <- here::here("figs",    version, "test_10perc")
+dir_results <- here::here("results-exo", version)
+dir_figs    <- here::here("figs",    version, "exo")
+dir_figs_ecor <- here(dir_figs, "ecor")
+dir_figs_nfg <- here(dir_figs, "nfg")
+
 dir.create(dir_figs, recursive = TRUE, showWarnings = FALSE)
+dir.create(dir_figs_ecor, recursive = TRUE, showWarnings = FALSE)
+dir.create(dir_figs_nfg, recursive = TRUE, showWarnings = FALSE)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -57,10 +62,10 @@ dummy_group_labels <- c(
 
 # Default palette (override via group_palette from Script 6)
 dummy_group_palette <- c(
-  "cd_f"   = "#E69F00",
-  "cd_bf"  = "#56B4E9",
-  "cd_df"  = "#009E73",
-  "cd_bdf" = "#CC79A7"
+  "cd_f"   = "maroon3",
+  "cd_bf"  = "forestgreen",
+  "cd_df"  = "goldenrod2",
+  "cd_bdf" = "purple2"
 )
 
 
@@ -68,9 +73,8 @@ dummy_group_palette <- c(
 # Event study plot ----
 # ══════════════════════════════════════════════════════════════════════════════
 
-
 plot_event_study <- function(agg_es,
-                             subset_id_filter,
+                             subset_id_filter    = NULL,
                              outcome_filter,
                              group_id_filter,
                              model_id_filter,
@@ -90,14 +94,17 @@ plot_event_study <- function(agg_es,
   # ── Filter ────────────────────────────────────────────────────────────────
   d <- agg_es |>
     dplyr::filter(
-      subset_id  %in% subset_id_filter,
+      if (is.null(subset_id_filter)) TRUE else subset_id %in% subset_id_filter,
       outcome    %in% outcome_filter,
       group_id   %in% group_id_filter,
       model_id   %in% model_id_filter,
       event_time >= event_time_range[1],
       event_time <= event_time_range[2]
     )
-  if (!is.null(vcov_id_filter)) d <- dplyr::filter(d, vcov_id %in% vcov_id_filter)
+  
+  if (!is.null(vcov_id_filter)) {
+    d <- dplyr::filter(d, vcov_id %in% vcov_id_filter)
+  }
   
   if (nrow(d) == 0) {
     warning("No rows after filtering. Check subset/outcome/group/model filters.")
@@ -113,30 +120,36 @@ plot_event_study <- function(agg_es,
     )
   
   # ── Support threshold filtering ───────────────────────────────────────────
-  # by default all rows are used; thresholds restrict to qualifying event times
   d_plot <- d
   
   if (!is.null(support) && (!is.null(min_n_events) || !is.null(min_n_points))) {
     support_sub <- support |>
       dplyr::filter(
-        subset_id  %in% subset_id_filter,
+        if (is.null(subset_id_filter)) TRUE else subset_id %in% subset_id_filter,
         outcome    %in% outcome_filter,
         group_id   %in% group_id_filter,
         model_id   %in% model_id_filter,
         event_time >= event_time_range[1],
         event_time <= event_time_range[2]
       ) |>
-      dplyr::select(subset_id, outcome, group_id, model_id,
-                    event_time, dummy_group, n_fireids, n_ptids)
+      dplyr::select(
+        subset_id, outcome, group_id, model_id,
+        event_time, dummy_group, n_fireids, n_ptids
+      )
     
     d_plot <- d |>
-      dplyr::left_join(support_sub,
-                       by = c("subset_id", "outcome", "group_id", "model_id",
-                              "event_time", "dummy_group"))
+      dplyr::left_join(
+        support_sub,
+        by = c(
+          "subset_id", "outcome", "group_id", "model_id",
+          "event_time", "dummy_group"
+        )
+      )
     
     if (!is.null(min_n_events)) {
       d_plot <- dplyr::filter(d_plot, !is.na(n_fireids), n_fireids >= min_n_events)
     }
+    
     if (!is.null(min_n_points)) {
       d_plot <- dplyr::filter(d_plot, !is.na(n_ptids), n_ptids >= min_n_points)
     }
@@ -148,19 +161,36 @@ plot_event_study <- function(agg_es,
   }
   
   # ── Build plot ────────────────────────────────────────────────────────────
-  p <- ggplot2::ggplot(d_plot, ggplot2::aes(x = event_time, y = estimate,
-                                            color = dummy_group, fill = dummy_group,
-                                            group = dummy_group)) +
-    ggplot2::geom_ribbon(ggplot2::aes(ymin = ci_lower, ymax = ci_upper),
-                         alpha = 0.15, color = NA) +
+  p <- ggplot2::ggplot(
+    d_plot,
+    ggplot2::aes(
+      x = event_time,
+      y = estimate,
+      color = dummy_group,
+      fill = dummy_group,
+      group = dummy_group
+    )
+  ) +
+    ggplot2::geom_ribbon(
+      ggplot2::aes(ymin = ci_lower, ymax = ci_upper),
+      alpha = 0.15,
+      color = NA
+    ) +
     ggplot2::geom_line(linewidth = 0.7) +
     ggplot2::geom_point(size = 1.5) +
     ggplot2::geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
     ggplot2::geom_vline(xintercept = ref_period, linetype = "dotted", color = "grey60") +
-    ggplot2::annotate("rect", xmin = min(d_plot$event_time), xmax = -0.5,
-                      ymin = -Inf, ymax = Inf, alpha = 0.03, fill = "grey50") +
+    ggplot2::annotate(
+      "rect",
+      xmin = min(d_plot$event_time),
+      xmax = -0.5,
+      ymin = -Inf,
+      ymax = Inf,
+      alpha = 0.03,
+      fill = "grey50"
+    ) +
     ggplot2::scale_color_manual(values = palette, labels = group_labels, name = NULL) +
-    ggplot2::scale_fill_manual(values = palette,  labels = group_labels, name = NULL) +
+    ggplot2::scale_fill_manual(values = palette, labels = group_labels, name = NULL) +
     ggplot2::labs(
       x     = "Event time (years since fire)",
       y     = "ATT",
@@ -598,25 +628,7 @@ plot_vcov_sensitivity <- function(agg_es,
 
 
 
-
-# USE FUNCTIONS ----
-
-# Test event_study
-plot_event_study(
-  agg_es           = agg_es_tbl,
-  subset_id_filter = "ecor_sierranevada",
-  outcome_filter   = "rap_tree",
-  group_id_filter  = "b10_pdsisumn10",
-  model_id_filter  = "sunab_twfe_unweighted",
-  vcov_id_filter   = "cluster_pt",
-  support          = support,
-  min_n_events     = 5,
-  min_n_points     = 50,
-  facet_by_dummy = FALSE
-)
-
-
-
+# Comparisons to F line ----
 
 
 # F1 b
@@ -726,17 +738,6 @@ plot_att_comparisons_vs_f <- function(att_comps,
 }
 
 
-plot_att_comparisons_vs_f(
-  att_comps        = att_comps,
-  outcome_filter   = "rap_tree",
-  group_id_filter  = "b10_pdsisumn10",
-  model_id_filter  = "sunab_twfe_glmatotopoclimnfg",
-  vcov_id_filter   = "cluster_pt",
-  subset_id_filter = "ecor_sierranevada"
-)
-
-
-
 plot_att_comparisons_vs_f_windows <- function(att_comps,
                                               outcome_filter,
                                               group_id_filter,
@@ -757,7 +758,9 @@ plot_att_comparisons_vs_f_windows <- function(att_comps,
                                               sig_col          = "p_bh",
                                               sig_threshold    = 0.05,
                                               dodge_width      = 0.5,
-                                              title            = NULL) {
+                                              title            = NULL,
+                                              sort             = TRUE,
+                                              xlim             = NULL) {
   
   # ── Filter ────────────────────────────────────────────────────────────────
   d <- att_comps |>
@@ -770,7 +773,9 @@ plot_att_comparisons_vs_f_windows <- function(att_comps,
       window_id %in% window_order
     )
   
-  if (!is.null(subset_id_filter)) d <- dplyr::filter(d, subset_id %in% subset_id_filter)
+  if (!is.null(subset_id_filter)) {
+    d <- dplyr::filter(d, subset_id %in% subset_id_filter)
+  }
   
   if (nrow(d) == 0) {
     warning("No rows after filtering.")
@@ -782,14 +787,21 @@ plot_att_comparisons_vs_f_windows <- function(att_comps,
                     paste(names(d), collapse = ", ")))
   }
   
+  if (!is.null(xlim) && length(xlim) != 2) {
+    stop("xlim must be NULL or a numeric vector of length 2, e.g. c(-10, 10).")
+  }
+  
   # ── Prepare ───────────────────────────────────────────────────────────────
-  # window factor: earliest at top = reversed for ggplot2 y-axis
   window_label_vec    <- window_labels[window_order]
-  window_levels_y     <- rev(unname(window_label_vec))  # bottom to top
-  window_color_mapped <- stats::setNames(unname(window_colors[window_order]),
-                                         unname(window_label_vec))
-  window_shape_mapped <- stats::setNames(unname(window_shapes[window_order]),
-                                         unname(window_label_vec))
+  window_levels_y     <- rev(unname(window_label_vec))
+  window_color_mapped <- stats::setNames(
+    unname(window_colors[window_order]),
+    unname(window_label_vec)
+  )
+  window_shape_mapped <- stats::setNames(
+    unname(window_shapes[window_order]),
+    unname(window_label_vec)
+  )
   
   facet_level_order <- unname(group_labels[names(group_labels) != "cd_f"])
   
@@ -800,7 +812,6 @@ plot_att_comparisons_vs_f_windows <- function(att_comps,
         dplyr::recode(window_id, !!!window_label_vec),
         levels = window_levels_y
       ),
-      # color encodes window x significance: sig = window color, non-sig = grey
       point_color   = dplyr::if_else(
         significant,
         dplyr::recode(window_id, !!!window_colors[window_order]),
@@ -813,27 +824,27 @@ plot_att_comparisons_vs_f_windows <- function(att_comps,
       subset_label  = stringr::str_remove(subset_id, "^ecor_")
     )
   
-  # ── Sort subsets: fewest non-significant first (top), then by average effect ──
-  subset_order <- d |>
-    dplyr::group_by(subset_label) |>
-    dplyr::summarise(
-      n_nonsig    = sum(!significant),
-      mean_effect = mean(estimate, na.rm = TRUE),
-      .groups     = "drop"
-    ) |>
-    # desc(n_nonsig): most non-sig sinks to bottom of plot
-    # mean_effect ascending: within ties, smaller effect also sinks
-    dplyr::arrange(dplyr::desc(n_nonsig), mean_effect) |>
-    dplyr::pull(subset_label)
+  # ── Sort subsets ──────────────────────────────────────────────────────────
+  if (sort) {
+    subset_order <- d |>
+      dplyr::group_by(subset_label) |>
+      dplyr::summarise(
+        n_nonsig    = sum(!significant),
+        mean_effect = mean(estimate, na.rm = TRUE),
+        .groups     = "drop"
+      ) |>
+      dplyr::arrange(dplyr::desc(n_nonsig), mean_effect) |>
+      dplyr::pull(subset_label)
+  } else {
+    subset_order <- sort(unique(d$subset_label))
+  }
   
-  # apply as factor so ggplot2 respects the order
   d <- d |>
-    dplyr::mutate(subset_label = factor(subset_label, levels = subset_order))
+    dplyr::mutate(
+      subset_label = factor(subset_label, levels = subset_order)
+    )
   
-  # full color palette: one entry per window color + grey
   all_colors <- c(window_color_mapped, "grey60" = "grey60")
-  # map point_color values → colors (point_color holds hex strings directly)
-  # shape palette keyed on window_label factor levels
   all_shapes <- window_shape_mapped
   
   # ── Build plot ────────────────────────────────────────────────────────────
@@ -856,8 +867,6 @@ plot_att_comparisons_vs_f_windows <- function(att_comps,
       linewidth = 0.5,
       size      = 0.5
     ) +
-    # color scale: window colors + grey for non-significant
-    # identity scale since point_color already holds the hex value
     ggplot2::scale_color_identity(
       guide  = "legend",
       name   = glue::glue("Window ({sig_col} < {sig_threshold})"),
@@ -881,15 +890,191 @@ plot_att_comparisons_vs_f_windows <- function(att_comps,
       panel.grid.minor   = ggplot2::element_blank()
     )
   
+  if (!is.null(xlim)) {
+    p <- p + ggplot2::coord_cartesian(xlim = xlim)
+  }
+  
   p
 }
 
 
+# USE FUNCTIONS ----
+
+nfg_subsets <- agg_es_tbl |>
+  filter(grepl("nfg_", subset_id)) |>
+  pull(subset_id) |>
+  unique()
+
+ecor_subsets <- agg_es_tbl |>
+  filter(grepl("ecor_", subset_id)) |>
+  pull(subset_id) |>
+  unique()
+
+
+## event_study ----
+
+for(i in nfg_subsets) {
+  plot_event_study(
+    agg_es           = agg_es_tbl,
+    subset_id_filter = i,
+    outcome_filter   = "rap_tree",
+    group_id_filter  = "b10_pdsisumn10",
+    model_id_filter  = "sunab_twfe_glmatotopoclimnfg",
+    vcov_id_filter   = "conley_75km_5km",
+    support          = support,
+    min_n_events     = 3,
+    min_n_points     = 20,
+    facet_by_dummy = FALSE,
+    title = glue(i, " glmatotopoclimnfg, conley")
+  ) + xlim(-10, 20)
+  
+  ggsave(here(dir_figs_nfg, glue("event_study_", i, ".png")))
+}
+
+
+for(i in ecor_subsets) {
+  plot_event_study(
+    agg_es           = agg_es_tbl,
+    subset_id_filter = i,
+    outcome_filter   = "rap_tree",
+    group_id_filter  = "b10_pdsisumn10",
+    model_id_filter  = "sunab_twfe_glmatotopoclimnfg",
+    vcov_id_filter   = "conley_75km_5km",
+    support          = support,
+    min_n_events     = 3,
+    min_n_points     = 20,
+    facet_by_dummy = FALSE,
+    title = glue(i, " glmatotopoclimnfg, conley")
+  ) + xlim(-10, 20)
+  
+  ggsave(here(dir_figs_ecor, glue("event_study_", i, ".png")))
+}
+
+
+
+## Plot comparisons to F ----
+
+
 plot_att_comparisons_vs_f_windows(
-  att_comps       = att_comps,
+  att_comps       = att_comps |>
+    filter(grepl("nfg", subset_id)),
+  outcome_filter  = "rap_tree",
+  group_id_filter = "b10_pdsisumn10",
+  model_id_filter = "sunab_twfe_unweighted",
+  vcov_id_filter  = "conley_75km_5km",
+  dodge_width     = 0.6,
+  title = "Unweighted RAP, pt_cluster",
+  sort = TRUE,
+  xlim = c(-15, 15)
+)
+ggsave(here(dir_figs_nfg, glue("fire_comparison_summary_rap_unweighted_conleyclust.png")))
+
+
+plot_att_comparisons_vs_f_windows(
+  att_comps       = att_comps |> filter(grepl("nfg", subset_id)),
   outcome_filter  = "rap_tree",
   group_id_filter = "b10_pdsisumn10",
   model_id_filter = "sunab_twfe_glmatotopoclimnfg",
   vcov_id_filter  = "cluster_pt",
-  dodge_width     = 0.6
+  dodge_width     = 0.6,
+  title = "Weighted RAP - pt se",
+  sort = TRUE,
+  xlim = c(-15, 15)
 )
+ggsave(here(dir_figs_nfg, glue("fire_comparison_summary_rap_weighted_ptclust.png")))
+
+
+
+
+plot_att_comparisons_vs_f_windows(
+  att_comps       = att_comps |> filter(grepl("nfg", subset_id)),
+  outcome_filter  = "rap_tree",
+  group_id_filter = "b10_pdsisumn10",
+  model_id_filter = "sunab_twfe_glmatotopoclimnfg",
+  vcov_id_filter  = "cluster_h3",
+  dodge_width     = 0.6,
+  title = "Weighted RAP - h3 se",
+  sort = FALSE,
+  xlim = c(-15, 15)
+)
+ggsave(here(dir_figs_nfg, glue("fire_comparison_summary_rap_weighted_h3clust.png")))
+
+
+
+plot_att_comparisons_vs_f_windows(
+  att_comps       = att_comps |> filter(grepl("nfg", subset_id)),
+  outcome_filter  = "rap_tree",
+  group_id_filter = "b10_pdsisumn10",
+  model_id_filter = "sunab_twfe_glmatotopoclimnfg",
+  vcov_id_filter  = "conley_75km_5km",
+  dodge_width     = 0.6,
+  title = "Weighted RAP - conley se",
+  sort = FALSE,
+  xlim = c(-15, 15)
+)
+ggsave(here(dir_figs_nfg, glue("fire_comparison_summary_rap_weighted_conleyclust.png")))
+
+
+
+plot_att_comparisons_vs_f_windows(
+  att_comps       = att_comps |> filter(grepl("nfg", subset_id)),
+  outcome_filter  = "vcf_tree",
+  group_id_filter = "b10_pdsisumn10",
+  model_id_filter = "sunab_twfe_glmatotopoclimnfg",
+  vcov_id_filter  = "conley_75km_5km",
+  dodge_width     = 0.6,
+  title = "Weighted VCF - conley se",
+  sort = TRUE,
+  xlim = c(-15, 22)
+)
+ggsave(here(dir_figs_nfg, glue("fire_comparison_summary_vcf_weighted_conleyclust.png")))
+
+
+
+
+# Examine support ----
+
+for(i in nfg_subsets) {
+  s <- support |> filter(subset_id == i & outcome == "rap_tree" & model_id == "sunab_twfe_unweighted")
+  p <- ggplot(s) +
+    geom_col(aes(x = event_time, y = n_ptids)) +
+    facet_wrap(~dummy_group, scales = "free_y") +
+    labs(title = glue("Support: {i}")) +
+    theme_minimal() +
+    xlim(-20, 20)
+  
+  ggsave(here(dir_figs_nfg, glue("support_{i}.png")))
+}
+
+
+
+for(i in nfg_subsets) {
+  s <- support |>
+    filter(
+      subset_id == i,
+      outcome == "rap_tree",
+      model_id == "sunab_twfe_unweighted"
+    )
+  
+  scale_factor <- max(s$n_ptids, na.rm = TRUE) / max(s$n_fireids, na.rm = TRUE)
+  
+  p <- ggplot(s, aes(x = event_time)) +
+    geom_col(aes(y = n_ptids)) +
+    geom_line(
+      aes(y = n_fireids * scale_factor, group = dummy_group),
+      linewidth = 1
+    ) +
+    facet_wrap(~ dummy_group, scales = "free_y") +
+    scale_y_continuous(
+      name = "Number of ptids (bars)",
+      sec.axis = sec_axis(
+        ~ . / scale_factor,
+        name = "Number of fireids (line)"
+      )
+    ) +
+    labs(title = glue("Support: {i}")) +
+    theme_minimal() +
+    coord_cartesian(xlim = c(-20, 20))
+  
+  ggsave(here(dir_figs_nfg, glue("support_{i}.png")), p)
+}

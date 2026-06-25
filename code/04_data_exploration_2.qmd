@@ -33,8 +33,9 @@ install_load_packages(c(
   "corrplot"))
 
 gdrive_folder <- "GEE_resilience_v6_operational_ss500_ts50000"
+version <- "v7"
 
-dir_figs <- here::here('figs', gdrive_folder)
+dir_figs <- here::here('figs', gdrive_folder, version, "data_explore")
 dir_derived <- here::here('data', 'derived', gdrive_folder)
 dir_raw <- here::here('data', 'raw')
 dir_manual <- here::here('data', 'manual')
@@ -53,30 +54,16 @@ set.seed(seed)
 
 ```{r}
 
-d_s_f <- list.files(
-  here::here(dir_derived, "parquet"),
-  pattern = "dats_short.*\\.parquet$",
-  full.names = TRUE
-)
-
-d_s <- open_dataset(d_s_f, format = "parquet") |>
+d_s <- open_dataset(here(dir_derived, "parquet_short_filtered"), format = "parquet") |>
   collect()
 
 
-
-d_l_f <- list.files(
-  here::here(dir_derived, "parquet"),
-  pattern = "dats_long.*\\.parquet$",
-  full.names = TRUE
-)
-
-d_l <- open_dataset(d_l_f, format = "parquet") |>
+d_l <- open_dataset(here(dir_derived, "parquet_long_filtered"), format = "parquet") |>
   collect()
 
 d_l_fire <- d_l |> filter(fire == 1)
 
 ```
-
 
 # Set CD groups
 
@@ -331,11 +318,13 @@ d_s <- set_cd_groups(df = d_s,
 
 ```
 
-
-
 # Hist & N for each (burn_year 2005-2020)
 
 ```{r}
+
+d_s_fire <- d_s |> filter(fire == 1)
+d_s_nfire <- d_s |> filter(fire == 0)
+
 
 plot_density_with_deciles <- function(df, var, title, x_label = NULL, log_scale = FALSE) {
 
@@ -658,9 +647,6 @@ ggsave(here(dir_figs, "cbi_by_hdyo_bin.png"))
 
 ```
 
-
-
-
 # Outcomes
 
 ```{r}
@@ -676,51 +662,58 @@ ggplot(d_s |> filter(fire == 1)) +
   geom_smooth(aes(x = burn_cbi,
                  y = raw_post_fire_rap_tree_difference_n6_3_yr))
 
+ggsave(here(dir_figs, "loss_by_cbi.png"))
 
 ```
 
-
 # correlations
+
 ```{r}
+
+safe_path_component <- function(x) gsub("[^[:alnum:]_\\-]+", "_", as.character(x))
 
 dir_correlations <- here::here(dir_figs, "correlations")
 dir_ensure(dir_correlations)
 
 # Correlation matrix
 correlations <- d_s |>
-  select(aet, def, gam_rap_tree_pre6_fit, srtm, tpi, chili) |>
+  select(aet, def, gam_rap_tree_pre6_fit, srtm, tpi, chili,
+         pdsi_annual_5_yrs_prior_sum_yot, biotic_relaxedforestnorm_5_yrs_prior_sum_yot) |>
   cor(use = "pairwise.complete.obs")
-png(here(dir_correlations, glue('corr_plot_1_all.png')), width = 400, height = 400)
+png(here(dir_correlations, glue('corr_plot_1_all.png')), width = 600, height = 600)
 corrplot(correlations, method = 'number', type = "lower", diag = FALSE, use = 'pairwise.complete.obs') 
 dev.off()
 
 
 
+
+
 drought_correlations <- d_s |>
-  select(hd_fingerprint_year_of, pdsi_annual_year_of, pdsi_annual_5_yrs_prior_sum_yot, pdsi_annual_5_yrs_prior_threshold_n4_yot, pdsi_annual_5_yrs_prior_threshold_n3_yot, hd_fingerprint_5_yrs_prior_threshold_6_yot) |>
+  select(hd_fingerprint_year_of, pdsi_annual_year_of, pdsi_annual_5_yrs_prior_sum_yot, pdsi_annual_5_yrs_prior_threshold_n4_yot, pdsi_annual_5_yrs_prior_threshold_n3_yot,  hd_fingerprint_5_yrs_prior_threshold_6_yot, pdsi_annual_5_yrs_after_sum, pdsi_annual_5_yrs_prior_mean_yot, pdsi_annual_5_yrs_after_mean) |>
   cor(use = "pairwise.complete.obs")
 png(here(dir_correlations, glue('corr_plot_2_all.png')), width = 800, height = 800)
 corrplot(drought_correlations, method = 'number', type = "lower", diag = FALSE, use = 'pairwise.complete.obs') 
 dev.off()
 
 
-for(ecor in unique(d_s$ecoregion_code_name)) {
+for(ecor in unique(d_s$nfg_factor)) {
   
   correlations <- d_s |>
-    filter(ecoregion_code_name == ecor) |>
-    select(aet, def, gam_rap_tree_pre6_fit, srtm, tpi, chili) |>
+    filter(nfg_factor == ecor) |>
+    select(aet, def, gam_rap_tree_pre6_fit, srtm, tpi, chili,
+         pdsi_annual_5_yrs_prior_sum_yot, biotic_relaxedforestnorm_5_yrs_prior_sum_yot) |>
     cor(use = "pairwise.complete.obs")
-  png(here(dir_correlations, glue('corr_plot_1_{ecor}.png')), width = 400, height = 400)
+  png(here(dir_correlations, glue('corr_plot_1_{safe_path_component(ecor)}.png')), width = 600, height = 600)
   corrplot(correlations, method = 'number', type = "lower", diag = FALSE, use = 'pairwise.complete.obs') 
   dev.off()
   
   
   
   drought_correlations <- d_s |>
-    filter(ecoregion_code_name == ecor) |>
-    select(hd_fingerprint_year_of, pdsi_annual_year_of, pdsi_annual_5_yrs_prior_sum_yot, pdsi_annual_5_yrs_prior_threshold_n4_yot, pdsi_annual_5_yrs_prior_threshold_n3_yot, hd_fingerprint_5_yrs_prior_threshold_6_yot) |>
+    filter(nfg_factor == ecor) |>
+    select(hd_fingerprint_year_of, pdsi_annual_year_of, pdsi_annual_5_yrs_prior_sum_yot, pdsi_annual_5_yrs_prior_threshold_n4_yot, pdsi_annual_5_yrs_prior_threshold_n3_yot, hd_fingerprint_5_yrs_prior_threshold_6_yot, pdsi_annual_5_yrs_after_sum, pdsi_annual_5_yrs_prior_mean_yot, pdsi_annual_5_yrs_after_mean) |>
     cor(use = "pairwise.complete.obs")
-  png(here(dir_correlations, glue('corr_plot_2_{ecor}.png')), width = 800, height = 800)
+  png(here(dir_correlations, glue('corr_plot_2_{safe_path_component(ecor)}.png')), width = 800, height = 800)
   corrplot(drought_correlations, method = 'number', type = "lower", diag = FALSE, use = 'pairwise.complete.obs') 
   dev.off()
 
@@ -728,10 +721,55 @@ for(ecor in unique(d_s$ecoregion_code_name)) {
 
 
 
+ggplot(d_s_fire |> filter(cd_group_b10_pdsisumn10 == "bdf" | cd_group_b10_pdsisumn10 == "bf")) +
+  geom_density(aes(x = biotic_relaxedforestnorm_5_yrs_prior_sum_yot, color = cd_group_b10_pdsisumn10)) +
+  theme_minimal()
+ggsave(here(dir_figs, "biotic_check.png"))
+
+ggplot(d_s_fire |> filter(cd_group_b10_pdsisumn10 == "bdf" | cd_group_b10_pdsisumn10 == "bf")) +
+  geom_density(aes(x = biotic_relaxedforestnorm_5_yrs_prior_sum_yot, color = cd_group_b10_pdsisumn10)) +
+  theme_minimal() +
+  facet_wrap(~nfg_factor)
+ggsave(here(dir_figs, "biotic_check_ft.png"))
+
+
+ggplot(d_s_fire |> filter(cd_group_b10_pdsisumn10 == "bdf" | cd_group_b10_pdsisumn10 == "df")) +
+  geom_density(aes(x = pdsi_annual_5_yrs_prior_sum_yot, color = cd_group_b10_pdsisumn10)) +
+  theme_minimal() 
+ggsave(here(dir_figs, "drought_check.png"))
+
+
+ggplot(d_s_fire) +
+  geom_density(aes(x = pdsi_annual_5_yrs_prior_sum_yot, color = cd_group_b10_pdsisumn10)) +
+  theme_minimal() 
+ggsave(here(dir_figs, "drought_check_all_groups.png"))
+
+
+
+ggplot(d_s_fire |> filter(cd_group_b10_pdsisumn10 == "bdf" | cd_group_b10_pdsisumn10 == "df" )) +
+  geom_density(aes(x = pdsi_annual_5_yrs_prior_sum_yot, color = cd_group_b10_pdsisumn10)) +
+  theme_minimal() +
+  facet_wrap(~nfg_factor)
+ggsave(here(dir_figs, "drought_check_ft.png"))
+
+
+
+ggplot(d_s_fire) +
+  geom_point(aes(x = pdsi_annual_5_yrs_prior_sum_yot, y = biotic_relaxedforestnorm_5_yrs_prior_sum_yot), alpha = 0.2) +
+  geom_smooth(aes(x = pdsi_annual_5_yrs_prior_sum_yot, y = biotic_relaxedforestnorm_5_yrs_prior_sum_yot), method = "lm") +
+  theme_minimal()
+ggsave(here(dir_figs, "biotic_vs_drought.png"))
+
+
+ggplot(d_s_fire |> filter(biotic_relaxedforestnorm_5_yrs_prior_sum_yot >= 5)) +
+  geom_point(aes(x = pdsi_annual_5_yrs_prior_sum_yot, y = biotic_relaxedforestnorm_5_yrs_prior_sum_yot), alpha = 0.2) +
+  geom_smooth(aes(x = pdsi_annual_5_yrs_prior_sum_yot, y = biotic_relaxedforestnorm_5_yrs_prior_sum_yot), method = "lm") +
+  theme_minimal()
+ggsave(here(dir_figs, "biotic_vs_drought_greater_than_5b.png"))
+
+
 
 ```
-      
-
 
 # Extend covariate distributions to add quant
 
@@ -1117,9 +1155,86 @@ readr::write_csv(
   file.path(dir_density_assessment, "density_overlap_metrics_by_ecoregion.csv")
 )
 
+
+
+
+
+
+
+
+
+
+forest_types <- d_s |>
+  dplyr::distinct() |>
+  dplyr::pull(nfg_factor) |>
+  stats::na.omit() |>
+  as.character() |>
+  sort()
+
+purrr::walk(
+  forest_types,
+  function(ft_i) {
+    
+    ft_dir <- file.path(
+      dir_density_assessment,
+      safe_filename(ft_i)
+    )
+    dir_ensure(ft_dir)
+    
+    d_ft <- d_s |>
+      dplyr::filter(nfg_factor == ft_i)
+    
+    density_ft <- plot_density_triplets(
+      df = d_ft,
+      plot_title_prefix = ft_i,
+      min_n_group = 20
+    )
+    
+    save_density_plot_set(
+      plot_list = density_ft$plots,
+      out_dir = ft_dir,
+      prefix = paste0(safe_filename(ft_i), "_")
+    )
+    
+    save_density_metrics_table(
+      metrics_tbl = density_ft$metrics |>
+        dplyr::mutate(nfg_factor = ft_i) |>
+        dplyr::relocate(nfg_factor),
+      out_dir = ft_dir,
+      filename = paste0(safe_filename(ft_i), "_density_overlap_metrics.csv")
+    )
+  }
+)
+
+density_metrics_by_ft <- purrr::map_dfr(
+  forest_types,
+  function(ft_i) {
+    d_s |>
+      dplyr::filter(nfg_factor == ft_i) |>
+      plot_density_triplets(
+        plot_title_prefix = ft_i,
+        min_n_group = 20
+      ) |>
+      purrr::pluck("metrics") |>
+      dplyr::mutate(ft_code_name = ft_i) |>
+      dplyr::relocate(ft_code_name)
+  }
+) |>
+  dplyr::mutate(
+    x_var = factor(x_var, levels = c("aet", "def", "chili", "tpi", "srtm", "gam_rap_tree_pre6_fit"))
+  )
+
+
+
+readr::write_csv(
+  density_metrics_by_ft,
+  file.path(dir_density_assessment, "density_overlap_metrics_by_forest_types.csv")
+)
+
 ```
 
 # assess density overlap metrics
+
 ```{r}
 
 ggplot(data = density_metrics_by_ecoregion) +
@@ -1210,7 +1325,6 @@ cobalt::love.plot(
 dev.off()
 
 ```
-
 
 ```{r}
 
@@ -1788,10 +1902,6 @@ ggplot(dats_quick |> filter(burn_sev != "Negligible")) +
 
 ```
 
-
-
-
-
 # Disturbance over time
 
 ```{r}
@@ -1862,7 +1972,6 @@ ggplot(d_s_f |> filter(!is.na(cd_group_b10_pdsin4t1))) +
 
 ```
 
-
 <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne">
 
 Click to see Session Information
@@ -1870,11 +1979,9 @@ Click to see Session Information
 </button>
 
 :::: {#collapseOne .accordion-collapse .collapse}
-<div>
-
+::: {}
 ```{r sessionInfo}
 sessionInfo()
 ```
-
-</div>
+:::
 ::::

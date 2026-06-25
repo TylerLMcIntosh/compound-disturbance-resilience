@@ -52,7 +52,7 @@ install_load_packages(c(
 remotes::install_github("grf-labs/sufrep")
 library(sufrep)
 
-dir_figs <- here::here('figs')
+dir_figs <- here::here('figs/GEE_resilience_v6_operational_ss500_ts50000/v7/cf')
 dir_derived <- here::here('data', 'derived', "GEE_resilience_v6_operational_ss500_ts50000")
 dir_raw <- here::here('data', 'raw')
 dir_manual <- here::here('data', 'manual')
@@ -76,12 +76,33 @@ dats <- open_dataset(here(dir_derived, "parquet_short_filtered")) |> collect()
 ##############
 ## SET THIS ##
 ##############
-percent_dataset_to_use <- 20 #must be in increments of 5
+
+analysis_portion <- c(16:20)
+analysis_portion <- c(16:18)
+analysis_portion <- c(16:16)
+
+
+
+
+# dats |>
+#   group_by(fire) |>
+#   count()
+# 
+# for(i in unique(dats$analysis_subset)) {
+#   d <- dats |> filter(analysis_subset %in% i)
+#   x <- d |>
+#     group_by(fire) |>
+#     count()
+#   print(glue("i: {i}"))
+#   print(x)
+# }
+
+
 
 
 # Filter dataset
 dats <- dats |>
-  filter(analysis_subset <= percent_dataset_to_use / 5)
+  filter(analysis_subset %in% analysis_portion)
 
 h3_lookup <- dats |>
   dplyr::distinct(h3jsr_5) |>
@@ -90,6 +111,49 @@ h3_lookup <- dats |>
 
 dats <- dats |>
   dplyr::left_join(h3_lookup, by = "h3jsr_5")
+
+
+
+dats |>
+  select(all_of(all_cols)) |>
+  dplyr::summarise(
+    dplyr::across(
+      dplyr::everything(),
+      ~ sum(is.na(.x))
+    )
+  )
+
+
+
+
+cont_covars <- c("aet", "def", "srtm", "tpi", "chili", "raw_avg_rap_tree_6_yr_pre_fire",
+                 "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
+                 "pdsi_annual_year_of", "pdsi_annual_5_yrs_prior_sum_yot", "pdsi_annual_5_yrs_prior_threshold_n3_yot")
+cat_covars <- c("nfg_factor", "mock_burn_year", "ecoregion_code_name")
+outcomes <- c("raw_post_fire_rap_tree_difference_n6_3_yr"#,
+              #"raw_post_fire_rap_tree_difference_n6_15_yr",
+              #"raw_post_fire_rap_tree_increase_3_15_yr"
+              )
+trts <- c("fire")
+cluster <- c("h3_int_id")
+
+
+all_cols <- c(cont_covars, cat_covars, outcomes, trts, cluster)
+
+x <- dats |> filter(fire == 0) |> select(all_of(all_cols), burn_year, mock_burn_year)
+
+dats |>
+  filter(fire == 0) |>
+  select(all_of(all_cols)) |>
+  dplyr::summarise(
+    dplyr::across(
+      dplyr::everything(),
+      ~ sum(is.na(.x))
+    )
+  )
+
+hist(dats |> filter(fire == 0) |> pull(burn_year))
+
 
 ```
 
@@ -147,7 +211,7 @@ outcomes <- c("raw_post_fire_rap_tree_difference_n6_3_yr"#,
               #"raw_post_fire_rap_tree_difference_n6_15_yr",
               #"raw_post_fire_rap_tree_increase_3_15_yr"
               )
-trts <- c("fire", "burn_sev")
+trts <- c("fire")
 cluster <- c("h3_int_id")
 
 
@@ -160,12 +224,12 @@ all_cols <- c(cont_covars, cat_covars, outcomes, trts, cluster)
 dats_ml <- dats |>
   select(all_of(all_cols)) |>
   filter(dplyr::if_all(everything(), ~ !is.na(.x))) |>
-  mutate(
-    across(
-      all_of(cont_covars),
-      \(x) as.numeric(scale(x))
-    )
-  ) |>
+  # mutate(
+  #   across(
+  #     all_of(cont_covars),
+  #     \(x) as.numeric(scale(x))
+  #   )
+  # ) |>
   mutate(
     across(
       all_of(cat_covars),
@@ -192,6 +256,18 @@ enc_xvars <- dats_ml |>
   select(starts_with("ENC")) |>
   names()
 
+
+
+dats |>
+  group_by(fire) |>
+  count()
+
+dats_ml |>
+  group_by(fire) |>
+  count()
+
+
+
 ```
 
 
@@ -217,7 +293,7 @@ The number of random parameter values considered when using the model to select 
 
 
 
-tic() # 4916.09 sec elapsed using full 20% sample
+tic() # 4916.09 sec elapsed using full 20% sample; 146 seconds with 1/20th sample
 cf <- causal_forest(
   X=dats_ml |> select(-all_of(outcomes), -all_of(trts), -all_of(cluster)),
   Y=dats_ml$raw_post_fire_rap_tree_difference_n6_3_yr ,
@@ -274,6 +350,13 @@ imp_p <- ggplot(imp_df, aes(x = importance, y = reorder(variable, importance))) 
   )
 
 imp_p
+
+
+
+
+
+
+
 ```
 
 
@@ -286,6 +369,7 @@ imp_p
 - DEF: low = wet, high = dry
 
 ```{r}
+
 
 
 cf_analysis <- function(dats,
@@ -388,353 +472,280 @@ cf_analysis <- function(dats,
 
 
 
-dir_test <- here(dir_figs, "dir_test_causal_multi")
-dir_ensure(dir_test)
 
 # 
-tic() #takes about 4.25 minutes to run for ID Batholith
-test <- cf_analysis(dats = df_test,
-            yvar = "post_fire_rap_TRE_difference_n2_3_yr",
-            xvars = c("aet", "def", "srtm", "tpi", "chili", "avg_rap_TRE_6_yr_pre_fire",
-                      enc_xvars),
+tic() #takes 219-700 seconds for 5% of data; 1957.14 sec for 15% of data
+test <- cf_analysis(dats = dats_ml,
+            yvar = "raw_post_fire_rap_tree_difference_n6_3_yr",
+            xvars = names(dats_ml |> select(-all_of(outcomes), -all_of(trts), -all_of(cluster))),
             trt = "fire",
-            data_nm = "idBatholith",
-            seed = seed,
-            dir_out = dir_test,
-            tune.parameters = c("all"),
+            data_nm = "test_5perc_non_normalized",
+            dir_out = dir_figs,
+            clusters = dats_ml |> pull(cluster),
+            tune.parameters = c("min.node.size","sample.fraction", "mtry"),
             tune.num.trees = 1000,
             tune.num.reps = 50,
             tune.num.draws = 1000,
-            num.trees = 2000
+            num.trees=2000,
+            seed=seed,
+            equalize.cluster.weights = FALSE
            )
 toc()
 
 
-tic() #takes about 4.25 minutes to run for ID Batholith
-test <- cf_analysis(dats = df_test,
-            yvar = "post_fire_rap_TRE_difference_n2_3_yr",
-            xvars = c("aet", "def", "srtm", "tpi", "chili", "avg_rap_TRE_6_yr_pre_fire",
-                      enc_xvars),
+tic() #takes 219-700 seconds for 5% of data; 1957.14 sec for 15% of data
+test <- cf_analysis(dats = dats_ml,
+            yvar = "raw_post_fire_rap_tree_difference_n6_3_yr",
+            xvars = names(dats_ml |> select(-all_of(outcomes), -all_of(trts), -all_of(cluster))),
             trt = "fire",
-            data_nm = "idBatholith",
-            seed = seed,
-            dir_out = dir_test,
-            tune.parameters = c("all"),
+            data_nm = "test_5perc_non_normalized_no_cluster",
+            dir_out = dir_figs,
+            tune.parameters = c("min.node.size","sample.fraction", "mtry"),
             tune.num.trees = 1000,
             tune.num.reps = 50,
             tune.num.draws = 1000,
-            num.trees = 2000
-           )
-toc()
-
-tic() #takes about 4.25 minutes to run for ID Batholith
-test <- cf_analysis(dats = df_test,
-            yvar = "post_fire_rap_TRE_difference_n2_5_yr",
-            xvars = c("aet", "def", "srtm", "tpi", "chili", "avg_rap_TRE_6_yr_pre_fire",
-                      enc_xvars),
-            trt = "fire",
-            data_nm = "idBatholith",
-            seed = seed,
-            dir_out = dir_test,
-            tune.parameters = c("all"),
-            tune.num.trees = 1000,
-            tune.num.reps = 50,
-            tune.num.draws = 1000,
-            num.trees = 2000
-           )
-toc()
-
-tic() #takes about 4.25 minutes to run for ID Batholith
-test <- cf_analysis(dats = df_test,
-            yvar = "post_fire_rap_TRE_difference_n2_10_yr",
-            xvars = c("aet", "def", "srtm", "tpi", "chili", "avg_rap_TRE_6_yr_pre_fire",
-                      enc_xvars),
-            trt = "fire",
-            data_nm = "idBatholith",
-            seed = seed,
-            dir_out = dir_test,
-            tune.parameters = c("all"),
-            tune.num.trees = 1000,
-            tune.num.reps = 50,
-            tune.num.draws = 1000,
-            num.trees = 2000
-           )
-toc()
-
-tic() #takes about 4.25 minutes to run for ID Batholith
-test <- cf_analysis(dats = df_test,
-            yvar = "post_fire_rap_TRE_difference_n2_15_yr",
-            xvars = c("aet", "def", "srtm", "tpi", "chili", "avg_rap_TRE_6_yr_pre_fire",
-                      enc_xvars),
-            trt = "fire",
-            data_nm = "idBatholith",
-            seed = seed,
-            dir_out = dir_test,
-            tune.parameters = c("all"),
-            tune.num.trees = 1000,
-            tune.num.reps = 50,
-            tune.num.draws = 1000,
-            num.trees = 2000
+            num.trees=2000,
+            seed=seed,
            )
 toc()
 
 
+
+
 # 
 # 
 # 
-# tic() #takes about 1.5 minutes to run
-# test <- cf_analysis(dats = dats |> filter(ecoregion = "IDBatholith"),
-#             yvar = "post_fire_forest_slope_5_10_yrs",
-#             xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
-#            "burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
-#            "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
-#            "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
-#            "avg_forest_2_yr_pre_fire"),
-#             trt = "fire",
-#             data_nm = "idBatholith_post_fire_forest_slope_5_10_yrs",
-#             seed = seed)
-# toc()
 # 
-# tic() 
-# test <- cf_analysis(dats = dats |> filter(ecoregion = "IDBatholith"),
-#             yvar = "post_fire_forest_difference_10_yr",
-#             xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
-#            "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
-#            "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
-#            "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
-#            "avg_forest_2_yr_pre_fire"),
-#             trt = "burn_cbi",
-#             data_nm = "CBITRT_idBatholith_post_fire_forest_difference_10_yr",
-#             seed = seed)
-# toc()
-
-
-
-
-# OUTCOMES OF INTEREST
-outcome_vars <- c("perc_recovery_10yr", "post_fire_forest_slope_2_10_yrs", "post_fire_forest_slope_5_15_yrs", "post_fire_forest_slope_10_15_yrs", "perc_recovery_15yr", "post_fire_forest_slope_5_10_yrs")
-
-# Switch to use pwalk from purrr for ease of switch to parallelized furrr in future
-# Create combinations of ecoregions and outcome variables
-param_grid <- tidyr::expand_grid(
-  eco = ecoregions,
-  var = outcome_vars
-)
-
-# Walk through each combination and call cf_analysis() for side effects
-pwalk(
-  .l = list(eco = param_grid$eco, var = param_grid$var),
-  .f = function(eco, var) {
-    d <- dats |> filter(ecoregion == eco)
-
-    # Binary fire treatment
-    cf_analysis(
-      dats = d,
-      yvar = var,
-      xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
-                "burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
-                "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
-                "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
-                #"pdsi_annual_5_yrs_prior_mean", "pdsi_annual_5_yrs_after_mean",
-                "hd_fingerprint_5_yrs_prior_sum", "hd_fingerprint_5_yrs_after_sum",
-                #"hd_fingerprint_5_yrs_prior_mean", "hd_fingerprint_5_yrs_after_mean",
-                #"avg_forest_2_yr_pre_fire"
-                ),
-      trt = "fire",
-      data_nm = glue("{eco}_{var}_firebinary"),
-      seed = seed
-    )
-    
-    # Continuous CBI treatment
-    cf_analysis(
-      dats = d,
-      yvar = var,
-      xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
-                "burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
-                "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
-                "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
-                #"pdsi_annual_5_yrs_prior_mean", "pdsi_annual_5_yrs_after_mean",
-                "hd_fingerprint_5_yrs_prior_sum", "hd_fingerprint_5_yrs_after_sum",
-                #"hd_fingerprint_5_yrs_prior_mean", "hd_fingerprint_5_yrs_after_mean",
-                "avg_forest_2_yr_pre_fire"),
-      trt = "burn_cbi",
-      data_nm = glue("{eco}_{var}_cbi"),
-      seed = seed
-    )
-  }
-)
-
-# RUN FOR FULL DATASET
-walk(
-  .x = outcome_vars,
-  .f = function(var) {
-    cf_analysis(
-      dats = dats,
-      yvar = var,
-      xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
-                "burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
-                "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
-                "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
-                # "pdsi_annual_5_yrs_prior_mean", "pdsi_annual_5_yrs_after_mean",
-                "hd_fingerprint_5_yrs_prior_sum", "hd_fingerprint_5_yrs_after_sum",
-                # "hd_fingerprint_5_yrs_prior_mean", "hd_fingerprint_5_yrs_after_mean",
-                "avg_forest_2_yr_pre_fire"),
-      trt = "fire",
-      data_nm = glue("ALL_{var}_firebinary"),
-      seed = seed
-    )
-  }
-)
-
-walk(
-  .x = outcome_vars,
-  .f = function(var) {
-    cf_analysis(
-      dats = dats,
-      yvar = var,
-      xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
-                "burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
-                "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
-                "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
-                # "pdsi_annual_5_yrs_prior_mean", "pdsi_annual_5_yrs_after_mean",
-                "hd_fingerprint_5_yrs_prior_sum", "hd_fingerprint_5_yrs_after_sum",
-                # "hd_fingerprint_5_yrs_prior_mean", "hd_fingerprint_5_yrs_after_mean",
-                "avg_forest_2_yr_pre_fire"),
-      trt = "burn_cbi",
-      data_nm = glue("ALL_{var}_cbi"),
-      seed = seed
-    )
-  }
-)
-
-
-
-
-# RUN SIMPLE ANALYSIS
-cf_analysis(
-  dats = dats,
-  yvar = "post_fire_forest_slope_2_10_yrs",
-  xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
-            "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
-            "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
-            "hd_fingerprint_5_yrs_prior_sum", "hd_fingerprint_5_yrs_after_sum",
-            "avg_forest_2_yr_pre_fire"),
-  trt = "fire",
-  data_nm = glue("ALL_simple_post_fire_forest_slope_2_10_yrs_fire"),
-  seed = seed
-)
-
-
-for(burn_l in c("low-moderate-sev", "unburned", "high-sev")) {
-  df <- dats |>
-    filter(burn_sev_tagged == burn_l | burn_sev_tagged == "unburned-mock")
-  
-  cf_analysis(
-    dats = df,
-    yvar = "post_fire_forest_slope_2_10_yrs",
-    xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
-              "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
-              "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
-              "hd_fingerprint_5_yrs_prior_sum", "hd_fingerprint_5_yrs_after_sum",
-              "avg_forest_2_yr_pre_fire"),
-    trt = "fire",
-    data_nm = glue("ALL_simple_{burn_l}_post_fire_forest_slope_2_10_yrs_fire"),
-    seed = seed
-  )
-  
-}
-
-
-
-
-
-
-# yvar = "post_fire_forest_difference_10_yr"
-# xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
-#            "burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
-#            "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
-#            "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum")
-# trt = "fire"
-#   # Filter out rows with NA in the outcome variable
-#   dats_filt <- dats %>%
-#     filter(!is.na(.data[[yvar]]))
 # 
-#   # Select covariates and outcome
-#   covariates <- dats_filt %>%
-#     select(all_of(xvars))
-#   outcome <- dats_filt[[yvar]]
-#   treatment <- dats_filt[[trt]]
 # 
-#   # Fit causal forest
-#   fit <- grf::causal_forest(
-#     X = covariates,
-#     Y = outcome,
-#     W = treatment,
+# 
+# 
+# 
+# 
+# # OUTCOMES OF INTEREST
+# outcome_vars <- c("perc_recovery_10yr", "post_fire_forest_slope_2_10_yrs", "post_fire_forest_slope_5_15_yrs", "post_fire_forest_slope_10_15_yrs", "perc_recovery_15yr", "post_fire_forest_slope_5_10_yrs")
+# 
+# # Switch to use pwalk from purrr for ease of switch to parallelized furrr in future
+# # Create combinations of ecoregions and outcome variables
+# param_grid <- tidyr::expand_grid(
+#   eco = ecoregions,
+#   var = outcome_vars
+# )
+# 
+# # Walk through each combination and call cf_analysis() for side effects
+# pwalk(
+#   .l = list(eco = param_grid$eco, var = param_grid$var),
+#   .f = function(eco, var) {
+#     d <- dats |> filter(ecoregion == eco)
+# 
+#     # Binary fire treatment
+#     cf_analysis(
+#       dats = d,
+#       yvar = var,
+#       xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+#                 "burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
+#                 "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+#                 "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
+#                 #"pdsi_annual_5_yrs_prior_mean", "pdsi_annual_5_yrs_after_mean",
+#                 "hd_fingerprint_5_yrs_prior_sum", "hd_fingerprint_5_yrs_after_sum",
+#                 #"hd_fingerprint_5_yrs_prior_mean", "hd_fingerprint_5_yrs_after_mean",
+#                 #"avg_forest_2_yr_pre_fire"
+#                 ),
+#       trt = "fire",
+#       data_nm = glue("{eco}_{var}_firebinary"),
+#       seed = seed
+#     )
+#     
+#     # Continuous CBI treatment
+#     cf_analysis(
+#       dats = d,
+#       yvar = var,
+#       xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+#                 "burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
+#                 "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+#                 "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
+#                 #"pdsi_annual_5_yrs_prior_mean", "pdsi_annual_5_yrs_after_mean",
+#                 "hd_fingerprint_5_yrs_prior_sum", "hd_fingerprint_5_yrs_after_sum",
+#                 #"hd_fingerprint_5_yrs_prior_mean", "hd_fingerprint_5_yrs_after_mean",
+#                 "avg_forest_2_yr_pre_fire"),
+#       trt = "burn_cbi",
+#       data_nm = glue("{eco}_{var}_cbi"),
+#       seed = seed
+#     )
+#   }
+# )
+# 
+# # RUN FOR FULL DATASET
+# walk(
+#   .x = outcome_vars,
+#   .f = function(var) {
+#     cf_analysis(
+#       dats = dats,
+#       yvar = var,
+#       xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+#                 "burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
+#                 "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+#                 "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
+#                 # "pdsi_annual_5_yrs_prior_mean", "pdsi_annual_5_yrs_after_mean",
+#                 "hd_fingerprint_5_yrs_prior_sum", "hd_fingerprint_5_yrs_after_sum",
+#                 # "hd_fingerprint_5_yrs_prior_mean", "hd_fingerprint_5_yrs_after_mean",
+#                 "avg_forest_2_yr_pre_fire"),
+#       trt = "fire",
+#       data_nm = glue("ALL_{var}_firebinary"),
+#       seed = seed
+#     )
+#   }
+# )
+# 
+# walk(
+#   .x = outcome_vars,
+#   .f = function(var) {
+#     cf_analysis(
+#       dats = dats,
+#       yvar = var,
+#       xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+#                 "burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
+#                 "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+#                 "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
+#                 # "pdsi_annual_5_yrs_prior_mean", "pdsi_annual_5_yrs_after_mean",
+#                 "hd_fingerprint_5_yrs_prior_sum", "hd_fingerprint_5_yrs_after_sum",
+#                 # "hd_fingerprint_5_yrs_prior_mean", "hd_fingerprint_5_yrs_after_mean",
+#                 "avg_forest_2_yr_pre_fire"),
+#       trt = "burn_cbi",
+#       data_nm = glue("ALL_{var}_cbi"),
+#       seed = seed
+#     )
+#   }
+# )
+# 
+# 
+# 
+# 
+# # RUN SIMPLE ANALYSIS
+# cf_analysis(
+#   dats = dats,
+#   yvar = "post_fire_forest_slope_2_10_yrs",
+#   xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+#             "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+#             "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
+#             "hd_fingerprint_5_yrs_prior_sum", "hd_fingerprint_5_yrs_after_sum",
+#             "avg_forest_2_yr_pre_fire"),
+#   trt = "fire",
+#   data_nm = glue("ALL_simple_post_fire_forest_slope_2_10_yrs_fire"),
+#   seed = seed
+# )
+# 
+# 
+# for(burn_l in c("low-moderate-sev", "unburned", "high-sev")) {
+#   df <- dats |>
+#     filter(burn_sev_tagged == burn_l | burn_sev_tagged == "unburned-mock")
+#   
+#   cf_analysis(
+#     dats = df,
+#     yvar = "post_fire_forest_slope_2_10_yrs",
+#     xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+#               "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+#               "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum",
+#               "hd_fingerprint_5_yrs_prior_sum", "hd_fingerprint_5_yrs_after_sum",
+#               "avg_forest_2_yr_pre_fire"),
+#     trt = "fire",
+#     data_nm = glue("ALL_simple_{burn_l}_post_fire_forest_slope_2_10_yrs_fire"),
 #     seed = seed
 #   )
+#   
+# }
 # 
-#   # Variable importance
-#   imp_raw <- sort(setNames(variable_importance(fit), xvars))
-#   imp_normalized <- imp / sum(imp)
 # 
-#   imp_df <- tibble(
-#     variable = names(imp_normalized),
-#     importance = as.numeric(imp_normalized)
-#   ) %>%
-#     arrange(importance)  # So the smallest is at the bottom of the horizontal bar plot
 # 
-#   imp_p <- ggplot(imp_df, aes(x = importance, y = reorder(variable, importance))) +
-#     geom_col(fill = "orange") +
-#     labs(
-#       x = "Variable Importance",
-#       y = NULL,
-#       title = "Causal Forest Variable Importance",
-#       subtitle = "test"
-#     ) +
-#     theme_minimal(base_size = 13) +
-#     theme(
-#       axis.text.y = element_text(hjust = 1),
-#       plot.margin = margin(10, 20, 5, 5)
-#     )
-#   imp_p
-#   ggsave(plot = imp_p,
-#          filename = here(dir_figs, paste0("var_importance_", data_nm, ".png")),
-#          bg = "white")
 # 
-#   pred_fun <- function(object, newdata, ...) {
-#     predict(object, newdata, ...)$predictions
-#   }
 # 
-#   xvars_sorted <- rev(names(imp))
 # 
-#   pdps <- lapply(xvars_sorted, function(v) {
-#     pd <- partial_dep(fit, v, X = covariates, pred_fun = pred_fun)
-#     plot(pd) +
-#       theme(axis.title.y = element_blank())
-#   })
-# 
-#   #For adding y axis label to overall plot
-#   ylab_plot <- ggplot() +
-#     theme_void() +
-#     annotate("text", x = 0, y = 0.5, label = "Treatment effect", angle = 90, hjust = 0.5, size = 4)
-# 
-#   pdps_p <- wrap_plots(pdps, guides = "collect", ncol = 3) #&
-#     #ylab("Treatment effect")
-# 
-#   # Add format & add titles
-#   pdps_p <- ylab_plot + pdps_p +
-#     plot_layout(widths = c(0.05, 1)) +
-#     plot_annotation(
-#       title = "Partial Dependence Plots",
-#       subtitle = data_nm,
-#       caption = "NOTES:\nNegative values mean a stronger (positive) treatment effect (i.e. fire is causing a greater difference in forest cover change)\nPDPs are in order of variable importance")
-# 
-#   ggsave(filename = here(dir_figs, paste0("partial_dependence_", data_nm, ".png")),
-#          plot = pdps_p,
-#          units = 'px',
-#          width = 2000,
-#          height = 2000)
-# 
+# # yvar = "post_fire_forest_difference_10_yr"
+# # xvars = c("aet", "def", "frg_reclass", "srtm", "tpi", "chili",
+# #            "burn_cbi", "burn_cbi_1kmmwmedian", "burn_cbi_1kmmwstd", "mock_burn_year",
+# #            "biotic_5_yrs_prior_sum", "biotic_5_yrs_after_sum",
+# #            "pdsi_annual_5_yrs_prior_sum", "pdsi_annual_5_yrs_after_sum")
+# # trt = "fire"
+# #   # Filter out rows with NA in the outcome variable
+# #   dats_filt <- dats %>%
+# #     filter(!is.na(.data[[yvar]]))
+# # 
+# #   # Select covariates and outcome
+# #   covariates <- dats_filt %>%
+# #     select(all_of(xvars))
+# #   outcome <- dats_filt[[yvar]]
+# #   treatment <- dats_filt[[trt]]
+# # 
+# #   # Fit causal forest
+# #   fit <- grf::causal_forest(
+# #     X = covariates,
+# #     Y = outcome,
+# #     W = treatment,
+# #     seed = seed
+# #   )
+# # 
+# #   # Variable importance
+# #   imp_raw <- sort(setNames(variable_importance(fit), xvars))
+# #   imp_normalized <- imp / sum(imp)
+# # 
+# #   imp_df <- tibble(
+# #     variable = names(imp_normalized),
+# #     importance = as.numeric(imp_normalized)
+# #   ) %>%
+# #     arrange(importance)  # So the smallest is at the bottom of the horizontal bar plot
+# # 
+# #   imp_p <- ggplot(imp_df, aes(x = importance, y = reorder(variable, importance))) +
+# #     geom_col(fill = "orange") +
+# #     labs(
+# #       x = "Variable Importance",
+# #       y = NULL,
+# #       title = "Causal Forest Variable Importance",
+# #       subtitle = "test"
+# #     ) +
+# #     theme_minimal(base_size = 13) +
+# #     theme(
+# #       axis.text.y = element_text(hjust = 1),
+# #       plot.margin = margin(10, 20, 5, 5)
+# #     )
+# #   imp_p
+# #   ggsave(plot = imp_p,
+# #          filename = here(dir_figs, paste0("var_importance_", data_nm, ".png")),
+# #          bg = "white")
+# # 
+# #   pred_fun <- function(object, newdata, ...) {
+# #     predict(object, newdata, ...)$predictions
+# #   }
+# # 
+# #   xvars_sorted <- rev(names(imp))
+# # 
+# #   pdps <- lapply(xvars_sorted, function(v) {
+# #     pd <- partial_dep(fit, v, X = covariates, pred_fun = pred_fun)
+# #     plot(pd) +
+# #       theme(axis.title.y = element_blank())
+# #   })
+# # 
+# #   #For adding y axis label to overall plot
+# #   ylab_plot <- ggplot() +
+# #     theme_void() +
+# #     annotate("text", x = 0, y = 0.5, label = "Treatment effect", angle = 90, hjust = 0.5, size = 4)
+# # 
+# #   pdps_p <- wrap_plots(pdps, guides = "collect", ncol = 3) #&
+# #     #ylab("Treatment effect")
+# # 
+# #   # Add format & add titles
+# #   pdps_p <- ylab_plot + pdps_p +
+# #     plot_layout(widths = c(0.05, 1)) +
+# #     plot_annotation(
+# #       title = "Partial Dependence Plots",
+# #       subtitle = data_nm,
+# #       caption = "NOTES:\nNegative values mean a stronger (positive) treatment effect (i.e. fire is causing a greater difference in forest cover change)\nPDPs are in order of variable importance")
+# # 
+# #   ggsave(filename = here(dir_figs, paste0("partial_dependence_", data_nm, ".png")),
+# #          plot = pdps_p,
+# #          units = 'px',
+# #          width = 2000,
+# #          height = 2000)
+# # 
 
 ```
 
