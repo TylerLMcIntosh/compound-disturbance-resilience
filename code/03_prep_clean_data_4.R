@@ -282,7 +282,10 @@ dir_ensure(c(
 
 
 
-future::plan(future::multisession, workers = max(1L, parallel::detectCores() / 2))
+#future::plan(future::multisession, workers = max(1L, parallel::detectCores() / 2))
+workers = max(1L, parallel::detectCores() - 2L)
+future::plan(future::multisession, workers = workers)
+
 
 opts <- furrr::furrr_options(
   seed = TRUE,
@@ -303,7 +306,7 @@ opts <- furrr::furrr_options(
   )
 )
 
-
+tic(glue("running in parallel with {workers} cores"))
 dats_by_l3 <- furrr::future_map(
   forested_ecoregions$code_name,
   process_ecoregion,
@@ -313,7 +316,7 @@ dats_by_l3 <- furrr::future_map(
   clean_prep_path = here::here("code", "clean_prep_functions_v4.R"),
   .options = opts
 )
-
+toc()
 
 # tic()
 # dats_by_l3 <- purrr::map(
