@@ -306,7 +306,9 @@ opts <- furrr::furrr_options(
   )
 )
 
-tic(glue("running in parallel with {workers} cores"))
+print(glue("running in parallel with {workers} cores"))
+
+tic(glue("full run in parallel with {workers} cores"))
 dats_by_l3 <- furrr::future_map(
   forested_ecoregions$code_name,
   process_ecoregion,
