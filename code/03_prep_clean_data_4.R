@@ -41,8 +41,7 @@ dir_derived <- here::here('data', 'derived', gdrive_folder)
 dir_raw <- here::here('data', 'raw')
 dir_manual <- here::here('data', 'manual')
 
-dir_ensure(c(dir_figs,
-             dir_derived,
+dir_ensure(c(dir_derived,
              dir_manual,
              dir_raw))
 
