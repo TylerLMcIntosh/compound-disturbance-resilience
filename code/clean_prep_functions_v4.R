@@ -166,6 +166,59 @@ basic_prep_fire <- function(dats) {
   }
 }
 
+compute_rolling_sum <- function(df, column_pattern, window_length) {
+  matched_cols <- grep(column_pattern, names(df), value = TRUE)
+  if (length(matched_cols) == 0) return(df)
+  
+  base_name <- sub("^(.*?)_\\d{4}$", "\\1", matched_cols[1])
+  col_years <- as.integer(sub(".*_(\\d{4})$", "\\1", matched_cols))
+  
+  # sort ascending so windows are chronologically correct
+  ord         <- order(col_years)
+  col_years   <- col_years[ord]
+  matched_cols <- matched_cols[ord]
+  
+  # helper: extract columns as matrix, handles data.table and data.frame
+  cols_to_mat <- function(cols) {
+    if (data.table::is.data.table(df)) {
+      as.matrix(df[, cols, with = FALSE])
+    } else {
+      as.matrix(df[, cols, drop = FALSE])
+    }
+  }
+  
+  new_col_names <- character(0)
+  
+  # slide the window across all valid end-year positions
+  for (j in window_length:length(col_years)) {
+    win_cols  <- matched_cols[(j - window_length + 1):j]
+    end_year  <- col_years[j]
+    new_col   <- paste0(base_name, "_rollsum", window_length, "_", end_year)
+    new_col_names <- c(new_col_names, new_col)
+    
+    win_mat   <- cols_to_mat(win_cols)
+    row_sums  <- rowSums(win_mat, na.rm = TRUE)
+    row_sums[rowSums(is.na(win_mat)) > 0] <- NA_real_
+    
+    df[[new_col]] <- row_sums
+  }
+  
+  # row-wise max across the newly created rollsum columns
+  max_col <- paste0(base_name, "_rollsum", window_length, "max")
+  if (length(new_col_names) > 0) {
+    max_mat       <- cols_to_mat(new_col_names)
+    all_na        <- rowSums(!is.na(max_mat)) == 0
+    row_maxes     <- suppressWarnings(apply(max_mat, 1, max, na.rm = TRUE))
+    row_maxes[all_na] <- NA_real_
+    df[[max_col]] <- row_maxes
+  } else {
+    df[[max_col]] <- NA_real_
+  }
+  
+  df
+}
+
+
 transform_annual_to_window <- function(
     df,
     column_pattern,
@@ -517,6 +570,30 @@ biotic_drought_process <- function(dats) {
                                     threshold      = ">=6",
                                     threshold_nm   = "6")
   
+  # rolling sums
+  dats <- compute_rolling_sum(
+    df = dats,
+    column_pattern = "^biotic_relaxedforestnorm_\\d{4}$",
+    window_length = 6
+  )
+  
+  dats <- compute_rolling_sum(
+    df = dats,
+    column_pattern = "^biotic_relaxedforestnorm_\\d{4}$",
+    window_length = 3
+  )
+  
+  dats <- compute_rolling_sum(
+    df = dats,
+    column_pattern = "^pdsi_annual_\\d{4}$",
+    window_length = 6
+  )
+  
+  dats <- compute_rolling_sum(
+    df = dats,
+    column_pattern = "^pdsi_annual_\\d{4}$",
+    window_length = 3
+  )
   
   
   dats <- dats |>
@@ -531,7 +608,6 @@ biotic_drought_process <- function(dats) {
 
 
 # PROCESS GAMS
-
 compute_gam_stats <- function(
     df,
     column_prefix,
@@ -577,26 +653,18 @@ compute_gam_stats <- function(
   
   # fitted values at fixed post-disturbance horizons
   nm_fit_ref_p3  <- paste0("gam_", prefix_tag, "_fit_ref_p3")
+  nm_fit_ref_p5  <- paste0("gam_", prefix_tag, "_fit_ref_p5")
   nm_fit_ref_p10 <- paste0("gam_", prefix_tag, "_fit_ref_p10")
   nm_fit_ref_p15 <- paste0("gam_", prefix_tag, "_fit_ref_p15")
   nm_fit_ref_p20 <- paste0("gam_", prefix_tag, "_fit_ref_p20")
   
-  # min-based diffs (name unchanged per spec)
-  nm_diff_post_min_to_p10 <- paste0("gam_", prefix_tag, "_diff_post_min_to_p10")
-  nm_diff_post_min_to_p15 <- paste0("gam_", prefix_tag, "_diff_post_min_to_p15")
-  nm_diff_post_min_to_p20 <- paste0("gam_", prefix_tag, "_diff_post_min_to_p20")
-  
-  # min-based slopes (renamed from slope_post_min_to_*)
-  nm_min_slope_to_p10 <- paste0("gam_", prefix_tag, "_min_slope_to_p10")
-  nm_min_slope_to_p15 <- paste0("gam_", prefix_tag, "_min_slope_to_p15")
-  nm_min_slope_to_p20 <- paste0("gam_", prefix_tag, "_min_slope_to_p20")
+  # pre -> fixed horizon diffs
+  nm_diff_pre_to_p5  <- paste0("gam_", prefix_tag, "_diff_", baseline_tag, "_to_p5")
+  nm_diff_pre_to_p10 <- paste0("gam_", prefix_tag, "_diff_", baseline_tag, "_to_p10")
+  nm_diff_pre_to_p15 <- paste0("gam_", prefix_tag, "_diff_", baseline_tag, "_to_p15")
+  nm_diff_pre_to_p20 <- paste0("gam_", prefix_tag, "_diff_", baseline_tag, "_to_p20")
   
   nm_min_at_end <- paste0("gam_", prefix_tag, "_min_at_end")
-  
-  # min-based % recovery (renamed from perc_recov_*)
-  nm_min_perc_recov_p10 <- paste0("gam_", prefix_tag, "_min_perc_recov_p10")
-  nm_min_perc_recov_p15 <- paste0("gam_", prefix_tag, "_min_perc_recov_p15")
-  nm_min_perc_recov_p20 <- paste0("gam_", prefix_tag, "_min_perc_recov_p20")
   
   # p3-based metrics (baseline -> p3, then p3 -> later horizons)
   nm_diff_pre_to_p3      <- paste0("gam_", prefix_tag, "_diff_", baseline_tag, "_to_p3")
@@ -613,10 +681,8 @@ compute_gam_stats <- function(
   metric_names_num <- c(
     nm_pre_fit,
     nm_post_min, nm_post_min_year, nm_yrs_ref_to_post_min, nm_diff_pre_to_post_min,
-    nm_fit_ref_p3, nm_fit_ref_p10, nm_fit_ref_p15, nm_fit_ref_p20,
-    nm_diff_post_min_to_p10, nm_diff_post_min_to_p15, nm_diff_post_min_to_p20,
-    nm_min_slope_to_p10, nm_min_slope_to_p15, nm_min_slope_to_p20,
-    nm_min_perc_recov_p10, nm_min_perc_recov_p15, nm_min_perc_recov_p20,
+    nm_fit_ref_p3, nm_fit_ref_p5, nm_fit_ref_p10, nm_fit_ref_p15, nm_fit_ref_p20,
+    nm_diff_pre_to_p5, nm_diff_pre_to_p10, nm_diff_pre_to_p15, nm_diff_pre_to_p20,
     nm_diff_pre_to_p3,
     nm_diff_p3_to_p10, nm_diff_p3_to_p15, nm_diff_p3_to_p20,
     nm_p3_slope_to_p10, nm_p3_slope_to_p15, nm_p3_slope_to_p20,
@@ -646,8 +712,8 @@ compute_gam_stats <- function(
   # ---- melt to long ----
   long_dt <- data.table::melt(
     dt,
-    id.vars      = c("id__temp", reference_time_col),
-    measure.vars = ts_cols,
+    id.vars       = c("id__temp", reference_time_col),
+    measure.vars  = ts_cols,
     variable.name = "year_col",
     value.name    = "value"
   )
@@ -666,11 +732,11 @@ compute_gam_stats <- function(
   
   # ---- debug counters ----
   dbg <- new.env(parent = emptyenv())
-  dbg$fail_bad_ref   <- 0L
-  dbg$fail_min_n     <- 0L
-  dbg$fail_years_lt3 <- 0L
-  dbg$fail_gam       <- 0L
-  dbg$ok             <- 0L
+  dbg$fail_bad_ref    <- 0L
+  dbg$fail_min_n      <- 0L
+  dbg$fail_years_lt3  <- 0L
+  dbg$fail_gam        <- 0L
+  dbg$ok              <- 0L
   dbg$first_gam_error <- NULL
   
   # ---- NA row helper ----
@@ -735,15 +801,15 @@ compute_gam_stats <- function(
     pre_fit <- safe_pred(g, baseline_t, t_min, t_max)
     
     # ---- post-disturbance minimum ----
-    t_cap    <- if (is.finite(post_min_search_max_year)) post_min_search_max_year - ref else Inf
-    post_ts  <- t_obs[t_obs > 0 & t_obs <= t_cap]
+    t_cap   <- if (is.finite(post_min_search_max_year)) post_min_search_max_year - ref else Inf
+    post_ts <- t_obs[t_obs > 0 & t_obs <= t_cap]
     
     post_min_val <- NA_real_
     post_min_t   <- NA_real_
     
     if (length(post_ts) > 0) {
-      post_fits  <- as.numeric(stats::predict(g, newdata = data.frame(t = post_ts), type = "response"))
-      i_min      <- which.min(post_fits)
+      post_fits    <- as.numeric(stats::predict(g, newdata = data.frame(t = post_ts), type = "response"))
+      i_min        <- which.min(post_fits)
       post_min_val <- post_fits[i_min]
       post_min_t   <- post_ts[i_min]
     }
@@ -754,43 +820,27 @@ compute_gam_stats <- function(
     
     # ---- fits at fixed horizons ----
     t_p3  <- 3L
+    t_p5  <- 5L
     t_p10 <- 10L
     t_p15 <- 15L
     t_p20 <- 20L
     
     fit_p3  <- safe_pred(g, t_p3,  t_min, t_max)
+    fit_p5  <- safe_pred(g, t_p5,  t_min, t_max)
     fit_p10 <- safe_pred(g, t_p10, t_min, t_max)
     fit_p15 <- safe_pred(g, t_p15, t_min, t_max)
     fit_p20 <- safe_pred(g, t_p20, t_min, t_max)
     
-    # ---- min-based diffs ----
-    diff_min_to_p10 <- if (!is.na(post_min_val) && !is.na(fit_p10)) fit_p10 - post_min_val else NA_real_
-    diff_min_to_p15 <- if (!is.na(post_min_val) && !is.na(fit_p15)) fit_p15 - post_min_val else NA_real_
-    diff_min_to_p20 <- if (!is.na(post_min_val) && !is.na(fit_p20)) fit_p20 - post_min_val else NA_real_
-    
-    # ---- min-based slopes ----
-    min_slope_to_p10 <- if (!is.na(post_min_t) && !is.na(fit_p10) && t_p10 != post_min_t) {
-      (fit_p10 - post_min_val) / (t_p10 - post_min_t)
-    } else NA_real_
-    
-    min_slope_to_p15 <- if (!is.na(post_min_t) && !is.na(fit_p15) && t_p15 != post_min_t) {
-      (fit_p15 - post_min_val) / (t_p15 - post_min_t)
-    } else NA_real_
-    
-    min_slope_to_p20 <- if (!is.na(post_min_t) && !is.na(fit_p20) && t_p20 != post_min_t) {
-      (fit_p20 - post_min_val) / (t_p20 - post_min_t)
-    } else NA_real_
+    # ---- pre -> fixed horizon diffs ----
+    diff_pre_to_p5  <- if (!is.na(pre_fit) && !is.na(fit_p5))  fit_p5  - pre_fit else NA_real_
+    diff_pre_to_p10 <- if (!is.na(pre_fit) && !is.na(fit_p10)) fit_p10 - pre_fit else NA_real_
+    diff_pre_to_p15 <- if (!is.na(pre_fit) && !is.na(fit_p15)) fit_p15 - pre_fit else NA_real_
+    diff_pre_to_p20 <- if (!is.na(pre_fit) && !is.na(fit_p20)) fit_p20 - pre_fit else NA_real_
     
     # ---- min_at_end flag ----
     min_at_end <- if (!is.na(post_min_t) && length(post_ts) > 0) {
       isTRUE(post_min_t == max(post_ts))
     } else NA
-    
-    # ---- min-based % recovery (denom = pre->min drop) ----
-    denom_min <- abs(diff_pre_to_min)
-    min_perc_recov_p10 <- if (!is.na(diff_min_to_p10) && !is.na(denom_min) && denom_min > 0) (diff_min_to_p10 / denom_min) * 100 else NA_real_
-    min_perc_recov_p15 <- if (!is.na(diff_min_to_p15) && !is.na(denom_min) && denom_min > 0) (diff_min_to_p15 / denom_min) * 100 else NA_real_
-    min_perc_recov_p20 <- if (!is.na(diff_min_to_p20) && !is.na(denom_min) && denom_min > 0) (diff_min_to_p20 / denom_min) * 100 else NA_real_
     
     # ---- p3-based metrics ----
     diff_pre_to_p3 <- if (!is.na(pre_fit) && !is.na(fit_p3)) fit_p3 - pre_fit else NA_real_
@@ -828,19 +878,15 @@ compute_gam_stats <- function(
       yrs_ref_to_min   = yrs_ref_to_min,
       diff_pre_to_min  = diff_pre_to_min,
       fit_p3           = fit_p3,
+      fit_p5           = fit_p5,
       fit_p10          = fit_p10,
       fit_p15          = fit_p15,
       fit_p20          = fit_p20,
-      diff_min_to_p10  = diff_min_to_p10,
-      diff_min_to_p15  = diff_min_to_p15,
-      diff_min_to_p20  = diff_min_to_p20,
-      min_slope_to_p10 = min_slope_to_p10,
-      min_slope_to_p15 = min_slope_to_p15,
-      min_slope_to_p20 = min_slope_to_p20,
+      diff_pre_to_p5   = diff_pre_to_p5,
+      diff_pre_to_p10  = diff_pre_to_p10,
+      diff_pre_to_p15  = diff_pre_to_p15,
+      diff_pre_to_p20  = diff_pre_to_p20,
       min_at_end       = min_at_end,
-      min_perc_recov_p10 = min_perc_recov_p10,
-      min_perc_recov_p15 = min_perc_recov_p15,
-      min_perc_recov_p20 = min_perc_recov_p20,
       diff_pre_to_p3   = diff_pre_to_p3,
       diff_p3_to_p10   = diff_p3_to_p10,
       diff_p3_to_p15   = diff_p3_to_p15,
@@ -862,19 +908,15 @@ compute_gam_stats <- function(
         "yrs_ref_to_min",
         "diff_pre_to_min",
         "fit_p3",
+        "fit_p5",
         "fit_p10",
         "fit_p15",
         "fit_p20",
-        "diff_min_to_p10",
-        "diff_min_to_p15",
-        "diff_min_to_p20",
-        "min_slope_to_p10",
-        "min_slope_to_p15",
-        "min_slope_to_p20",
+        "diff_pre_to_p5",
+        "diff_pre_to_p10",
+        "diff_pre_to_p15",
+        "diff_pre_to_p20",
         "min_at_end",
-        "min_perc_recov_p10",
-        "min_perc_recov_p15",
-        "min_perc_recov_p20",
         "diff_pre_to_p3",
         "diff_p3_to_p10",
         "diff_p3_to_p15",
@@ -893,19 +935,15 @@ compute_gam_stats <- function(
         nm_yrs_ref_to_post_min,
         nm_diff_pre_to_post_min,
         nm_fit_ref_p3,
+        nm_fit_ref_p5,
         nm_fit_ref_p10,
         nm_fit_ref_p15,
         nm_fit_ref_p20,
-        nm_diff_post_min_to_p10,
-        nm_diff_post_min_to_p15,
-        nm_diff_post_min_to_p20,
-        nm_min_slope_to_p10,
-        nm_min_slope_to_p15,
-        nm_min_slope_to_p20,
+        nm_diff_pre_to_p5,
+        nm_diff_pre_to_p10,
+        nm_diff_pre_to_p15,
+        nm_diff_pre_to_p20,
         nm_min_at_end,
-        nm_min_perc_recov_p10,
-        nm_min_perc_recov_p15,
-        nm_min_perc_recov_p20,
         nm_diff_pre_to_p3,
         nm_diff_p3_to_p10,
         nm_diff_p3_to_p15,
@@ -969,6 +1007,7 @@ compute_gam_stats <- function(
   
   tibble::as_tibble(out)
 }
+
 
 
 compute_forest_response_offset <- function(dt, offsets, new_col_name, prefix = "rap_TRE_") {

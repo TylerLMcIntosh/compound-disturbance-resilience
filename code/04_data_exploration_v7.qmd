@@ -143,7 +143,7 @@ calc_twentciles <- function(df, var) {
 }
 
 
-
+# deciles
 raw_f_deciles_bio <- calc_deciles(d_s_fire, "biotic_relaxedforestnorm_sum_n5_to_p0")
 raw_nf_deciles_bio <- calc_deciles(d_s_nfire, "biotic_relaxedforestnorm_sum_n5_to_p0")
 
@@ -159,6 +159,13 @@ raw_nf_twentciles_dr <- calc_twentciles(d_s_nfire, "pdsi_annual_sum_n5_to_p0")
 
 
 
+# deciles for other versions of the cut
+raw_f_deciles_biomax <- calc_deciles(d_s_fire, "biotic_6roll_max")
+raw_nf_deciles_biomax <- calc_deciles(d_s_nfire, "biotic_6roll_max")
+
+
+
+# figs
 bio_frac <- d_s_fire |>
    group_by(bnonzero) |>
    count() |>
@@ -426,6 +433,11 @@ cd_counts_80 <- d_s_fire |>
 
 
 
+
+ggplot(d_s_fire |> filter(cd_group_b90_pdsin90 == "bf")) +
+  geom_density(aes(x = biotic_relaxedforestnorm_sum_p1_to_p6)) +
+  scale_x_log10()
+
 ```
 
 # assess sample size and NON-fire impacted sample size
@@ -434,6 +446,13 @@ cd_counts_80 <- d_s_fire |>
 
 b <- d_s_nfire |>
   filter(biotic_relaxedforestnorm_sum_n5_to_p0 > 9.7 & pdsi_annual_sum_n5_to_p0 > -11.8)
+
+bpost_log <- ggplot(b) +
+  geom_density(aes(x = biotic_relaxedforestnorm_sum_p1_to_p6)) +
+  scale_x_log10()
+bpost <- ggplot(b) +
+  geom_density(aes(x = biotic_relaxedforestnorm_sum_p1_to_p6))
+bpost + bpost_log
 
 ball <- d_s_nfire |>
   filter(biotic_6roll_max > 9.7)

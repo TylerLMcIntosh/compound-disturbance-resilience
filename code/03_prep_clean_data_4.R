@@ -215,7 +215,7 @@ process_ecoregion <- function(l3, parquet_path, out_dir, utils_path, clean_prep_
                                             "^pdsi_annual_\\d{4}$",
                                             "^hd_fingerprint_\\d{4}$",
                                             "^biotic_relaxedforestnorm\\d{4}$",
-                                            "^biotic6roll_relaxedforestnorm_",
+          #                                  "^biotic6roll_relaxedforestnorm_",
                                             "rap_tree",
                                             "vcf_tree"))   
   
