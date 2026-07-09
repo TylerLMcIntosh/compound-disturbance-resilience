@@ -1,6 +1,6 @@
 
 
-# 5.6 hours in series locally
+# 5.6 hours in series locally; much faster on Exosphere :) 
 
 
 rm(list = ls())
@@ -37,7 +37,6 @@ install_load_packages(c(
 set.seed(1234)
 gdrive_folder <- "GEE_resilience_v6_operational_ss500_ts50000"
 
-dir_figs <- here::here('figs')
 dir_derived <- here::here('data', 'derived', gdrive_folder)
 dir_raw <- here::here('data', 'raw')
 dir_manual <- here::here('data', 'manual')
@@ -409,8 +408,6 @@ pwalk(
     arrow::write_parquet(short_dat, sf)
   }
 )
-
-
 
 
 

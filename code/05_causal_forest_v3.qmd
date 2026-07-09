@@ -1,0 +1,491 @@
+---
+title: "04_causal_forest"
+author: Tyler L. McIntosh
+date: last-modified
+format:
+  html:
+    embed-resources: true
+    html-math-method: katex
+    css: styles.css
+    toc: true
+    toc-depth: 1
+    toc-title: Contents
+    toc-location: right
+    code-fold: true
+    code-summary: "Show the code"
+---
+
+# Setup for analysis
+
+``` {r setupchunk}
+#| echo: true
+#| message: false
+#| warning: false
+#| results: 'hide'
+
+rm(list = ls())
+
+if(!requireNamespace("here", quietly = TRUE)) {
+  install.packages("here")
+}
+library(here)
+
+source(here::here("utils", "functions.R"))
+# 
+# install_load_packages(c(
+#   "devtools",
+#   "tidyverse",
+#   "tictoc",
+#   "grf",
+#   "kernelshap",
+#   "hstats",
+#   "glue",
+#   "shapviz",
+#   "patchwork",
+#   "cobalt",
+#   "purrr",
+#   "corrplot",
+#   "gridExtra",
+#   "arrow",
+#   "tictoc"))
+# 
+# remotes::install_github("grf-labs/sufrep")
+# 
+# install.packages("grf")
+# install.packages("hstats")
+
+library(tidyverse)
+library(tictoc)
+library(grf)
+library(kernelshap)
+library(hstats)
+library(glue)
+library(shapviz)
+library(patchwork)
+library(cobalt)
+library(purrr)
+library(corrplot)
+library(gridExtra)
+library(arrow)
+library(tictoc)
+
+
+library(sufrep)
+
+dir_figs <- here::here('figs/GEE_resilience_v6_operational_ss500_ts50000/v7/cf')
+dir_derived <- here::here('data', 'derived', "GEE_resilience_v6_operational_ss500_ts50000")
+dir_raw <- here::here('data', 'raw')
+dir_manual <- here::here('data', 'manual')
+dir_ensure(c(dir_figs,
+             dir_derived,
+             dir_manual,
+             dir_raw))
+
+seed = 1234
+set.seed(seed)
+
+source(here::here('code', 'cf_functions_v2.R'))
+
+```
+# Load dats
+
+```{r}
+
+#Short dats
+dats <- arrow::open_dataset(here(dir_derived, "parquet_short")) |>
+  dplyr::collect()
+
+dats <- dats |>
+  filter(nfg_10k)
+
+##############
+## SET THIS ##
+##############
+
+
+run_cf_analysis <- function(dats,
+                            analysis_portion,
+                            run_nm,
+                            cont_covars,
+                            cat_covars,
+                            outcome,
+                            trt,
+                            cluster = NULL,
+                            ...) {
+  
+  # Filter dataset
+  dats <- dats |>
+  filter(analysis_subset %in% analysis_portion)
+
+  h3_lookup <- dats |>
+    dplyr::distinct(h3jsr_5) |>
+    dplyr::arrange(h3jsr_5) |>
+    dplyr::mutate(h3_int_id = dplyr::row_number())
+  
+  dats <- dats |>
+    dplyr::left_join(h3_lookup, by = "h3jsr_5")
+  
+  # prep ML data
+  ml_ready <- create_ml_data(dats, scale = FALSE,
+                           cont_covars, cat_covars, outcome, trt, cluster)
+  
+  dats_ml <- ml_ready$dats_ml
+
+  if(!is.null(cluster)) {
+      results <- cf_analysis(dats = dats_ml,
+              yvar = outcome[1],
+              xvars = names(dats_ml |> select(-all_of(outcome), -all_of(trt), -all_of(cluster))),
+              trt = trt[1],
+              data_nm = run_nm,
+              dir_out = dir_figs,
+              clusters = dats_ml |> pull(cluster),
+              ...
+             )
+  } else {
+      results <- cf_analysis(dats = dats_ml,
+              yvar = outcome[1],
+              xvars = names(dats_ml |> select(-all_of(outcome), -all_of(trt), -all_of(cluster))),
+              trt = trt[1],
+              data_nm = run_nm,
+              dir_out = dir_figs,
+              ...
+             )
+  }
+  
+  return(results)
+}
+
+
+```
+
+
+```{r}
+
+# short time frame
+
+time_agg <- run_cf_analysis(
+  dats = dats,
+  analysis_portion = c(16:20),
+  run_nm = "20perc_cluster_timeagg_earlydiff",
+  cont_covars = c("aet", "def", "srtm", "tpi", "chili", "gam_rap_tree_pre6_fit",
+                 "biotic_relaxedforestnorm_sum_n5_to_p0",
+                  "pdsi_annual_sum_n5_to_p0"),
+  cat_covars = c("nfg_factor", "mock_burn_year", "ecoregion_code_name"),
+  outcome = c("gam_rap_tree_diff_pre6_to_p3"),
+  trt = c("fire"),
+  cluster = c("h3_int_id"),
+  tune.parameters = c("min.node.size","sample.fraction", "mtry"),
+  tune.num.trees = 1000,
+  tune.num.reps = 50,
+  tune.num.draws = 1000,
+  num.trees=2000,
+  seed=seed,
+  equalize.cluster.weights = FALSE,
+  num.threads = 30
+)
+
+
+time_split <- run_cf_analysis(
+  dats = dats,
+  analysis_portion = c(16:20),
+  run_nm = "20perc_cluster_timesplit_earlydiff",
+  cont_covars = c("aet", "def", "srtm", "tpi", "chili", "gam_rap_tree_pre6_fit",
+                 "biotic_relaxedforestnorm_sum_n2_to_p0",
+                 "biotic_relaxedforestnorm_sum_n5_to_n3",
+                  "pdsi_annual_sum_n5_to_n3",
+                 "pdsi_annual_sum_n2_to_p0"),
+  cat_covars = c("nfg_factor", "mock_burn_year", "ecoregion_code_name"),
+  outcome = c("gam_rap_tree_diff_pre6_to_p3"),
+  trt = c("fire"),
+  cluster = c("h3_int_id"),
+  tune.parameters = c("min.node.size","sample.fraction", "mtry"),
+  tune.num.trees = 1000,
+  tune.num.reps = 50,
+  tune.num.draws = 1000,
+  num.trees=2000,
+  seed=seed,
+  equalize.cluster.weights = FALSE,
+  num.threads = 30
+)
+
+
+
+
+# long time frame
+
+time_agg_late <- run_cf_analysis(
+  dats = dats,
+  analysis_portion = c(16:20),
+  run_nm = "20perc_cluster_timeagg_latediff",
+  cont_covars = c("aet", "def", "srtm", "tpi", "chili", "gam_rap_tree_pre6_fit",
+                 "biotic_relaxedforestnorm_sum_n5_to_p0",
+                  "pdsi_annual_sum_n5_to_p0"),
+  cat_covars = c("nfg_factor", "mock_burn_year", "ecoregion_code_name"),
+  outcome = c("gam_rap_tree_diff_p3_to_p15"),
+  trt = c("fire"),
+  cluster = c("h3_int_id"),
+  tune.parameters = c("min.node.size","sample.fraction", "mtry"),
+  tune.num.trees = 1000,
+  tune.num.reps = 50,
+  tune.num.draws = 1000,
+  num.trees=2000,
+  seed=seed,
+  equalize.cluster.weights = FALSE,
+  num.threads = 30
+)
+
+
+
+
+time_split_late <- run_cf_analysis(
+  dats = dats,
+  analysis_portion = c(16:20),
+  run_nm = "20perc_cluster_timesplit_latediff",
+  cont_covars = c("aet", "def", "srtm", "tpi", "chili", "gam_rap_tree_pre6_fit",
+                 "biotic_relaxedforestnorm_sum_n2_to_p0",
+                 "biotic_relaxedforestnorm_sum_n5_to_n3",
+                  "pdsi_annual_sum_n5_to_n3",
+                 "pdsi_annual_sum_n2_to_p0"),
+  cat_covars = c("nfg_factor", "mock_burn_year", "ecoregion_code_name"),
+  outcome = c("gam_rap_tree_diff_p3_to_p15"),
+  trt = c("fire"),
+  cluster = c("h3_int_id"),
+  tune.parameters = c("min.node.size","sample.fraction", "mtry"),
+  tune.num.trees = 1000,
+  tune.num.reps = 50,
+  tune.num.draws = 1000,
+  num.trees=2000,
+  seed=seed,
+  equalize.cluster.weights = FALSE,
+  num.threads = 30
+)
+
+
+```
+
+```{r}
+
+
+# All data
+
+
+# by nfg
+
+for(grp in unique(dats$nfg_factor_clean)) {
+
+  # short time frame
+  
+  time_agg <- run_cf_analysis(
+    dats = dats |> filter(nfg_factor_clean == grp),
+    analysis_portion = c(1:20),
+    run_nm = paste0(grp, "_100perc_cluster_timeagg_earlydiff"),
+    cont_covars = c("aet", "def", "srtm", "tpi", "chili", "gam_rap_tree_pre6_fit",
+                   "biotic_relaxedforestnorm_sum_n5_to_p0",
+                    "pdsi_annual_sum_n5_to_p0"),
+    cat_covars = c("mock_burn_year", "ecoregion_code_name"),
+    outcome = c("gam_rap_tree_diff_pre6_to_p3"),
+    trt = c("fire"),
+    cluster = c("h3_int_id"),
+    tune.parameters = c("min.node.size","sample.fraction", "mtry"),
+    tune.num.trees = 1000,
+    tune.num.reps = 50,
+    tune.num.draws = 1000,
+    num.trees=2000,
+    seed=seed,
+    equalize.cluster.weights = FALSE,
+    num.threads = 30
+  )
+  
+  
+  time_split <- run_cf_analysis(
+    dats = dats |> filter(nfg_factor_clean == grp),
+    analysis_portion = c(1:20),
+    run_nm = paste0(grp, "_100perc_cluster_timesplit_earlydiff"),
+    cont_covars = c("aet", "def", "srtm", "tpi", "chili", "gam_rap_tree_pre6_fit",
+                   "biotic_relaxedforestnorm_sum_n2_to_p0",
+                   "biotic_relaxedforestnorm_sum_n5_to_n3",
+                    "pdsi_annual_sum_n5_to_n3",
+                   "pdsi_annual_sum_n2_to_p0"),
+    cat_covars = c("mock_burn_year", "ecoregion_code_name"),
+    outcome = c("gam_rap_tree_diff_pre6_to_p3"),
+    trt = c("fire"),
+    cluster = c("h3_int_id"),
+    tune.parameters = c("min.node.size","sample.fraction", "mtry"),
+    tune.num.trees = 1000,
+    tune.num.reps = 50,
+    tune.num.draws = 1000,
+    num.trees=2000,
+    seed=seed,
+    equalize.cluster.weights = FALSE,
+    num.threads = 30
+  )
+  
+  
+  
+  
+  # long time frame
+  
+  time_agg_late <- run_cf_analysis(
+    dats = dats |> filter(nfg_factor_clean == grp),
+    analysis_portion = c(1:20),
+    run_nm = paste0(grp, "_100perc_cluster_timeagg_latediff"),
+    cont_covars = c("aet", "def", "srtm", "tpi", "chili", "gam_rap_tree_pre6_fit",
+                   "biotic_relaxedforestnorm_sum_n5_to_p0",
+                    "pdsi_annual_sum_n5_to_p0"),
+    cat_covars = c("mock_burn_year", "ecoregion_code_name"),
+    outcome = c("gam_rap_tree_diff_p3_to_p15"),
+    trt = c("fire"),
+    cluster = c("h3_int_id"),
+    tune.parameters = c("min.node.size","sample.fraction", "mtry"),
+    tune.num.trees = 1000,
+    tune.num.reps = 50,
+    tune.num.draws = 1000,
+    num.trees=2000,
+    seed=seed,
+    equalize.cluster.weights = FALSE,
+    num.threads = 30
+  )
+  
+  
+  
+  
+  time_split_late <- run_cf_analysis(
+    dats = dats |> filter(nfg_factor_clean == grp),
+    analysis_portion = c(1:20),
+    run_nm = paste0(grp, "_100perc_cluster_timesplit_latediff"),
+    cont_covars = c("aet", "def", "srtm", "tpi", "chili", "gam_rap_tree_pre6_fit",
+                   "biotic_relaxedforestnorm_sum_n2_to_p0",
+                   "biotic_relaxedforestnorm_sum_n5_to_n3",
+                    "pdsi_annual_sum_n5_to_n3",
+                   "pdsi_annual_sum_n2_to_p0"),
+    cat_covars = c("mock_burn_year", "ecoregion_code_name"),
+    outcome = c("gam_rap_tree_diff_p3_to_p15"),
+    trt = c("fire"),
+    cluster = c("h3_int_id"),
+    tune.parameters = c("min.node.size","sample.fraction", "mtry"),
+    tune.num.trees = 1000,
+    tune.num.reps = 50,
+    tune.num.draws = 1000,
+    num.trees=2000,
+    seed=seed,
+    equalize.cluster.weights = FALSE,
+    num.threads = 30
+  )
+}
+
+
+
+
+for(grp in unique(dats$nfg_broad_type)) {
+
+  # short time frame
+  
+  time_agg <- run_cf_analysis(
+    dats = dats |> filter(nfg_broad_type == grp),
+    analysis_portion = c(1:20),
+    run_nm = paste0(grp, "_100perc_cluster_timeagg_earlydiff"),
+    cont_covars = c("aet", "def", "srtm", "tpi", "chili", "gam_rap_tree_pre6_fit",
+                   "biotic_relaxedforestnorm_sum_n5_to_p0",
+                    "pdsi_annual_sum_n5_to_p0"),
+    cat_covars = c("nfg_factor", "mock_burn_year", "ecoregion_code_name"),
+    outcome = c("gam_rap_tree_diff_pre6_to_p3"),
+    trt = c("fire"),
+    cluster = c("h3_int_id"),
+    tune.parameters = c("min.node.size","sample.fraction", "mtry"),
+    tune.num.trees = 1000,
+    tune.num.reps = 50,
+    tune.num.draws = 1000,
+    num.trees=2000,
+    seed=seed,
+    equalize.cluster.weights = FALSE,
+    num.threads = 30
+  )
+  
+  
+  time_split <- run_cf_analysis(
+    dats = dats |> filter(nfg_broad_type == grp),
+    analysis_portion = c(1:20),
+    run_nm = paste0(grp, "_100perc_cluster_timesplit_earlydiff"),
+    cont_covars = c("aet", "def", "srtm", "tpi", "chili", "gam_rap_tree_pre6_fit",
+                   "biotic_relaxedforestnorm_sum_n2_to_p0",
+                   "biotic_relaxedforestnorm_sum_n5_to_n3",
+                    "pdsi_annual_sum_n5_to_n3",
+                   "pdsi_annual_sum_n2_to_p0"),
+    cat_covars = c("nfg_factor", "mock_burn_year", "ecoregion_code_name"),
+    outcome = c("gam_rap_tree_diff_pre6_to_p3"),
+    trt = c("fire"),
+    cluster = c("h3_int_id"),
+    tune.parameters = c("min.node.size","sample.fraction", "mtry"),
+    tune.num.trees = 1000,
+    tune.num.reps = 50,
+    tune.num.draws = 1000,
+    num.trees=2000,
+    seed=seed,
+    equalize.cluster.weights = FALSE,
+    num.threads = 30
+  )
+  
+  
+  
+  
+  # long time frame
+  
+  time_agg_late <- run_cf_analysis(
+    dats = dats |> filter(nfg_broad_type == grp),
+    analysis_portion = c(1:20),
+    run_nm = paste0(grp, "_100perc_cluster_timeagg_latediff"),
+    cont_covars = c("aet", "def", "srtm", "tpi", "chili", "gam_rap_tree_pre6_fit",
+                   "biotic_relaxedforestnorm_sum_n5_to_p0",
+                    "pdsi_annual_sum_n5_to_p0"),
+    cat_covars = c("nfg_factor", "mock_burn_year", "ecoregion_code_name"),
+    outcome = c("gam_rap_tree_diff_p3_to_p15"),
+    trt = c("fire"),
+    cluster = c("h3_int_id"),
+    tune.parameters = c("min.node.size","sample.fraction", "mtry"),
+    tune.num.trees = 1000,
+    tune.num.reps = 50,
+    tune.num.draws = 1000,
+    num.trees=2000,
+    seed=seed,
+    equalize.cluster.weights = FALSE,
+    num.threads = 30
+  )
+  
+  
+  
+  
+  time_split_late <- run_cf_analysis(
+    dats = dats |> filter(nfg_broad_type == grp),
+    analysis_portion = c(1:20),
+    run_nm = paste0(grp, "_100perc_cluster_timesplit_latediff"),
+    cont_covars = c("aet", "def", "srtm", "tpi", "chili", "gam_rap_tree_pre6_fit",
+                   "biotic_relaxedforestnorm_sum_n2_to_p0",
+                   "biotic_relaxedforestnorm_sum_n5_to_n3",
+                    "pdsi_annual_sum_n5_to_n3",
+                   "pdsi_annual_sum_n2_to_p0"),
+    cat_covars = c("nfg_factor", "mock_burn_year", "ecoregion_code_name"),
+    outcome = c("gam_rap_tree_diff_p3_to_p15"),
+    trt = c("fire"),
+    cluster = c("h3_int_id"),
+    tune.parameters = c("min.node.size","sample.fraction", "mtry"),
+    tune.num.trees = 1000,
+    tune.num.reps = 50,
+    tune.num.draws = 1000,
+    num.trees=2000,
+    seed=seed,
+    equalize.cluster.weights = FALSE,
+    num.threads = 30
+  )
+}
+
+
+
+```
+
+
+
+<button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne" >Click to see Session Information</button><div id="collapseOne" class="accordion-collapse collapse"><div>
+
+```{r sessionInfo}
+sessionInfo()
+```

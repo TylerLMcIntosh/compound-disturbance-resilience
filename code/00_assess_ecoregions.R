@@ -34,4 +34,4 @@ dd <- d |>
   arrange(desc(perc_both)) |>
   select(na_l3name, us_l3name, perc_both, perc_forest)
 
-
+write_csv(dd, here(dir_derived, "l3_perc_usfs_forest.csv"))

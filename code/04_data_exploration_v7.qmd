@@ -30,7 +30,11 @@ install_load_packages(c(
   "grid",
   "gridExtra",
   "ggpmisc",
+  "h3jsr",
+  "farver",
   "corrplot"))
+
+
 
 gdrive_folder <- "GEE_resilience_v6_operational_ss500_ts50000"
 version <- "v7"
@@ -57,12 +61,294 @@ set.seed(seed)
 d_s <- open_dataset(here(dir_derived, "parquet_short"), format = "parquet") |>
   collect()
 
+
+# d_l <- open_dataset(here(dir_derived, "parquet_long"), format = "parquet") |>
+#   collect()
+# 
+# d_l_fire <- d_l |> filter(fire == 1)
+
+
+l3pf <- perc_forest <- read_csv(here('data/derived', "l3_perc_usfs_forest.csv"))
+l3_sf <- access_data_epa_l3_ecoregions_vsi()
+
+
+```
+
+```{r}
+
+# Check subset NFG split
+x <- d_s |>
+  dplyr::count(analysis_subset, nfg_factor_clean, name = "n") |>
+  tidyr::complete(
+    analysis_subset,
+    nfg_factor_clean,
+    fill = list(n = 0)
+  ) |>
+  dplyr::group_by(analysis_subset) |>
+  dplyr::mutate(
+    subset_total = sum(n),
+    prop = n / subset_total
+  ) |>
+  dplyr::ungroup()
+
+
+ggplot(x, aes(x = factor(analysis_subset), y = prop, fill = nfg_factor_clean)) +
+  geom_col(position = "stack") +
+  labs(
+    x = "Analysis subset",
+    y = "Proportion within subset",
+    fill = "NFG",
+    title = "Distribution of NFG groups across analysis subsets"
+  ) +
+  theme_minimal()
+
+ggsave(here(dir_figs, "nfg_analysis_subset_split.png"))
+
+```
+
+# Examine density
+
+```{r}
+
+d_s <- d_s |>
+  mutate(biotic_relaxedforestnorm_sum_n5_to_p0_densityplot = ifelse(biotic_relaxedforestnorm_sum_n5_to_p0 < 0.1, NA, biotic_relaxedforestnorm_sum_n5_to_p0)) |>
+  mutate("bnonzero" = ifelse(biotic_relaxedforestnorm_sum_n5_to_p0 < 0.1, "< 0.1", ">= 0.1"),
+         "dbelowzero" = ifelse(pdsi_annual_sum_n5_to_p0 < 0, "< 0", ">= 0"))
+
+
 d_s_fire <- d_s |> filter(fire == 1)
+d_s_nfire <- d_s |> filter(fire == 0)
 
-d_l <- open_dataset(here(dir_derived, "parquet_long"), format = "parquet") |>
-  collect()
 
-d_l_fire <- d_l |> filter(fire == 1)
+calc_deciles <- function(df, var) {
+  x <- dplyr::pull(df, var)
+
+  x <- x[!is.na(x)]
+
+  probs <- seq(0.1, 0.9, by = 0.1)
+  dec <- stats::quantile(x, probs = probs, na.rm = TRUE, names = TRUE)
+
+  return(dec)
+}
+
+calc_twentciles <- function(df, var) {
+  x <- dplyr::pull(df, var)
+
+  x <- x[!is.na(x)]
+
+  probs <- seq(0.1, 0.9, by = 0.05)
+  dec <- stats::quantile(x, probs = probs, na.rm = TRUE, names = TRUE)
+
+  return(dec)
+}
+
+
+
+raw_f_deciles_bio <- calc_deciles(d_s_fire, "biotic_relaxedforestnorm_sum_n5_to_p0")
+raw_nf_deciles_bio <- calc_deciles(d_s_nfire, "biotic_relaxedforestnorm_sum_n5_to_p0")
+
+raw_f_deciles_dr <- calc_deciles(d_s_fire, "pdsi_annual_sum_n5_to_p0")
+raw_nf_deciles_dr <- calc_deciles(d_s_nfire, "pdsi_annual_sum_n5_to_p0")
+
+
+raw_f_twentciles_bio <- calc_twentciles(d_s_fire, "biotic_relaxedforestnorm_sum_n5_to_p0")
+raw_nf_twentciles_bio <- calc_twentciles(d_s_nfire, "biotic_relaxedforestnorm_sum_n5_to_p0")
+
+raw_f_twentciles_dr <- calc_twentciles(d_s_fire, "pdsi_annual_sum_n5_to_p0")
+raw_nf_twentciles_dr <- calc_twentciles(d_s_nfire, "pdsi_annual_sum_n5_to_p0")
+
+
+
+bio_frac <- d_s_fire |>
+   group_by(bnonzero) |>
+   count() |>
+  ungroup()
+
+dr_frac <- d_s_fire |>
+   group_by(dbelowzero) |>
+   count() |>
+  ungroup()
+
+
+low_pie_color <- "slategray3"
+high_pie_color <- "slategray4"
+
+# pie?
+
+bio_frac_plot <- bio_frac |>
+  dplyr::mutate(
+    bnonzero = factor(
+      bnonzero,
+      levels = c(">= 0.1", "< 0.1")
+    ),
+    prop = n / sum(n),
+    label = scales::percent(prop, accuracy = 1)
+  )
+
+ggplot(bio_frac_plot, aes(x = "", y = prop, fill = bnonzero)) +
+  geom_col(width = 1, color = "white") +
+  geom_text(
+    aes(label = label),
+    position = position_stack(vjust = 0.5),
+    color = "white",
+    size = 3
+  ) +
+  coord_polar(theta = "y") +
+  scale_fill_manual(
+    values = c(
+      "< 0.1" = low_pie_color,
+      ">= 0.1" = high_pie_color
+    )
+  ) +
+  labs(
+    x = NULL,
+    y = NULL,
+    fill = "bnonzero"
+  ) +
+  theme_void() +
+  theme(
+    legend.title = element_blank()
+  )
+
+ggsave(here(dir_figs, "biotic_frac_pie.png"),
+       units = "px",
+       width = 500,
+       height = 500)
+
+
+
+
+dr_frac_plot <- dr_frac |>
+  dplyr::mutate(
+    dbelowzero = factor(
+      dbelowzero,
+      levels = c(">= 0", "< 0")
+    ),
+    prop = n / sum(n),
+    label = scales::percent(prop, accuracy = 1)
+  )
+
+
+ggplot(dr_frac_plot, aes(x = "", y = prop, fill = dbelowzero)) +
+  geom_col(width = 1, color = "white") +
+  geom_text(
+    aes(label = label),
+    position = position_stack(vjust = 0.5),
+    color = "white",
+    size = 3
+  ) +
+  coord_polar(theta = "y") +
+  scale_fill_manual(
+    values = c(
+      "< 0" = low_pie_color,
+      ">= 0" = high_pie_color
+    )
+  ) +
+  labs(
+    x = NULL,
+    y = NULL,
+    fill = "dbelowzero"
+  ) +
+  theme_void() +
+  theme(
+    legend.title = element_blank()
+  )
+
+ggsave(here(dir_figs, "drought_frac_pie.png"),
+       units = "px",
+       width = 500,
+       height = 500)
+
+
+
+
+
+major_breaks <- 10^(-1:2)
+
+minor_breaks <- unlist(lapply(-1:2, function(i) (2:9) * 10^i))
+
+
+ggplot() +
+  geom_density(
+    data = d_s_nfire,
+    aes(x = biotic_relaxedforestnorm_sum_n5_to_p0_densityplot),
+    color = "grey70",
+    lwd = 1
+  ) +
+  # geom_vline(xintercept = raw_nf_deciles_bio[9],
+  #            color = "grey70",
+  #            lty = 2,
+  #            lwd = 1) +
+  geom_density(
+    data = d_s_fire,
+    aes(x = biotic_relaxedforestnorm_sum_n5_to_p0_densityplot),
+    color = "maroon",
+    lwd = 1
+  ) +
+  geom_vline(xintercept = raw_f_deciles_bio[9],
+             color = "maroon",
+             lty = 2,
+             lwd = 1) +
+  scale_x_log10(
+    breaks = major_breaks,
+    minor_breaks = minor_breaks,
+    labels = scales::label_number()
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid.major.x = element_line(color = "grey85"),
+    panel.grid.minor.x = element_line(color = "grey95", linewidth = 0.3),
+    axis.text.y = element_blank(),
+    axis.title.y = element_blank()
+  ) +
+  labs(x = "6-year cumulative biotic disturbance")
+
+ggsave(here(dir_figs, "biotic_density.png"),
+       units = "px",
+       width = 1000,
+       height = 700)
+
+
+
+
+ggplot() +
+  geom_density(
+    data = d_s_nfire,
+    aes(x = pdsi_annual_sum_n5_to_p0),
+    color = "grey70",
+    lwd = 1
+  ) +
+  # geom_vline(xintercept = raw_nf_deciles_dr[1],
+  #            color = "grey70",
+  #            lty = 2,
+  #            lwd = 1) +
+  geom_density(
+    data = d_s_fire,
+    aes(x = pdsi_annual_sum_n5_to_p0),
+    color = "maroon",
+    lwd = 1
+  ) +
+  geom_vline(xintercept = raw_f_deciles_dr[1],
+             color = "maroon",
+             lty = 2,
+             lwd = 1) +
+  theme_minimal() +
+  theme(
+    panel.grid.major.x = element_line(color = "grey85"),
+    panel.grid.minor.x = element_line(color = "grey95", linewidth = 0.3),
+    axis.text.y = element_blank(),
+    axis.title.y = element_blank()
+  ) +
+  labs(x = "6-year cumulative drought") +
+  scale_x_reverse()
+
+ggsave(here(dir_figs, "drought_density.png"),
+       units = "px",
+       width = 1000,
+       height = 700)
+
+
+
 
 ```
 
@@ -110,571 +396,513 @@ set_cd_groups <- function(df,
   return(df_new)
 }
 
+# deciles
+raw_f_deciles_dr
+raw_f_deciles_bio
 
 
-cd_group_table <- function(df, specs) {
-
-  purrr::map_dfr(specs, function(s) {
-
-    df2 <- set_cd_groups(
-      df = df,
-      b_nm = s$b_nm,
-      d_nm = s$d_nm,
-      cd_nm = s$cd_nm,
-      b_threshold = s$b_threshold,
-      d_threshold = s$d_threshold
-    )
-
-    # row counts
-    counts_rows <- df2 |>
-      count(.data[[s$cd_nm]], name = "n") |>
-      mutate(group = .data[[s$cd_nm]]) |>
-      select(group, n) |>
-      tidyr::complete(group = c("f", "df", "bf", "bdf"), fill = list(n = 0)) |>
-      tidyr::pivot_wider(names_from = group, values_from = n)
-
-    # unique fire counts
-    counts_fire <- df2 |>
-      filter(!is.na(.data[[s$cd_nm]])) |>
-      group_by(group = .data[[s$cd_nm]]) |>
-      summarise(nf = n_distinct(fireid), .groups = "drop") |>
-      tidyr::complete(group = c("f", "df", "bf", "bdf"), fill = list(nf = 0)) |>
-      mutate(group = paste0(group, "_nf")) |>
-      tidyr::pivot_wider(names_from = group, values_from = nf)
-
-    out <- dplyr::bind_cols(counts_rows, counts_fire) |>
-      mutate(
-        cd_nm = s$cd_nm,
-        b_nm = s$b_nm,
-        d_nm = s$d_nm,
-        b_threshold = s$b_threshold,
-        d_threshold = s$d_threshold
-      ) |>
-      select(
-        cd_nm, b_nm, b_threshold, d_nm, d_threshold,
-        f, df, bf, bdf,
-        f_nf, df_nf, bf_nf, bdf_nf
-      ) |>
-      mutate(
-        total = f + df + bf + bdf,
-        f_p   = round(100 * f   / total),
-        df_p  = round(100 * df  / total),
-        bf_p  = round(100 * bf  / total),
-        bdf_p = round(100 * bdf / total)
-      ) |>
-      select(-total)
-
-    out
-  })
-}
-
-expand_cd_specs <- function(specs) {
-  # specs: list of lists; each list can include:
-  #   b_nm, d_nm, cd_prefix (optional), b_thresholds, d_thresholds
-  #
-  # returns a list of fully-expanded spec lists:
-  #   b_nm, d_nm, cd_nm, b_threshold, d_threshold
-  
-  expanded <- purrr::map_dfr(specs, function(s) {
-    cd_prefix <- s$cd_prefix %||% paste0("cd_", s$b_nm, "__", s$d_nm)
-
-    tidyr::crossing(
-      b_threshold = s$b_thresholds,
-      d_threshold = s$d_thresholds
-    ) |>
-      mutate(
-        b_nm = s$b_nm,
-        d_nm = s$d_nm,
-        cd_nm = paste0(
-          cd_prefix,
-          "_b", b_threshold,
-          "_d", d_threshold
-        )
-      ) |>
-      select(cd_nm, b_nm, d_nm, b_threshold, d_threshold)
-  })
-
-  # convert rows to list-of-lists (what cd_group_table expects)
-  purrr::pmap(
-    expanded,
-    \(cd_nm, b_nm, d_nm, b_threshold, d_threshold)
-      list(cd_nm = cd_nm, b_nm = b_nm, d_nm = d_nm,
-           b_threshold = b_threshold, d_threshold = d_threshold)
-  )
-}
-
-`%||%` <- function(x, y) if (!is.null(x)) x else y
+d_s_fire <- set_cd_groups(df = d_s_fire,
+                   b_nm = "biotic_relaxedforestnorm_sum_n5_to_p0",
+                   d_nm = "pdsi_annual_sum_n5_to_p0",
+                   cd_nm = "cd_group_b90_pdsin90",
+                   b_threshold = raw_f_deciles_bio[9],
+                   d_threshold = raw_f_deciles_dr[1]) |>
+  set_cd_groups(b_nm = "biotic_relaxedforestnorm_sum_n5_to_p0",
+                   d_nm = "pdsi_annual_sum_n5_to_p0",
+                   cd_nm = "cd_group_b80_pdsin80",
+                   b_threshold = raw_f_deciles_bio[8],
+                   d_threshold = raw_f_deciles_dr[2])
 
 
+cd_counts_90 <- d_s_fire |>
+  group_by(cd_group_b90_pdsin90) |>
+  count() |>
+  ungroup()
 
-specs_grid1 <- list(
-  list(
-    b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
-    d_nm = "pdsi_annual_5_yrs_prior_sum_yot",
-    b_thresholds = c(10, 20, 50),
-    d_thresholds = c(-10)
-  )
-)
+cd_counts_80 <- d_s_fire |>
+  group_by(cd_group_b80_pdsin80) |>
+  count() |>
+  ungroup()
 
-specs_grid2 <- list(
-  list(
-    b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
-    d_nm = "pdsi_annual_5_yrs_prior_threshold_n4_yot",
-    b_thresholds = c(10, 20, 50),
-    d_thresholds = c(1, 2)
-  )
-)
-
-specs_grid3 <- list(
-  list(
-    b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
-    d_nm = "pdsi_annual_5_yrs_prior_threshold_n3_yot",
-    b_thresholds = c(10, 20, 50),
-    d_thresholds = c(1, 2, 3)
-  )
-)
-
-specs_grid4 <- list(
-  list(
-    b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
-    d_nm = "hd_fingerprint_5_yrs_prior_threshold_6_yot",
-    b_thresholds = c(10, 20, 50),
-    d_thresholds = c(1, 2)
-  )
-)
-
-expanded_specs <- c(
-  expand_cd_specs(specs_grid1),
-  expand_cd_specs(specs_grid2),
-  expand_cd_specs(specs_grid3),
-  expand_cd_specs(specs_grid4)
-)
-
-cd_summary_grid <- cd_group_table(d_s, expanded_specs) |>
-  arrange(b_threshold, d_nm) |>
-  filter(!if_any(where(is.numeric), ~ . == 0)) |>
-  select(-cd_nm)
-
-
-cd_tbl <- tableGrob(
-  cd_summary_grid,
-  theme = ttheme_minimal(
-    core = list(bg_params = list(fill = "white", col = NA)),
-    colhead = list(bg_params = list(fill = "white", col = NA))
-  )
-)
-
-cd_title <- textGrob(
-  "Counts for possible CD groups",
-  gp = gpar(fontsize = 16, fontface = "bold")
-)
-
-cd_table_with_title <- arrangeGrob(
-  cd_tbl,
-  top = cd_title
-)
-
-ggsave(
-  here(dir_figs, "cd_group_counts.png"),
-  cd_table_with_title,
-  width = 20,
-  height = 6,
-  bg = "white"
-)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-d_s <- set_cd_groups(df = d_s,
-                   b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
-                   d_nm = "pdsi_annual_5_yrs_prior_threshold_n4_yot",
-                   cd_nm = "cd_group_b10_pdsin4t1",
-                   b_threshold = 10,
-                   d_threshold = 1)
-
-d_s <- set_cd_groups(df = d_s,
-                   b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
-                   d_nm = "pdsi_annual_5_yrs_prior_threshold_n3_yot",
-                   cd_nm = "cd_group_b10_pdsin3t1",
-                   b_threshold = 10,
-                   d_threshold = 1)
-
-d_s <- set_cd_groups(df = d_s,
-                   b_nm = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
-                   d_nm = "pdsi_annual_5_yrs_prior_sum_yot",
-                   cd_nm = "cd_group_b10_pdsisumn10",
-                   b_threshold = 10,
-                   d_threshold = -10)
 
 
 ```
 
-# Hist & N for each (burn_year 2005-2020)
+# assess sample size and NON-fire impacted sample size
 
 ```{r}
 
-d_s_fire <- d_s |> filter(fire == 1)
-d_s_nfire <- d_s |> filter(fire == 0)
+b <- d_s_nfire |>
+  filter(biotic_relaxedforestnorm_sum_n5_to_p0 > 9.7 & pdsi_annual_sum_n5_to_p0 > -11.8)
+
+ball <- d_s_nfire |>
+  filter(biotic_6roll_max > 9.7)
+
+nb <- d_s_nfire |>
+  filter(biotic_6roll_max < 9.7)
+
+
+d <- d_s_nfire |>
+  filter(pdsi_annual_sum_n5_to_p0 < -11.8 & biotic_relaxedforestnorm_sum_n5_to_p0 < 9.7)
+
+bd <- d_s_nfire |>
+  filter(pdsi_annual_sum_n5_to_p0 < -11.8 & biotic_relaxedforestnorm_sum_n5_to_p0 > 9.7)
+
+
+ndnb <- d_s_nfire |>
+  filter(biotic_relaxedforestnorm_sum_n5_to_p0 < 9.7 & pdsi_annual_sum_n5_to_p0 > -11.8)
+
+ndnb2 <- d_s_nfire |>
+  filter(biotic_6roll_max < 9.7 & pdsi_annual_sum_n5_to_p0 > -11.8)
+
+
+d
+
+cd_counts_90
+
+cd_counts_80
+
+```
 
 
 
+# ecoregions map
+
+```{r}
+
+ecors <- l3pf |>
+  filter(perc_both >= 30) |>
+  pull(na_l3name)
+
+ecors_sf <- l3_sf |>
+  filter(NA_L3NAME %in% ecors) |>
+  sf::st_transform('EPSG:4326')
+
+states <- tigris::states() |>
+  sf::st_transform('EPSG:4326') |>
+  sf::st_filter(ecors_sf) |>
+  filter(STUSPS != "TX" & STUSPS != "SD")
+
+#mapview::mapview(states)
 
 
-x <- d_s |>
-  dplyr::count(analysis_subset, nfg_factor_clean, name = "n") |>
-  tidyr::complete(
-    analysis_subset,
-    nfg_factor_clean,
-    fill = list(n = 0)
+h3_counts <- d_s_fire |>
+  count(h3jsr_5, name = "n_units") |>
+  filter(!is.na(h3jsr_5))
+
+h3_geom_sf <- h3jsr::cell_to_polygon(
+  h3_counts$h3jsr_5,
+  simple = FALSE
+)
+
+h3_counts_sf <- h3_geom_sf |>
+  mutate(
+    h3jsr_5 = h3_counts$h3jsr_5,
+    n_units = h3_counts$n_units
   ) |>
-  dplyr::group_by(analysis_subset) |>
-  dplyr::mutate(
-    subset_total = sum(n),
-    prop = n / subset_total
-  ) |>
-  dplyr::ungroup()
+  st_transform(st_crs(ecors_sf))
 
 
-ggplot(x, aes(x = factor(analysis_subset), y = prop, fill = nfg_factor_clean)) +
-  geom_col(position = "stack") +
+
+ggplot() +
+  geom_sf(
+    data = states,
+    fill = "gray97",
+    color = "gray85",
+    linewidth = 0.2
+  ) +
+  geom_sf(
+    data = ecors_sf,
+    fill = NA,
+    color = "gray20",
+    linewidth = 0.2
+  ) +
+  geom_sf(
+    data = h3_counts_sf,
+    aes(fill = n_units),
+    color = NA,
+    alpha = 0.9
+  ) +
+  scale_fill_viridis_c(
+    option = "viridis",
+    trans = "sqrt",
+    labels = comma,
+    name = "Units per hex"
+  ) +
+  theme_minimal() +
   labs(
-    x = "Analysis subset",
-    y = "Proportion within subset",
-    fill = "NFG",
-    title = "Distribution of NFG groups across analysis subsets"
+    x = NULL,
+    y = NULL
+  )
+
+ggsave(here(dir_figs, "spatial_domain_units_per_hex.png"),
+       units = "px",
+       width = 2000,
+       height = 2000)
+
+
+```
+
+# cd percentage separate maps
+
+```{r}
+
+
+
+h3_medians <- d_s_fire |>
+  dplyr::filter(!is.na(h3jsr_5)) |>
+  dplyr::group_by(h3jsr_5) |>
+  dplyr::summarize(
+    n_units = dplyr::n(),
+    median_bio = median(biotic_relaxedforestnorm_sum_n5_to_p0, na.rm = TRUE),
+    median_dr  = median(pdsi_annual_sum_n5_to_p0, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+
+h3_medians_sf <- h3_geom_sf |>
+  dplyr::mutate(
+    h3jsr_5 = h3_medians$h3jsr_5,
+    n_units = h3_medians$n_units,
+    median_bio = h3_medians$median_bio,
+    median_dr = h3_medians$median_dr
+  ) |>
+  sf::st_transform(sf::st_crs(ecors_sf))
+
+
+
+ggplot() +
+  geom_sf(
+    data = states,
+    fill = "gray97",
+    color = "gray85",
+    linewidth = 0.2
   ) +
-  theme_minimal()
-
-ggsave(here(dir_figs, "nfg_analysis_subset_split.png"))
-
-
-plot_density_with_deciles <- function(df, var, title, x_label = NULL, log_scale = FALSE) {
-
-  var_quo <- enquo(var)
-  var_name <- as_name(var_quo)
-
-  # Handle log scale
-  if (log_scale) {
-    df_plot <- df |> filter(!!var_quo > 0)
-  } else {
-    df_plot <- df
-  }
-
-  # Compute deciles
-  probs <- seq(0.1, 0.9, by = 0.1)
-  deciles <- quantile(
-    df_plot[[var_name]],
-    probs = probs,
-    na.rm = TRUE
+  geom_sf(
+    data = ecors_sf,
+    fill = NA,
+    color = "gray20",
+    linewidth = 0.2
+  ) +
+  geom_sf(
+    data = h3_medians_sf,
+    aes(fill = median_bio),
+    color = NA,
+    alpha = 0.9
+  ) +
+  scale_fill_viridis_c(
+    option = "viridis",
+    trans = "sqrt",
+    labels = comma,
+    name = "Median\n6-yr\npre-fire\nbiotic"
+  ) +
+  theme_minimal() +
+  labs(
+    x = NULL,
+    y = NULL
   )
 
-  caption_text <- paste0(
-    "Deciles (10–90%): ",
-    paste0(
-      names(deciles),
-      " = ",
-      round(deciles, 3),
-      collapse = " | "
+ggsave(here(dir_figs, "spatial_domain_median_biotic.png"),
+       units = "px",
+       width = 2000,
+       height = 2000)
+
+
+ggplot() +
+  geom_sf(
+    data = states,
+    fill = "gray97",
+    color = "gray85",
+    linewidth = 0.2
+  ) +
+  geom_sf(
+    data = ecors_sf,
+    fill = NA,
+    color = "gray20",
+    linewidth = 0.2
+  ) +
+  geom_sf(
+    data = h3_medians_sf,
+    aes(fill = median_dr),
+    color = NA,
+    alpha = 0.9
+  ) +
+  scale_fill_viridis_c(
+    option = "viridis",
+    direction = -1,
+    labels = comma,
+    name = "Median\n6-yr\npre-fire\ndrought"
+  ) +
+  theme_minimal() +
+  labs(
+    x = NULL,
+    y = NULL
+  )
+
+ggsave(
+  here(dir_figs, "spatial_domain_median_drought.png"),
+  units = "px",
+  width = 2000,
+  height = 2000
+)
+
+
+```
+
+# v2 - cd proportions map
+
+## assessing colors
+
+```{r}
+library(colorspace)
+
+# ---- Option 1: Okabe-Ito inspired (blue/orange is a classic CVD-safe pair) ----
+group_cols1 <- c(
+  f   = hex(polarLUV(L = 82, C = 8,  H = 95)),   # near-neutral warm gray, barely tinted
+  bf  = hex(polarLUV(L = 62, C = 45, H = 230)),  # sky blue
+  df  = hex(polarLUV(L = 62, C = 45, H = 65)),   # orange
+  bdf = hex(polarLUV(L = 25, C = 40, H = 300))   # dark purple
+)
+
+# ---- Option 2: earthy/aquatic (teal + gold) ----
+group_cols2 <- c(
+  f   = hex(polarLUV(L = 80, C = 10, H = 70)),   # warm sand/beige
+  bf  = hex(polarLUV(L = 58, C = 45, H = 195)),  # teal
+  df  = hex(polarLUV(L = 58, C = 45, H = 85)),   # goldenrod
+  bdf = hex(polarLUV(L = 22, C = 35, H = 270))   # deep indigo
+)
+
+# ---- Option 3: cool violet/yellow ----
+group_cols3 <- c(
+  f   = hex(polarLUV(L = 80, C = 8,  H = 250)),  # pale cool gray-blue
+  bf  = hex(polarLUV(L = 62, C = 55, H = 300)),  # violet
+  df  = hex(polarLUV(L = 62, C = 55, H = 95)),   # yellow
+  bdf = hex(polarLUV(L = 25, C = 28, H = 200))   # near-black teal
+)
+
+# ---- Option 4: monochrome-blue family with a magenta "pop" for bdf ----
+group_cols4 <- c(
+  f   = hex(polarLUV(L = 85, C = 6,  H = 250)),  # very pale slate blue
+  bf  = hex(polarLUV(L = 55, C = 45, H = 260)),  # blue-violet
+  df  = hex(polarLUV(L = 55, C = 43, H = 190)),  # cyan-teal
+  bdf = hex(polarLUV(L = 22, C = 45, H = 330))   # deep magenta, off the blue family entirely
+)
+
+group_cols <- c(
+  f   = "#C9BFB4",
+  bf  = "#0072B2",  
+  df  = "#E69F00",
+  bdf = "#7A0177"   
+)
+
+check_valid_cols <- function(cols) {
+  bad <- names(cols)[is.na(cols)]
+  if (length(bad) > 0) {
+    stop(
+      "these group_cols entries are NA (likely out-of-gamut polarLUV values, ",
+      "try lowering C or raising L): ", paste(bad, collapse = ", ")
     )
-  )
-
-  p <- ggplot(df_plot, aes(x = !!var_quo)) +
-    geom_density() +
-    geom_vline(
-      xintercept = deciles,
-      linetype = "dotted",
-      color = "red"
-    ) +
-    labs(
-      x = ifelse(is.null(x_label), var_name, x_label),
-      y = "Density",
-      caption = caption_text,
-      title = title
-    ) +
-    theme_minimal()
-
-  if (log_scale) {
-    p <- p + scale_x_log10(labels = label_number())
   }
-
-  p
 }
 
 
+# ---------------------------------------------------------------------------
+# 2. color mixing: blend the 3 "edge" groups (f, bf, df) in Lab space
+# (Lab avoids the muddy grays you get averaging raw sRGB), then pull toward
+# a pure bdf color in proportion to p_bdf itself -- p_bdf = 0 gives a pure
+# 3-way blend, p_bdf = 1 gives pure bdf, everything between fades smoothly
+# ---------------------------------------------------------------------------
+mix_ternary_cols <- function(p_f, p_bf, p_df, p_bdf, cols = group_cols) {
 
+  edge_sum <- p_f + p_bf + p_df
+  # guard divide-by-zero for hexes that are 100% bdf -- these edge weights
+  # get wiped out by the p_bdf = 1 term below anyway, so the value here
+  # doesn't matter
+  edge_sum[edge_sum == 0] <- 1
 
+  w_f  <- p_f  / edge_sum
+  w_bf <- p_bf / edge_sum
+  w_df <- p_df / edge_sum
 
-compare_densities_with_deciles <- function(
-    df1,
-    df2,
-    var,
-    title,
-    x_label = NULL,
-    log_scale = FALSE,
-    df1_name = deparse(substitute(df1)),
-    df2_name = deparse(substitute(df2))
-) {
+  lab_mat <- farver::decode_colour(cols[c("f", "bf", "df")], to = "lab")
+  bdf_lab <- farver::decode_colour(cols["bdf"], to = "lab")
 
-  var_quo <- rlang::enquo(var)
-  var_name <- rlang::as_name(var_quo)
+  edge_lab <- outer(w_f, lab_mat[1, ]) +
+    outer(w_bf, lab_mat[2, ]) +
+    outer(w_df, lab_mat[3, ])
 
-  prep_one <- function(df, name) {
-    x <- dplyr::pull(df, !!var_quo)
-
-    if (log_scale) {
-      keep <- !is.na(x) & x > 0
-      x <- x[keep]
-      df <- df[keep, , drop = FALSE]
-    } else {
-      x <- x[!is.na(x)]
-    }
-
-    probs <- seq(0.1, 0.9, by = 0.1)
-    dec <- stats::quantile(x, probs = probs, na.rm = TRUE, names = TRUE)
-
-    list(
-      df = df,
-      name = name,
-      deciles = dec
-    )
-  }
-
-  a <- prep_one(df1, df1_name)
-  b <- prep_one(df2, df2_name)
-
-  df_plot <- dplyr::bind_rows(
-    dplyr::mutate(a$df, .which_df = a$name),
-    dplyr::mutate(b$df, .which_df = b$name)
+  mixed_lab <- (1 - p_bdf) * edge_lab + p_bdf * matrix(
+    bdf_lab, nrow = length(p_bdf), ncol = 3, byrow = TRUE
   )
 
-  caption_text <- paste0(
-    a$name, " deciles: ",
-    paste0(names(a$deciles), "=", round(a$deciles, 3), collapse = " | "),
-    "\n",
-    b$name, " deciles: ",
-    paste0(names(b$deciles), "=", round(b$deciles, 3), collapse = " | ")
-  )
-
-  p <- ggplot2::ggplot(
-    df_plot,
-    ggplot2::aes(x = !!var_quo, color = .data[[".which_df"]])
-  ) +
-    ggplot2::geom_density() +
-    ggplot2::geom_vline(
-      xintercept = unname(a$deciles),
-      linetype = "dotted",
-      color = "red"
-    ) +
-    ggplot2::geom_vline(
-      xintercept = unname(b$deciles),
-      linetype = "dotted",
-      color = "blue"
-    ) +
-    ggplot2::annotate(
-      "text",
-      x = unname(a$deciles),
-      y = 0,
-      label = names(a$deciles),
-      color = "red",
-      vjust = 0.3,
-      size = 3
-    ) +
-    ggplot2::annotate(
-      "text",
-      x = unname(b$deciles),
-      y = 0,
-      label = names(b$deciles),
-      color = "blue",
-      vjust = 1.2,
-      size = 3
-    ) +
-    ggplot2::scale_color_manual(
-      values = stats::setNames(c("red", "blue"), c(a$name, b$name)),
-      breaks = c(a$name, b$name)
-    ) +
-    ggplot2::labs(
-      x = ifelse(is.null(x_label), var_name, x_label),
-      y = "Density",
-      caption = caption_text,
-      title = title,
-      color = NULL
-    ) +
-    ggplot2::theme_minimal() +
-    theme(
-      plot.caption = element_text(size = 8)
-  )
-
-  if (log_scale) {
-    p <- p + ggplot2::scale_x_log10(labels = scales::label_number())
-  }
-
-  p
+  farver::encode_colour(mixed_lab, from = "lab")
 }
 
-compare_densities_with_deciles(
-  d_s_fire,
-  d_s_nfire,
-  biotic_relaxedforestnorm_5_yrs_prior_sum_yot,
-  title = "Biotic prior sum: fire-only vs no fire",
-  x_label = "Biotic 5-yr prior sum",
-  log_scale = TRUE
-)
-ggsave(here(dir_figs, "density_biotic_prior.png"))
+make_ternary_legend <- function(cols = group_cols, resolution = 300) {
 
-compare_densities_with_deciles(
-  d_s_fire,
-  d_s_nfire,
-  biotic_6roll_max,
-  title = "Biotic roll max : fire-only vs no fire",
-  x_label = "Biotic 5-yr roll max",
-  log_scale = TRUE
-)
-ggsave(here(dir_figs, "density_biotic_rollmax.png"))
+  tri_height <- sqrt(3) / 2
 
+  grid <- expand.grid(
+    x = seq(0, 1, length.out = resolution),
+    y = seq(0, tri_height, length.out = resolution)
+  )
 
-compare_densities_with_deciles(
-  d_s_fire,
-  d_s_nfire,
-  pdsi_annual_5_yrs_prior_sum_yot,
-  title = "PDSI sum prior : fire-only vs no fire",
-  x_label = "PDSI 5-yr sum",
-  log_scale = FALSE
-)
-ggsave(here(dir_figs, "density_pdsi_prior.png"))
+  # inverse barycentric transform for corners at (0,0), (1,0), (0.5, tri_height)
+  grid <- grid |>
+    mutate(
+      w_df = y / tri_height,
+      w_bf = x - w_df * 0.5,
+      w_f  = 1 - w_bf - w_df
+    ) |>
+    filter(w_f >= -1e-6, w_bf >= -1e-6, w_df >= -1e-6) |>
+    mutate(across(c(w_f, w_bf, w_df), \(w) pmax(w, 0)))
 
-compare_densities_with_deciles(
-  d_s_fire,
-  d_s_nfire,
-  pdsi_annual_year_of,
-  title = "PDSI year of : fire-only vs no fire",
-  x_label = "PDSI",
-  log_scale = FALSE
-)
-ggsave(here(dir_figs, "density_pdsi_yo.png"))
+  # min(w_f, w_bf, w_df) peaks at exactly 1/3 at the centroid and hits 0 on
+  # any edge or corner, so scaling by 3 gives a clean 0-to-1 fade-in for bdf - lower numbers will be less
+  grid$w_bdf <- pmin(1, 2 * pmin(grid$w_f, grid$w_bf, grid$w_df))
 
+  grid$fill_col <- mix_ternary_cols(
+    p_f = grid$w_f, p_bf = grid$w_bf, p_df = grid$w_df, p_bdf = grid$w_bdf,
+    cols = cols
+  )
 
+  # pick a readable label color for "bdf" against whatever bdf color is set
+  bdf_lab_l <- farver::decode_colour(cols["bdf"], to = "lab")[1, 1]
+  bdf_label_col <- if (bdf_lab_l > 60) "black" else "white"
 
-
-
-plot_group_prop <- function(df, x_var) {
-  d_plot <- df |>
-    dplyr::filter(!is.na(.data[[x_var]]), !is.na(fire)) |>
-    dplyr::count(fire, value = .data[[x_var]], name = "n") |>
-    dplyr::group_by(fire) |>
-    dplyr::mutate(prop = n / sum(n)) |>
-    dplyr::ungroup()
-  
-  ggplot(
-    d_plot,
-    aes(
-      x = factor(value),
-      y = prop,
-      fill = factor(fire)
-    )
-  ) +
-    geom_col(position = "dodge") +
-    scale_y_continuous(labels = scales::percent) +
-    labs(
-      x = x_var,
-      y = "Proportion within fire group",
-      fill = "fire"
-    ) +
-    theme_minimal()
+  ggplot(grid, aes(x, y, fill = fill_col)) +
+    geom_raster() +
+    scale_fill_identity() +
+    annotate("text", x = 0,   y = -0.05,             label = "F",   fontface = "bold") +
+    annotate("text", x = 1,   y = -0.05,             label = "BF",  fontface = "bold") +
+    annotate("text", x = 0.5, y = tri_height + 0.05,  label = "DF",  fontface = "bold") +
+    annotate("text", x = 0.5, y = tri_height / 3,     label = "BDF", fontface = "bold", color = bdf_label_col) +
+    coord_fixed(clip = "off") +
+    theme_void()
 }
 
-p1 <- plot_group_prop(d_s, "pdsi_annual_5_yrs_prior_threshold_n3_yot")
-p2 <- plot_group_prop(d_s, "pdsi_annual_5_yrs_prior_threshold_n4_yot")
-p3 <- plot_group_prop(d_s, "hd_fingerprint_5_yrs_prior_threshold_6_yot")
-p4 <- plot_group_prop(d_s, "hd_fingerprint_year_of")
 
-ggsave(here(dir_figs, "pdsin3t_prior.png"), plot = p1)
-ggsave(here(dir_figs, "pdsin4t_prior.png"), plot = p2)
-ggsave(here(dir_figs, "hd6t_prior.png"), plot = p3)
-ggsave(here(dir_figs, "hd_yo.png"), plot = p4)
+check_valid_cols(group_cols1)
+check_valid_cols(group_cols2)
+check_valid_cols(group_cols3)
+check_valid_cols(group_cols4)
 
 
+make_ternary_legend(group_cols1)
+make_ternary_legend(group_cols2)
+#make_ternary_legend(group_cols3)
+make_ternary_legend(group_cols4)
+make_ternary_legend(group_cols)
 
+```
 
-
-# Burn severity
-
-ggplot(d_s |> filter(fire == 1)) +
-  geom_density(aes(x = burn_cbi, color = cd_group_b10_pdsisumn10))
-ggsave(here(dir_figs, "cbi_by_cd_group_b10_pdsisumn10.png"))
-
-ggplot(d_s |> filter(fire == 1)) +
-  geom_density(aes(x = burn_cbi, color = cd_group_b10_pdsin3t1))
-ggsave(here(dir_figs, "cbi_by_cd_group_b10_pdsin3t1.png"))
-
-ggplot(d_s |> filter(fire == 1)) +
-  geom_density(aes(x = burn_cbi, color = cd_group_b10_pdsin4t1))
-ggsave(here(dir_figs, "cbi_by_cd_group_b10_pdsin4t1.png"))
+```{r}
 
 
 
+# ---------------------------------------------------------------------------
+# f / bf / df sit at the triangle's three corners; bdf is its own pure
+# color that the fill fades toward at the triangle's center
+# ---------------------------------------------------------------------------
 
-d_plot <- d_s_fire |>
-  dplyr::filter(burn_cbi >= 0 & biotic_relaxedforestnorm_5_yrs_prior_sum_yot <= 100 & !is.na(biotic_relaxedforestnorm_5_yrs_prior_sum_yot)) |>
-  dplyr::mutate(
-    biotic_bin = cut(
-      biotic_relaxedforestnorm_5_yrs_prior_sum_yot,
-      breaks = 10
-    )
+group_cols <- c(
+  f   = "#C9BFB4",
+  bf  = "#0072B2",  
+  df  = "#E69F00",
+  bdf = "#7A0177"   
+)
+
+# ---------------------------------------------------------------------------
+# 1. proportion of each group within each h3 hex
+# ---------------------------------------------------------------------------
+h3_props <- d_s_fire |>
+  st_drop_geometry() |>
+  filter(
+    !is.na(h3jsr_5),
+    !is.na(cd_group_b90_pdsin90)
+  ) |>
+  count(h3jsr_5, cd_group_b90_pdsin90, name = "n") |>
+  group_by(h3jsr_5) |>
+  mutate(
+    n_units = sum(n),
+    prop = n / n_units
+  ) |>
+  ungroup() |>
+  select(h3jsr_5, n_units, cd_group_b90_pdsin90, prop) |>
+  pivot_wider(
+    names_from = cd_group_b90_pdsin90,
+    values_from = prop,
+    values_fill = 0,
+    names_prefix = "p_"
   )
 
-ggplot(d_plot, aes(x = biotic_bin, y = burn_cbi)) +
-  geom_boxplot() +
-  theme_minimal()
-ggsave(here(dir_figs, "cbi_by_biotic_bin.png"))
+for (nm in c("p_f", "p_bf", "p_df", "p_bdf")) {
+  if (!nm %in% names(h3_props)) h3_props[[nm]] <- 0
+}
 
 
-
-
-d_plot <- d_s_fire |>
-  dplyr::filter(burn_cbi >= 0 & !is.na(pdsi_annual_5_yrs_prior_sum_yot)) |>
-  dplyr::mutate(
-    pdsi_bin = cut(
-      pdsi_annual_5_yrs_prior_sum_yot,
-      breaks = 10
-    )
+h3_props <- h3_props |>
+  mutate(
+    fill_col = mix_ternary_cols(p_f, p_bf, p_df, p_bdf)
   )
 
-ggplot(d_plot, aes(x = pdsi_bin, y = burn_cbi)) +
-  geom_boxplot() +
-  theme_minimal()
-ggsave(here(dir_figs, "cbi_by_pdsisumprior_bin.png"))
+# ---------------------------------------------------------------------------
+# 3. convert h3 cells to polygons and join on the index
+# ---------------------------------------------------------------------------
+h3_geom_sf <- h3jsr::cell_to_polygon(h3_props$h3jsr_5, simple = FALSE)
+
+idx_col <- setdiff(names(h3_geom_sf), "geometry")[1]
+
+h3_props_sf <- h3_geom_sf |>
+  rename(h3jsr_5 = all_of(idx_col)) |>
+  left_join(h3_props, by = "h3jsr_5") |>
+  st_transform(st_crs(ecors_sf))
+
+# ---------------------------------------------------------------------------
+# 4. the map itself
+# ---------------------------------------------------------------------------
+map_plot <- ggplot() +
+  geom_sf(
+    data = states,
+    fill = "gray97",
+    color = "gray85",
+    linewidth = 0.2
+  ) +
+  geom_sf(
+    data = ecors_sf,
+    fill = NA,
+    color = "gray20",
+    linewidth = 0.2
+  ) +
+  geom_sf(
+    data = h3_props_sf,
+    aes(fill = fill_col),
+    color = NA,
+    alpha = 0.95
+  ) +
+  scale_fill_identity() +
+  theme_minimal() +
+  labs(x = NULL, y = NULL)
 
 
-d_plot <- d_s_fire |>
-  dplyr::filter(burn_cbi >= 0 & !is.na(pdsi_annual_year_of)) |>
-  dplyr::mutate(
-    pdsiyo_bin = cut(
-      pdsi_annual_year_of,
-      breaks = 10
-    )
+legend_plot <- make_ternary_legend()
+
+# ---------------------------------------------------------------------------
+# 6. combine map + legend and save
+# ---------------------------------------------------------------------------
+combined_plot <- map_plot +
+  inset_element(
+    legend_plot,
+    left = 0.02, bottom = 0.02, right = 0.22, top = 0.22
   )
 
-ggplot(d_plot, aes(x = pdsiyo_bin, y = burn_cbi)) +
-  geom_boxplot() +
-  theme_minimal()
-ggsave(here(dir_figs, "cbi_by_pdsiyo_bin.png"))
-
-
-
-ggplot(d_s_fire, aes(x = as.character(hd_fingerprint_year_of), y = burn_cbi)) +
-  geom_boxplot() +
-  theme_minimal()
-ggsave(here(dir_figs, "cbi_by_hdyo_bin.png"))
+ggsave(
+  here(dir_figs, "spatial_domain_group_composition_per_hex_v2.png"),
+  plot = combined_plot,
+  units = "px",
+  width = 2000,
+  height = 2000
+)
 
 
 ```
