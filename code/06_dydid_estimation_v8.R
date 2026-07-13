@@ -26,6 +26,8 @@
 # Full dataset: 14.27 million pixel-time units, 425,743 pt_ids; 1993-2025 (~30 years)
 
 
+# v8: started run 11:34pm on 250gb machine 
+
 # Sys.setenv(LD_LIBRARY_PATH = paste("/opt/conda/lib", Sys.getenv("LD_LIBRARY_PATH"), sep = ":"))
 # Sys.setenv(PATH = paste("/usr/bin:/bin:/usr/local/bin", Sys.getenv("PATH"), sep = ":"))
 # Sys.setenv(PKG_CONFIG_PATH = "/usr/lib/x86_64-linux-gnu/pkgconfig")
@@ -431,13 +433,13 @@ threeyr_treatment_group_specs <- dplyr::bind_rows(
 broad_weighting_specs <- dplyr::bind_rows(
   # make_weighting_spec(
   #   weighting_id   = "glm_ato_topoclimnfg",
-  #   weight_formula = ~ aet + srtm + tpi + def + nfg_factor,
+  #   weight_formula = ~ tt_normal_aet + srtm + tpi + tt_normal_def + nfg_factor,
   #   method         = "glm",
   #   estimand       = "ATO"
   # ),
   make_weighting_spec(
     weighting_id   = "glm_ato_topoclimnfgrap",
-    weight_formula = ~ aet + srtm + tpi + def + nfg_factor + gam_rap_tree_pre6_fit,
+    weight_formula = ~ tt_normal_aet + srtm + tpi + tt_normal_def + nfg_factor + gam_rap_tree_pre6_fit,
     method         = "glm",
     estimand       = "ATO"
   )
@@ -446,13 +448,13 @@ broad_weighting_specs <- dplyr::bind_rows(
 nfg_weighting_specs <- dplyr::bind_rows(
   # make_weighting_spec(
   #   weighting_id   = "glm_ato_topoclimnfg",
-  #   weight_formula = ~ aet + srtm + tpi + def,
+  #   weight_formula = ~ tt_normal_aet + srtm + tpi + tt_normal_def,
   #   method         = "glm",
   #   estimand       = "ATO"
   # ),
   make_weighting_spec(
     weighting_id   = "glm_ato_topoclimnfgrap",
-    weight_formula = ~ aet + srtm + tpi + def + gam_rap_tree_pre6_fit,
+    weight_formula = ~ tt_normal_aet + srtm + tpi + tt_normal_def + gam_rap_tree_pre6_fit,
     method         = "glm",
     estimand       = "ATO"
   )
