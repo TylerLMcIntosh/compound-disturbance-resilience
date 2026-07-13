@@ -1,4 +1,4 @@
-# 06_dydid_estimation_v7.R
+# 06_dydid_estimation_v8.R
 # Execution script: weighting and DiD coefficient estimation
 # -------------------------------------------------------
 # Workflow:
@@ -40,7 +40,7 @@ rm(list = ls())
 
 if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
 library(here)
-here::i_am("code/06_dydid_estimation_v7.R")
+here::i_am("code/06_dydid_estimation_v8.R")
 
 required_pkgs <- c(
   "dplyr", "ggplot2", "tidyr", "readr", "purrr", "tibble", "stringr",
@@ -76,7 +76,7 @@ options(error = function() {
 # ── Directory layout ──────────────────────────────────────────────────────────
 
 run_name <- "GEE_resilience_v6_operational_ss500_ts50000"
-version  <- "v7"
+version  <- "v8"
 cyverse  <- FALSE
 
 if (cyverse) {
@@ -94,17 +94,17 @@ if (cyverse) {
   dir_figs    <- here::here("figs",    version)
 }
 
-dir_parquet_long  <- file.path(dir_data, "parquet_long_filtered")
-dir_parquet_short <- file.path(dir_data, "parquet_short_filtered")
+dir_parquet_long  <- file.path(dir_data, "parquet_long")
+dir_parquet_short <- file.path(dir_data, "parquet_short")
 
 dir_ensure_local(c(dir_data, dir_parquet_long, dir_raw, dir_manual, dir_results, dir_figs))
 
-x <- arrow::open_dataset(dir_parquet_long) |> collect()
-summary <- x |> group_by(nfg_factor) |> summarize(n = n())
-length(unique(x$pt_id))
-
-x_s <- arrow::open_dataset(dir_parquet_short) |> collect()
-summary_s <- x_s |> group_by(nfg_factor, fire) |> summarize(n = n())
+# x <- arrow::open_dataset(dir_parquet_long) |> collect()
+# summary <- x |> group_by(nfg_factor_clean) |> summarize(n = n())
+# length(unique(x$pt_id))
+# 
+# x_s <- arrow::open_dataset(dir_parquet_short) |> collect()
+# summary_s <- x_s |> group_by(nfg_factor_clean, fire) |> summarize(n = n())
 
 analysis_portion <- c(1:15)
 
@@ -207,23 +207,23 @@ ecoregion_code_names <- c(
 # Only analyze forest groups with over 10,000 unique pt_ids
 nfg_code_names <- arrow::open_dataset(dir_parquet_short) |>
   collect() |>
-  group_by(nfg_factor) |>
+  group_by(nfg_factor_clean) |>
   summarize(n = n()) |>
   arrange(desc(n)) |>
   filter(n >= 10000) |>
-  pull(nfg_factor)
+  pull(nfg_factor_clean)
 
-extended_nfg_code_names <- arrow::open_dataset(dir_parquet_short) |>
-  collect() |>
-  group_by(nfg_factor) |>
-  summarize(n = n()) |>
-  arrange(desc(n)) |>
-  pull(nfg_factor)
+# extended_nfg_code_names <- arrow::open_dataset(dir_parquet_short) |>
+#   collect() |>
+#   group_by(nfg_factor_clean) |>
+#   summarize(n = n()) |>
+#   arrange(desc(n)) |>
+#   pull(nfg_factor_clean)
 
 
-forestgroup_subset_specs <- expand_analysis_subset_specs_by_col(
+nfg_subset_specs <- expand_analysis_subset_specs_by_col(
   long_data_source  = dir_parquet_long,
-  split_col         = "nfg_factor",
+  split_col         = "nfg_factor_clean",
   id_prefix         = "nfg",
   values            = nfg_code_names,
   short_data_source = dir_parquet_short,
@@ -234,59 +234,96 @@ forestgroup_subset_specs <- expand_analysis_subset_specs_by_col(
        analysis_subset %in% analysis_portion)
 )
 
-all_data_subset_spec <- make_analysis_subset_spec(
-  subset_id   = "all_ecoregions",
+broadtype_subset_specs <- expand_analysis_subset_specs_by_col(
   long_data_source  = dir_parquet_long,
-  short_data_source = dir_parquet_short
+  split_col         = "nfg_broad_type",
+  id_prefix         = "broad",
+  short_data_source = dir_parquet_short,
+  check_all_files   = TRUE,
+  base_filter       = ~ fire == 0 | 
+    (fire == 1 & year_from_fire_index >= -20 & 
+       year_from_fire_index <= 20 & 
+       analysis_subset %in% analysis_portion)
 )
 
-
-# all_data_temporalsplit_subset_specs <- dplyr::bind_rows(
-#   make_analysis_subset_spec(
-#     subset_id         = "burnyear_2000_2009",
-#     long_data_source  = dir_parquet_long,
-#     data_filter       = ~ burn_year >= 2000 & burn_year < 2010,
-#     short_data_source = dir_parquet_short
-#   ),
-#   make_analysis_subset_spec(
-#     subset_id         = "burnyear_2010_2019",
-#     long_data_source  = dir_parquet_long,
-#     data_filter       = ~ burn_year >= 2010 & burn_year < 2020,
-#     short_data_source = dir_parquet_short
-#   )
-# )
-
-
-# nfg_temporalsplit_subset_specs <- dplyr::bind_rows(
-#   # early burn cohort (2000-2009) x nfg group
+# 
+# broadtype_temporalsplit_subset_specs <- dplyr::bind_rows(
+#   # early burn cohort x nfg group
 #   expand_analysis_subset_specs_by_col(
 #     long_data_source  = dir_parquet_long,
-#     split_col         = "nfg_factor",
+#     split_col         = "nfg_broad_type",
+#     id_prefix         = "broad_early",
+#     short_data_source = dir_parquet_short,
+#     check_all_files   = TRUE,
+#     base_filter = ~ fire == 0 | 
+#       (fire == 1 & year_from_fire_index >= -20 & 
+#          year_from_fire_index <= 20 & 
+#          analysis_subset %in% analysis_portion & burn_year >= 2002 & burn_year <= 2011)
+#   ),
+#   # late burn cohort x nfg group
+#   expand_analysis_subset_specs_by_col(
+#     long_data_source  = dir_parquet_long,
+#     split_col         = "nfg_broad_type",
+#     id_prefix         = "broad_late",
+#     short_data_source = dir_parquet_short,
+#     check_all_files   = TRUE,
+#     base_filter = ~ fire == 0 | 
+#       (fire == 1 & year_from_fire_index >= -20 & 
+#          year_from_fire_index <= 20 & 
+#          analysis_subset %in% analysis_portion & burn_year >= 2012 & burn_year <= 2021)
+#   )
+# )
+# 
+# 
+# nfg_temporalsplit_subset_specs <- dplyr::bind_rows(
+#   # early burn cohort x nfg group
+#   expand_analysis_subset_specs_by_col(
+#     long_data_source  = dir_parquet_long,
+#     split_col         = "nfg_factor_clean",
 #     id_prefix         = "nfg_early",
 #     values            = nfg_code_names,
 #     short_data_source = dir_parquet_short,
 #     check_all_files   = TRUE,
-#     base_filter       = ~ burn_year >= 2000 & burn_year < 2010
+#     base_filter = ~ fire == 0 | 
+#       (fire == 1 & year_from_fire_index >= -20 & 
+#          year_from_fire_index <= 20 & 
+#          analysis_subset %in% analysis_portion & burn_year >= 2002 & burn_year <= 2011)
 #   ),
-#   # late burn cohort (2010-2019) x nfg group
+#   # late burn cohort x nfg group
 #   expand_analysis_subset_specs_by_col(
 #     long_data_source  = dir_parquet_long,
-#     split_col         = "nfg_factor",
+#     split_col         = "nfg_factor_clean",
 #     id_prefix         = "nfg_late",
 #     values            = nfg_code_names,
 #     short_data_source = dir_parquet_short,
 #     check_all_files   = TRUE,
-#     base_filter       = ~ burn_year >= 2010 & burn_year < 2020
+#     base_filter = ~ fire == 0 | 
+#       (fire == 1 & year_from_fire_index >= -20 & 
+#          year_from_fire_index <= 20 & 
+#          analysis_subset %in% analysis_portion & burn_year >= 2012 & burn_year <= 2021)
 #   )
 # )
+
+
+all_nfg_specs <- dplyr::bind_rows(
+  nfg_subset_specs#,
+  #nfg_temporalsplit_subset_specs
+)
+
+all_broadtype_specs <- dplyr::bind_rows(
+  broadtype_subset_specs#,
+  #broadtype_temporalsplit_subset_specs
+)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 4. Outcome specs ----
 # ══════════════════════════════════════════════════════════════════════════════
 
-outcome_specs <- tibble::tibble(outcome = c("rap_tree"#,
-                                            #"vcf_tree"
-                                            ))
+outcome_specs <- tibble::tibble(outcome = c("rap_tree",
+                                            "vcf_tree"
+                                            )
+                                )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -354,90 +391,68 @@ set_cd_groups <- function(df,
 }
 
 
-initial_treatment_group_specs <- dplyr::bind_rows(
+sixyr_treatment_group_specs <- dplyr::bind_rows(
   make_treatment_group_spec(
-    group_id   = "b10_pdsisumn10",
-    group_col  = "b10_pdsisumn10",
+    group_id   = "6yr_b90global_pdsisum90global",
+    group_col  = "6yr_b90global_pdsisum90global",
     dummy_cols = c("cd_f", "cd_bf", "cd_df", "cd_bdf"),
     group_fun  = set_cd_groups,
     group_args = list(
-      b_nm        = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
-      d_nm        = "pdsi_annual_5_yrs_prior_sum_yot",
-      b_threshold = 10,
-      d_threshold = -10
+      b_nm        = "biotic_relaxedforestnorm_sum_n5_to_p0",
+      d_nm        = "pdsi_annual_sum_n5_to_p0",
+      b_threshold = 9.7,
+      d_threshold = -11.8
     )
   )
 )
 
-expanded_treatment_group_specs <- dplyr::bind_rows(
+threeyr_treatment_group_specs <- dplyr::bind_rows(
   make_treatment_group_spec(
-    group_id   = "b10_pdsin4t1",
-    group_col  = "b10_pdsin4t1",
+    group_id   = "3yr_b90global_pdsisum90global",
+    group_col  = "3yr_b90global_pdsisum90global",
     dummy_cols = c("cd_f", "cd_bf", "cd_df", "cd_bdf"),
     group_fun  = set_cd_groups,
     group_args = list(
-      b_nm        = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
-      d_nm        = "pdsi_annual_5_yrs_prior_threshold_n4_yot",
-      b_threshold = 10,
-      d_threshold = 1
-    )
-  ),
-  make_treatment_group_spec(
-    group_id   = "b10_pdsin3t1",
-    group_col  = "b10_pdsin3t1",
-    dummy_cols = c("cd_f", "cd_bf", "cd_df", "cd_bdf"),
-    group_fun  = set_cd_groups,
-    group_args = list(
-      b_nm        = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
-      d_nm        = "pdsi_annual_5_yrs_prior_threshold_n3_yot",
-      b_threshold = 10,
-      d_threshold = 1
-    )
-  ),
-  make_treatment_group_spec(
-    group_id   = "b25_pdsisumn10",
-    group_col  = "b25_pdsisumn10",
-    dummy_cols = c("cd_f", "cd_bf", "cd_df", "cd_bdf"),
-    group_fun  = set_cd_groups,
-    group_args = list(
-      b_nm        = "biotic_relaxedforestnorm_5_yrs_prior_sum_yot",
-      d_nm        = "pdsi_annual_5_yrs_prior_sum_yot",
-      b_threshold = 25,
-      d_threshold = -10
-    )
+      b_nm        = "biotic_relaxedforestnorm_sum_n2_to_p0",
+      d_nm        = "pdsi_annual_sum_n2_to_p0",
+      b_threshold = 4,
+      d_threshold = -7.9
+    )    
   )
 )
+
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 6. Weighting specs ----
 # ══════════════════════════════════════════════════════════════════════════════
 
-weighting_specs <- dplyr::bind_rows(
-  make_weighting_spec(
-    weighting_id   = "glm_ato_topoclimnfg",
-    weight_formula = ~ aet + srtm + tpi + def + chili + nfg_factor,
-    method         = "glm",
-    estimand       = "ATO"
-  ),
+broad_weighting_specs <- dplyr::bind_rows(
+  # make_weighting_spec(
+  #   weighting_id   = "glm_ato_topoclimnfg",
+  #   weight_formula = ~ aet + srtm + tpi + def + nfg_factor,
+  #   method         = "glm",
+  #   estimand       = "ATO"
+  # ),
   make_weighting_spec(
     weighting_id   = "glm_ato_topoclimnfgrap",
-    weight_formula = ~ aet + srtm + tpi + def + chili + nfg_factor + gam_rap_tree_pre6_fit,
+    weight_formula = ~ aet + srtm + tpi + def + nfg_factor + gam_rap_tree_pre6_fit,
     method         = "glm",
     estimand       = "ATO"
   )
 )
 
-forest_group_weighting_specs <- dplyr::bind_rows(
-  make_weighting_spec(
-    weighting_id   = "glm_ato_topoclimnfg",
-    weight_formula = ~ aet + srtm + tpi + def + chili,
-    method         = "glm",
-    estimand       = "ATO"
-  ),
+nfg_weighting_specs <- dplyr::bind_rows(
+  # make_weighting_spec(
+  #   weighting_id   = "glm_ato_topoclimnfg",
+  #   weight_formula = ~ aet + srtm + tpi + def,
+  #   method         = "glm",
+  #   estimand       = "ATO"
+  # ),
   make_weighting_spec(
     weighting_id   = "glm_ato_topoclimnfgrap",
-    weight_formula = ~ aet + srtm + tpi + def + chili + gam_rap_tree_pre6_fit,
+    weight_formula = ~ aet + srtm + tpi + def + gam_rap_tree_pre6_fit,
     method         = "glm",
     estimand       = "ATO"
   )
@@ -452,7 +467,7 @@ forest_group_weighting_specs <- dplyr::bind_rows(
 # no_agg = TRUE gives cohort-specific coefficients required by agg_specs.
 # mem.clean = TRUE is recommended for models of this size.
 
-sunab_formula_b10_pdsisumn10 <- paste0(
+sunab_formula_6yr <- paste0(
   "{outcome} ~ ",
   "sunab(FirstTreat, year, ref.p = -6, no_agg = TRUE):cd_f + ",
   "sunab(FirstTreat, year, ref.p = -6, no_agg = TRUE):cd_bf + ",
@@ -461,11 +476,20 @@ sunab_formula_b10_pdsisumn10 <- paste0(
   " | pt_id + year"
 )
 
-initial_model_specs <- dplyr::bind_rows(
+sunab_formula_3yr <- paste0(
+  "{outcome} ~ ",
+  "sunab(FirstTreat, year, ref.p = -3, no_agg = TRUE):cd_f + ",
+  "sunab(FirstTreat, year, ref.p = -3, no_agg = TRUE):cd_bf + ",
+  "sunab(FirstTreat, year, ref.p = -3, no_agg = TRUE):cd_df + ",
+  "sunab(FirstTreat, year, ref.p = -3, no_agg = TRUE):cd_bdf",
+  " | pt_id + year"
+)
+
+sixyr_model_specs <- dplyr::bind_rows(
 
   make_model_spec(
-    model_id         = "sunab_twfe_unweighted",
-    formula_template = sunab_formula_b10_pdsisumn10,
+    model_id         = "sunab_twfe_unweighted_6yr",
+    formula_template = sunab_formula_6yr,
     estimator_type   = "sunab",
     term_pattern     = "^year::",
     weights_col      = NA_character_,
@@ -473,14 +497,36 @@ initial_model_specs <- dplyr::bind_rows(
   ),
 
   make_model_spec(
-    model_id         = "sunab_twfe_glmatotopoclimnfg",
-    formula_template = sunab_formula_b10_pdsisumn10,
+    model_id         = "sunab_twfe_glm_ato_topoclimnfgrap_6yr",
+    formula_template = sunab_formula_6yr,
     estimator_type   = "sunab",
     term_pattern     = "^year::",
-    weights_col      = "glm_ato_topoclimnfg_weights",
+    weights_col      = "glm_ato_topoclimnfgrap_weights",
     feols_args       = list(mem.clean = TRUE)
   )
 
+)
+
+threeyr_model_specs <- dplyr::bind_rows(
+  
+  make_model_spec(
+    model_id         = "sunab_twfe_unweighted_3yr",
+    formula_template = sunab_formula_3yr,
+    estimator_type   = "sunab",
+    term_pattern     = "^year::",
+    weights_col      = NA_character_,
+    feols_args       = list(mem.clean = TRUE)
+  ),
+  
+  make_model_spec(
+    model_id         = "sunab_twfe_glm_ato_topoclimnfgrap_3yr",
+    formula_template = sunab_formula_3yr,
+    estimator_type   = "sunab",
+    term_pattern     = "^year::",
+    weights_col      = "glm_ato_topoclimnfgrap_weights",
+    feols_args       = list(mem.clean = TRUE)
+  )
+  
 )
 
 
@@ -537,31 +583,31 @@ agg_specs <- list(
         dplyr::select(term, event_time, dummy_group)
     },
     label = "Cohort-averaged event study by dummy group"
-  )#,
+  ),
 
-  # # Cohort-bin event study: same estimates further stratified by cohort bin.
-  # # Script 3 subsets by cohort_bin to run cohort-stratified inference.
-  # # Adjust min/max cohort years to match your data.
-  # make_agg_spec(
-  #   id    = "cohort_early_late",
-  #   agg   = "(year::-?[0-9]+):cohort::([0-9]+):(cd_.*)",
-  #   group_fun = function(x) {
-  #     x |>
-  #       dplyr::mutate(
-  #         event_time  = as.integer(stringr::str_extract(group_1, "-?[0-9]+")),
-  #         cohort      = as.integer(group_2),
-  #         dummy_group = group_3,
-  #         cohort_bin  = dplyr::case_when(
-  #           cohort >= 2000 & cohort <= 2010 ~ "early",
-  #           cohort >= 2011 & cohort <= 2020 ~ "late",
-  #           TRUE ~ NA_character_
-  #         )
-  #       ) |>
-  #       dplyr::filter(!is.na(cohort_bin)) |>
-  #       dplyr::select(term, event_time, cohort_bin, dummy_group)
-  #   },
-  #   label = "Event study by cohort bin (early 2000-2010 / late 2011-2020) and dummy group"
-  # )
+  # Cohort-bin event study: same estimates further stratified by cohort bin.
+  # Script 3 subsets by cohort_bin to run cohort-stratified inference.
+  # Adjust min/max cohort years to match your data.
+  make_agg_spec(
+    id    = "cohort_early_late",
+    agg   = "(year::-?[0-9]+):cohort::([0-9]+):(cd_.*)",
+    group_fun = function(x) {
+      x |>
+        dplyr::mutate(
+          event_time  = as.integer(stringr::str_extract(group_1, "-?[0-9]+")),
+          cohort      = as.integer(group_2),
+          dummy_group = group_3,
+          cohort_bin  = dplyr::case_when(
+            cohort >= 2002 & cohort <= 2011 ~ "early",
+            cohort >= 2012 & cohort <= 2021 ~ "late",
+            TRUE ~ NA_character_
+          )
+        ) |>
+        dplyr::filter(!is.na(cohort_bin)) |>
+        dplyr::select(term, event_time, cohort_bin, dummy_group)
+    },
+    label = "Event study by cohort bin (early 2002-2011 / late 2012-2021) and dummy group"
+  )
 
 )
 
@@ -607,23 +653,50 @@ preview_run_grid <- function(subset_specs, outcome_specs, treatment_group_specs,
 # outcome_specs <- outcome_specs[1,]
 # vcov_specs <- vcov_specs[1,]
 
-preview_run_grid(ecoregion_subset_specs, outcome_specs, initial_treatment_group_specs,
-                 initial_model_specs, vcov_specs, agg_specs)
+prev <- preview_run_grid(all_nfg_specs, outcome_specs, threeyr_treatment_group_specs,
+                 threeyr_model_specs, vcov_specs, agg_specs)
 
-preview_run_grid(all_data_subset_spec, outcome_specs, initial_treatment_group_specs,
-                 initial_model_specs, vcov_specs, agg_specs)
+prev <- preview_run_grid(all_nfg_specs, outcome_specs, sixyr_treatment_group_specs,
+                         sixyr_model_specs, vcov_specs, agg_specs)
+
+
+prev <- preview_run_grid(all_broadtype_specs, outcome_specs, threeyr_treatment_group_specs,
+                         threeyr_model_specs, vcov_specs, agg_specs)
+
+prev <- preview_run_grid(all_broadtype_specs, outcome_specs, sixyr_treatment_group_specs,
+                         sixyr_model_specs, vcov_specs, agg_specs)
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 11. Run weighting experiment ----
 # ══════════════════════════════════════════════════════════════════════════════
 
-tic('weighting ecoregions')
-ecoregion_results_weighting <- run_weighting_experiment(
+# tic('weighting ecoregions')
+# ecoregion_results_weighting <- run_weighting_experiment(
+#   dataset_spec          = dataset_spec,
+#   analysis_subset_specs = ecoregion_subset_specs,
+#   treatment_group_specs = initial_treatment_group_specs,
+#   weighting_specs       = weighting_specs,
+#   dir_out               = dir_results,
+#   skip_existing         = TRUE,
+#   verbose_timing        = TRUE,
+#   .progress             = TRUE
+# )
+# toc()
+# 
+# failed_weighting <- purrr::keep(ecoregion_results_weighting$run_results, \(r) !is.null(r$error))
+# if (length(failed_weighting) > 0) {
+#   message("Failed weighting runs:")
+#   purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
+# }
+
+tic('weighting 3-yr forest groups')
+nfg_results_weighting <- run_weighting_experiment(
   dataset_spec          = dataset_spec,
-  analysis_subset_specs = ecoregion_subset_specs,
-  treatment_group_specs = initial_treatment_group_specs,
-  weighting_specs       = weighting_specs,
+  analysis_subset_specs = all_nfg_specs,
+  treatment_group_specs = threeyr_treatment_group_specs,
+  weighting_specs       = nfg_weighting_specs,
   dir_out               = dir_results,
   skip_existing         = TRUE,
   verbose_timing        = TRUE,
@@ -631,18 +704,19 @@ ecoregion_results_weighting <- run_weighting_experiment(
 )
 toc()
 
-failed_weighting <- purrr::keep(ecoregion_results_weighting$run_results, \(r) !is.null(r$error))
+failed_weighting <- purrr::keep(nfg_results_weighting$run_results, \(r) !is.null(r$error))
 if (length(failed_weighting) > 0) {
   message("Failed weighting runs:")
   purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
 }
 
-tic('weighting forest groups')
-forestgroup_results_weighting <- run_weighting_experiment(
+
+tic('weighting 6-yr forest groups')
+nfg_results_weighting <- run_weighting_experiment(
   dataset_spec          = dataset_spec,
-  analysis_subset_specs = forestgroup_subset_specs,
-  treatment_group_specs = initial_treatment_group_specs,
-  weighting_specs       = forest_group_weighting_specs,
+  analysis_subset_specs = all_nfg_specs,
+  treatment_group_specs = sixyr_treatment_group_specs,
+  weighting_specs       = nfg_weighting_specs,
   dir_out               = dir_results,
   skip_existing         = TRUE,
   verbose_timing        = TRUE,
@@ -650,18 +724,22 @@ forestgroup_results_weighting <- run_weighting_experiment(
 )
 toc()
 
-failed_weighting <- purrr::keep(forestgroup_results_weighting$run_results, \(r) !is.null(r$error))
+failed_weighting <- purrr::keep(nfg_results_weighting$run_results, \(r) !is.null(r$error))
 if (length(failed_weighting) > 0) {
   message("Failed weighting runs:")
   purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
 }
 
-tic('weighting all')
-all_results_weighting <- run_weighting_experiment(
+
+
+
+
+tic('weighting 3-yr broad groups')
+broad_results_weighting <- run_weighting_experiment(
   dataset_spec          = dataset_spec,
-  analysis_subset_specs = all_data_subset_spec,
-  treatment_group_specs = initial_treatment_group_specs,
-  weighting_specs       = weighting_specs,
+  analysis_subset_specs = all_broadtype_specs,
+  treatment_group_specs = threeyr_treatment_group_specs,
+  weighting_specs       = broad_weighting_specs,
   dir_out               = dir_results,
   skip_existing         = TRUE,
   verbose_timing        = TRUE,
@@ -669,11 +747,35 @@ all_results_weighting <- run_weighting_experiment(
 )
 toc()
 
-failed_weighting <- purrr::keep(all_results_weighting$run_results, \(r) !is.null(r$error))
+failed_weighting <- purrr::keep(broad_results_weighting$run_results, \(r) !is.null(r$error))
 if (length(failed_weighting) > 0) {
   message("Failed weighting runs:")
   purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
 }
+
+
+tic('weighting 6-yr broad groups')
+broad_results_weighting <- run_weighting_experiment(
+  dataset_spec          = dataset_spec,
+  analysis_subset_specs = all_broadtype_specs,
+  treatment_group_specs = sixyr_treatment_group_specs,
+  weighting_specs       = broad_weighting_specs,
+  dir_out               = dir_results,
+  skip_existing         = TRUE,
+  verbose_timing        = TRUE,
+  .progress             = TRUE
+)
+toc()
+
+failed_weighting <- purrr::keep(broad_results_weighting$run_results, \(r) !is.null(r$error))
+if (length(failed_weighting) > 0) {
+  message("Failed weighting runs:")
+  purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
+}
+
+
+
+
 
 rebuild_weighting_tables(dir_out = dir_results, write_csv = TRUE)
 
@@ -682,13 +784,41 @@ rebuild_weighting_tables(dir_out = dir_results, write_csv = TRUE)
 # 12. Run estimation experiment ----
 # ══════════════════════════════════════════════════════════════════════════════
 
-tic('sunab estimation ecoregions')
+tic('sunab estimation 3 yr nfg')
 results_sunab_ecor <- run_experiment(
   dataset_spec          = dataset_spec,
-  analysis_subset_specs = ecoregion_subset_specs,
+  analysis_subset_specs = all_nfg_specs,
   outcome_specs         = outcome_specs,
-  treatment_group_specs = initial_treatment_group_specs,
-  model_specs           = initial_model_specs,
+  treatment_group_specs = threeyr_treatment_group_specs,
+  model_specs           = threeyr_model_specs,
+  vcov_specs            = vcov_specs,
+  agg_specs             = agg_specs,
+  dir_out               = dir_results,
+  group_palette         = group_palette,
+  ci_level              = 0.95,
+  run_estimation        = TRUE,
+  run_descriptive       = TRUE,
+  descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
+  skip_existing         = TRUE,
+  verbose_timing        = TRUE,
+  .progress             = TRUE
+)
+toc()
+
+failed_ecor <- purrr::keep(results_sunab_ecor$run_results, \(r) !is.null(r$error))
+if (length(failed_ecor) > 0) {
+  message("Failed estimation runs:")
+  purrr::walk(failed_ecor, \(r) message("  ", r$run_id, ": ", r$error))
+}
+
+
+tic('sunab estimation 6 yr nfg')
+results_sunab_ecor <- run_experiment(
+  dataset_spec          = dataset_spec,
+  analysis_subset_specs = all_nfg_specs,
+  outcome_specs         = outcome_specs,
+  treatment_group_specs = sixyr_treatment_group_specs,
+  model_specs           = sixyr_model_specs,
   vcov_specs            = vcov_specs,
   agg_specs             = agg_specs,
   dir_out               = dir_results,
@@ -711,13 +841,33 @@ if (length(failed_ecor) > 0) {
 
 
 
-tic('sunab estimation forest groups')
-results_sunab_forestgroup <- run_experiment(
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Rebuild merged output tables ----
+# ══════════════════════════════════════════════════════════════════════════════
+
+all_estimation_tables <- rebuild_estimation_tables(dir_out = dir_results, write_csv = TRUE)
+all_descriptive_tables <- rebuild_descriptive_tables(dir_out = dir_results, write_csv = TRUE)
+
+message(glue::glue(
+  "Coef rows:       {nrow(all_estimation_tables$coef_tbl)}\n",
+  "Agg specs found: {paste(names(all_estimation_tables$agg_tbls), collapse = ', ')}\n",
+  "Unique run_ids:  {dplyr::n_distinct(all_estimation_tables$run_registry$run_id)}"
+))
+
+relativize_result_paths(dir_results = dir_results, base = here::here())
+
+
+
+
+
+tic('sunab estimation 3 yr broad')
+results_sunab_ecor <- run_experiment(
   dataset_spec          = dataset_spec,
-  analysis_subset_specs = forestgroup_subset_specs,
+  analysis_subset_specs = all_broadtype_specs,
   outcome_specs         = outcome_specs,
-  treatment_group_specs = initial_treatment_group_specs,
-  model_specs           = initial_model_specs,
+  treatment_group_specs = threeyr_treatment_group_specs,
+  model_specs           = threeyr_model_specs,
   vcov_specs            = vcov_specs,
   agg_specs             = agg_specs,
   dir_out               = dir_results,
@@ -732,21 +882,20 @@ results_sunab_forestgroup <- run_experiment(
 )
 toc()
 
-failed_forestgroup <- purrr::keep(results_sunab_forestgroup$run_results, \(r) !is.null(r$error))
-if (length(failed_forestgroup) > 0) {
+failed_ecor <- purrr::keep(results_sunab_ecor$run_results, \(r) !is.null(r$error))
+if (length(failed_ecor) > 0) {
   message("Failed estimation runs:")
-  purrr::walk(failed_forestgroup, \(r) message("  ", r$run_id, ": ", r$error))
+  purrr::walk(failed_ecor, \(r) message("  ", r$run_id, ": ", r$error))
 }
 
 
-
-tic('sunab estimation all')
-results_sunab_all <- run_experiment(
+tic('sunab estimation 6 yr broad')
+results_sunab_ecor <- run_experiment(
   dataset_spec          = dataset_spec,
-  analysis_subset_specs = all_data_subset_spec,
+  analysis_subset_specs = all_broadtype_specs,
   outcome_specs         = outcome_specs,
-  treatment_group_specs = initial_treatment_group_specs,
-  model_specs           = initial_model_specs,
+  treatment_group_specs = sixyr_treatment_group_specs,
+  model_specs           = sixyr_model_specs,
   vcov_specs            = vcov_specs,
   agg_specs             = agg_specs,
   dir_out               = dir_results,
@@ -761,17 +910,18 @@ results_sunab_all <- run_experiment(
 )
 toc()
 
-failed_all <- purrr::keep(results_sunab_all$run_results, \(r) !is.null(r$error))
-if (length(failed_all) > 0) {
+failed_ecor <- purrr::keep(results_sunab_ecor$run_results, \(r) !is.null(r$error))
+if (length(failed_ecor) > 0) {
   message("Failed estimation runs:")
-  purrr::walk(failed_all, \(r) message("  ", r$run_id, ": ", r$error))
+  purrr::walk(failed_ecor, \(r) message("  ", r$run_id, ": ", r$error))
 }
+
 
 
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 13. Rebuild merged output tables ----
+# Rebuild merged output tables ----
 # ══════════════════════════════════════════════════════════════════════════════
 
 all_estimation_tables <- rebuild_estimation_tables(dir_out = dir_results, write_csv = TRUE)

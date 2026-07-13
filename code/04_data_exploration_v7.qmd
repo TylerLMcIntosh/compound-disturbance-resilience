@@ -32,6 +32,7 @@ install_load_packages(c(
   "ggpmisc",
   "h3jsr",
   "farver",
+  "glue",
   "corrplot"))
 
 
@@ -71,6 +72,8 @@ d_s <- open_dataset(here(dir_derived, "parquet_short"), format = "parquet") |>
 l3pf <- perc_forest <- read_csv(here('data/derived', "l3_perc_usfs_forest.csv"))
 l3_sf <- access_data_epa_l3_ecoregions_vsi()
 
+d_s_fire <- d_s |> filter(fire == 1)
+d_s_nfire <- d_s |> filter(fire == 0)
 
 ```
 
@@ -106,19 +109,257 @@ ggsave(here(dir_figs, "nfg_analysis_subset_split.png"))
 
 ```
 
-# Examine density
+# Examine density - DEPRECATED: see next chunk for functioned
 
 ```{r}
+# 
+# d_s <- d_s |>
+#   mutate(biotic_relaxedforestnorm_sum_n5_to_p0_densityplot = ifelse(biotic_relaxedforestnorm_sum_n5_to_p0 < 0.1, NA, biotic_relaxedforestnorm_sum_n5_to_p0)) |>
+#   mutate("bnonzero" = ifelse(biotic_relaxedforestnorm_sum_n5_to_p0 < 0.1, "< 0.1", ">= 0.1"),
+#          "dbelowzero" = ifelse(pdsi_annual_sum_n5_to_p0 < 0, "< 0", ">= 0"))
+# 
+# 
 
-d_s <- d_s |>
-  mutate(biotic_relaxedforestnorm_sum_n5_to_p0_densityplot = ifelse(biotic_relaxedforestnorm_sum_n5_to_p0 < 0.1, NA, biotic_relaxedforestnorm_sum_n5_to_p0)) |>
-  mutate("bnonzero" = ifelse(biotic_relaxedforestnorm_sum_n5_to_p0 < 0.1, "< 0.1", ">= 0.1"),
-         "dbelowzero" = ifelse(pdsi_annual_sum_n5_to_p0 < 0, "< 0", ">= 0"))
+# 
+# 
+# calc_deciles <- function(df, var) {
+#   x <- dplyr::pull(df, var)
+# 
+#   x <- x[!is.na(x)]
+# 
+#   probs <- seq(0.1, 0.9, by = 0.1)
+#   dec <- stats::quantile(x, probs = probs, na.rm = TRUE, names = TRUE)
+# 
+#   return(dec)
+# }
+# 
+# calc_twentciles <- function(df, var) {
+#   x <- dplyr::pull(df, var)
+# 
+#   x <- x[!is.na(x)]
+# 
+#   probs <- seq(0.1, 0.9, by = 0.05)
+#   dec <- stats::quantile(x, probs = probs, na.rm = TRUE, names = TRUE)
+# 
+#   return(dec)
+# }
+# 
+# 
+# # deciles
+# raw_f_deciles_bio <- calc_deciles(d_s_fire, "biotic_relaxedforestnorm_sum_n5_to_p0")
+# raw_nf_deciles_bio <- calc_deciles(d_s_nfire, "biotic_relaxedforestnorm_sum_n5_to_p0")
+# 
+# raw_f_deciles_dr <- calc_deciles(d_s_fire, "pdsi_annual_sum_n5_to_p0")
+# raw_nf_deciles_dr <- calc_deciles(d_s_nfire, "pdsi_annual_sum_n5_to_p0")
+# 
+# 
+# raw_f_twentciles_bio <- calc_twentciles(d_s_fire, "biotic_relaxedforestnorm_sum_n5_to_p0")
+# raw_nf_twentciles_bio <- calc_twentciles(d_s_nfire, "biotic_relaxedforestnorm_sum_n5_to_p0")
+# 
+# raw_f_twentciles_dr <- calc_twentciles(d_s_fire, "pdsi_annual_sum_n5_to_p0")
+# raw_nf_twentciles_dr <- calc_twentciles(d_s_nfire, "pdsi_annual_sum_n5_to_p0")
+# 
+# 
+# 
+# 
+# # figs
+# bio_frac <- d_s_fire |>
+#    group_by(bnonzero) |>
+#    count() |>
+#   ungroup()
+# 
+# dr_frac <- d_s_fire |>
+#    group_by(dbelowzero) |>
+#    count() |>
+#   ungroup()
+# 
+# 
+# low_pie_color <- "slategray3"
+# high_pie_color <- "slategray4"
+# 
+# # pie?
+# 
+# bio_frac_plot <- bio_frac |>
+#   dplyr::mutate(
+#     bnonzero = factor(
+#       bnonzero,
+#       levels = c(">= 0.1", "< 0.1")
+#     ),
+#     prop = n / sum(n),
+#     label = scales::percent(prop, accuracy = 1)
+#   )
+# 
+# ggplot(bio_frac_plot, aes(x = "", y = prop, fill = bnonzero)) +
+#   geom_col(width = 1, color = "white") +
+#   geom_text(
+#     aes(label = label),
+#     position = position_stack(vjust = 0.5),
+#     color = "white",
+#     size = 3
+#   ) +
+#   coord_polar(theta = "y") +
+#   scale_fill_manual(
+#     values = c(
+#       "< 0.1" = low_pie_color,
+#       ">= 0.1" = high_pie_color
+#     )
+#   ) +
+#   labs(
+#     x = NULL,
+#     y = NULL,
+#     fill = "bnonzero"
+#   ) +
+#   theme_void() +
+#   theme(
+#     legend.title = element_blank()
+#   )
+# 
+# ggsave(here(dir_figs, "biotic_frac_pie.png"),
+#        units = "px",
+#        width = 500,
+#        height = 500)
+# 
+# 
+# 
+# 
+# dr_frac_plot <- dr_frac |>
+#   dplyr::mutate(
+#     dbelowzero = factor(
+#       dbelowzero,
+#       levels = c(">= 0", "< 0")
+#     ),
+#     prop = n / sum(n),
+#     label = scales::percent(prop, accuracy = 1)
+#   )
+# 
+# 
+# ggplot(dr_frac_plot, aes(x = "", y = prop, fill = dbelowzero)) +
+#   geom_col(width = 1, color = "white") +
+#   geom_text(
+#     aes(label = label),
+#     position = position_stack(vjust = 0.5),
+#     color = "white",
+#     size = 3
+#   ) +
+#   coord_polar(theta = "y") +
+#   scale_fill_manual(
+#     values = c(
+#       "< 0" = low_pie_color,
+#       ">= 0" = high_pie_color
+#     )
+#   ) +
+#   labs(
+#     x = NULL,
+#     y = NULL,
+#     fill = "dbelowzero"
+#   ) +
+#   theme_void() +
+#   theme(
+#     legend.title = element_blank()
+#   )
+# 
+# ggsave(here(dir_figs, "drought_frac_pie.png"),
+#        units = "px",
+#        width = 500,
+#        height = 500)
+# 
+# 
+# 
+# 
+# 
+# major_breaks <- 10^(-1:2)
+# 
+# minor_breaks <- unlist(lapply(-1:2, function(i) (2:9) * 10^i))
+# 
+# 
+# ggplot() +
+#   geom_density(
+#     data = d_s_nfire,
+#     aes(x = biotic_relaxedforestnorm_sum_n5_to_p0_densityplot),
+#     color = "grey70",
+#     lwd = 1
+#   ) +
+#   # geom_vline(xintercept = raw_nf_deciles_bio[9],
+#   #            color = "grey70",
+#   #            lty = 2,
+#   #            lwd = 1) +
+#   geom_density(
+#     data = d_s_fire,
+#     aes(x = biotic_relaxedforestnorm_sum_n5_to_p0_densityplot),
+#     color = "maroon",
+#     lwd = 1
+#   ) +
+#   geom_vline(xintercept = raw_f_deciles_bio[9],
+#              color = "maroon",
+#              lty = 2,
+#              lwd = 1) +
+#   scale_x_log10(
+#     breaks = major_breaks,
+#     minor_breaks = minor_breaks,
+#     labels = scales::label_number()
+#   ) +
+#   theme_minimal() +
+#   theme(
+#     panel.grid.major.x = element_line(color = "grey85"),
+#     panel.grid.minor.x = element_line(color = "grey95", linewidth = 0.3),
+#     axis.text.y = element_blank(),
+#     axis.title.y = element_blank()
+#   ) +
+#   labs(x = "6-year cumulative biotic disturbance")
+# 
+# ggsave(here(dir_figs, "biotic_density.png"),
+#        units = "px",
+#        width = 1000,
+#        height = 700)
+# 
+# 
+# 
+# 
+# ggplot() +
+#   geom_density(
+#     data = d_s_nfire,
+#     aes(x = pdsi_annual_sum_n5_to_p0),
+#     color = "grey70",
+#     lwd = 1
+#   ) +
+#   # geom_vline(xintercept = raw_nf_deciles_dr[1],
+#   #            color = "grey70",
+#   #            lty = 2,
+#   #            lwd = 1) +
+#   geom_density(
+#     data = d_s_fire,
+#     aes(x = pdsi_annual_sum_n5_to_p0),
+#     color = "maroon",
+#     lwd = 1
+#   ) +
+#   geom_vline(xintercept = raw_f_deciles_dr[1],
+#              color = "maroon",
+#              lty = 2,
+#              lwd = 1) +
+#   theme_minimal() +
+#   theme(
+#     panel.grid.major.x = element_line(color = "grey85"),
+#     panel.grid.minor.x = element_line(color = "grey95", linewidth = 0.3),
+#     axis.text.y = element_blank(),
+#     axis.title.y = element_blank()
+#   ) +
+#   labs(x = "6-year cumulative drought") +
+#   scale_x_reverse()
+# 
+# ggsave(here(dir_figs, "drought_density.png"),
+#        units = "px",
+#        width = 1000,
+#        height = 700)
+# 
 
 
-d_s_fire <- d_s |> filter(fire == 1)
-d_s_nfire <- d_s |> filter(fire == 0)
 
+```
+
+
+# examine densities functioned
+
+```{r}
 
 calc_deciles <- function(df, var) {
   x <- dplyr::pull(df, var)
@@ -142,222 +383,347 @@ calc_twentciles <- function(df, var) {
   return(dec)
 }
 
+disturbance_density_description <- function(
+    df_background,
+    df_interest,
+    col_name,
+    type,
+    dir_figs,
+    x_label,
+    caption = FALSE,
+    vline_decile_idx = NULL,   # defaults to 9 for biotic, 1 for drought
+    file_append = ""
+) {
+  type <- match.arg(type, c("biotic", "drought"))
 
-# deciles
-raw_f_deciles_bio <- calc_deciles(d_s_fire, "biotic_relaxedforestnorm_sum_n5_to_p0")
-raw_nf_deciles_bio <- calc_deciles(d_s_nfire, "biotic_relaxedforestnorm_sum_n5_to_p0")
+  if (is.null(vline_decile_idx)) {
+    vline_decile_idx <- if (type == "biotic") 9L else 1L
+  }
 
-raw_f_deciles_dr <- calc_deciles(d_s_fire, "pdsi_annual_sum_n5_to_p0")
-raw_nf_deciles_dr <- calc_deciles(d_s_nfire, "pdsi_annual_sum_n5_to_p0")
+  # create output subdirectory
+  out_dir <- here::here(dir_figs, paste0("density_description_", col_name, file_append))
+  if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
+  # ---- quantiles ----
+  interest_deciles      <- calc_deciles(df_interest,    col_name)
+  background_deciles    <- calc_deciles(df_background,  col_name)
+  interest_twentciles   <- calc_twentciles(df_interest,   col_name)
+  background_twentciles <- calc_twentciles(df_background, col_name)
 
-raw_f_twentciles_bio <- calc_twentciles(d_s_fire, "biotic_relaxedforestnorm_sum_n5_to_p0")
-raw_nf_twentciles_bio <- calc_twentciles(d_s_nfire, "biotic_relaxedforestnorm_sum_n5_to_p0")
+  write.csv(data.frame(quantile = names(interest_deciles),      value = interest_deciles),
+            file.path(out_dir, "interest_deciles.csv"),      row.names = FALSE)
+  write.csv(data.frame(quantile = names(background_deciles),    value = background_deciles),
+            file.path(out_dir, "background_deciles.csv"),    row.names = FALSE)
+  write.csv(data.frame(quantile = names(interest_twentciles),   value = interest_twentciles),
+            file.path(out_dir, "interest_twentciles.csv"),   row.names = FALSE)
+  write.csv(data.frame(quantile = names(background_twentciles), value = background_twentciles),
+            file.path(out_dir, "background_twentciles.csv"), row.names = FALSE)
 
-raw_f_twentciles_dr <- calc_twentciles(d_s_fire, "pdsi_annual_sum_n5_to_p0")
-raw_nf_twentciles_dr <- calc_twentciles(d_s_nfire, "pdsi_annual_sum_n5_to_p0")
-
-
-
-# deciles for other versions of the cut
-raw_f_deciles_biomax <- calc_deciles(d_s_fire, "biotic_6roll_max")
-raw_nf_deciles_biomax <- calc_deciles(d_s_nfire, "biotic_6roll_max")
-
-
-
-# figs
-bio_frac <- d_s_fire |>
-   group_by(bnonzero) |>
-   count() |>
-  ungroup()
-
-dr_frac <- d_s_fire |>
-   group_by(dbelowzero) |>
-   count() |>
-  ungroup()
-
-
-low_pie_color <- "slategray3"
-high_pie_color <- "slategray4"
-
-# pie?
-
-bio_frac_plot <- bio_frac |>
-  dplyr::mutate(
-    bnonzero = factor(
-      bnonzero,
-      levels = c(">= 0.1", "< 0.1")
-    ),
-    prop = n / sum(n),
-    label = scales::percent(prop, accuracy = 1)
+  low_pie_color  <- "slategray3"
+  high_pie_color <- "slategray4"
+  vline_x        <- interest_deciles[vline_decile_idx]
+  
+  caption_text <- paste(
+    paste(names(interest_deciles), round(interest_deciles, 3), sep = ": "),
+    collapse = ", "
   )
+  caption_text <- glue::glue("Index {vline_decile_idx} used:\n{caption_text}")
 
-ggplot(bio_frac_plot, aes(x = "", y = prop, fill = bnonzero)) +
-  geom_col(width = 1, color = "white") +
-  geom_text(
-    aes(label = label),
-    position = position_stack(vjust = 0.5),
-    color = "white",
-    size = 3
-  ) +
-  coord_polar(theta = "y") +
-  scale_fill_manual(
-    values = c(
-      "< 0.1" = low_pie_color,
-      ">= 0.1" = high_pie_color
-    )
-  ) +
-  labs(
-    x = NULL,
-    y = NULL,
-    fill = "bnonzero"
-  ) +
-  theme_void() +
-  theme(
-    legend.title = element_blank()
+  if (type == "biotic") {
+
+    # ---- fraction pie ----
+    frac_tbl <- df_interest |>
+      dplyr::mutate(frac_group = ifelse(.data[[col_name]] < 0.1, "< 0.1", ">= 0.1")) |>
+      dplyr::group_by(frac_group) |>
+      dplyr::count() |>
+      dplyr::ungroup() |>
+      dplyr::mutate(
+        frac_group = factor(frac_group, levels = c(">= 0.1", "< 0.1")),
+        prop       = n / sum(n),
+        label      = scales::percent(prop, accuracy = 1)
+      )
+
+    ggplot2::ggplot(frac_tbl, ggplot2::aes(x = "", y = prop, fill = frac_group)) +
+      ggplot2::geom_col(width = 1, color = "white") +
+      ggplot2::geom_text(ggplot2::aes(label = label),
+                         position = ggplot2::position_stack(vjust = 0.5),
+                         color = "white", size = 3) +
+      ggplot2::coord_polar(theta = "y") +
+      ggplot2::scale_fill_manual(values = c("< 0.1" = low_pie_color, ">= 0.1" = high_pie_color)) +
+      ggplot2::labs(x = NULL, y = NULL) +
+      ggplot2::theme_void() +
+      ggplot2::theme(legend.title = ggplot2::element_blank())
+
+    ggplot2::ggsave(file.path(out_dir, glue("frac_pie{file_append}.png")), units = "px", width = 500, height = 500)
+
+    # ---- density plot (log scale, values < 0.1 -> NA) ----
+    density_col <- paste0(col_name, "_densityplot")
+    mask_na     <- function(df) dplyr::mutate(df, !!density_col := ifelse(.data[[col_name]] < 0.1, NA, .data[[col_name]]))
+
+    major_breaks <- 10^(-1:2)
+    minor_breaks <- unlist(lapply(-1:2, function(i) (2:9) * 10^i))
+
+    d <- ggplot2::ggplot() +
+      ggplot2::geom_density(data = mask_na(df_background),
+                            ggplot2::aes(x = .data[[density_col]]),
+                            color = "grey70", lwd = 1) +
+      ggplot2::geom_density(data = mask_na(df_interest),
+                            ggplot2::aes(x = .data[[density_col]]),
+                            color = "maroon", lwd = 1) +
+      ggplot2::geom_vline(xintercept = vline_x, color = "maroon", lty = 2, lwd = 1) +
+      ggplot2::scale_x_log10(breaks = major_breaks, minor_breaks = minor_breaks,
+                             labels = scales::label_number()) +
+      ggplot2::theme_minimal() +
+      ggplot2::theme(panel.grid.major.x = ggplot2::element_line(color = "grey85"),
+                     panel.grid.minor.x = ggplot2::element_line(color = "grey95", linewidth = 0.3),
+                     axis.text.y        = ggplot2::element_blank(),
+                     axis.title.y       = ggplot2::element_blank()) +
+      ggplot2::labs(x = x_label)
+    
+    if(caption) {
+      d <- d + 
+        ggplot2::labs(caption = caption_text) +
+        ggplot2::theme(plot.caption = ggplot2::element_text(size = 4))
+    }
+
+    ggplot2::ggsave(plot = d, filename = file.path(out_dir, glue("density{file_append}.png")), units = "px", width = 1000, height = 700)
+
+  } else {
+
+    # ---- fraction pie ----
+    frac_tbl <- df_interest |>
+      dplyr::mutate(frac_group = ifelse(.data[[col_name]] < 0, "< 0", ">= 0")) |>
+      dplyr::group_by(frac_group) |>
+      dplyr::count() |>
+      dplyr::ungroup() |>
+      dplyr::mutate(
+        frac_group = factor(frac_group, levels = c(">= 0", "< 0")),
+        prop       = n / sum(n),
+        label      = scales::percent(prop, accuracy = 1)
+      )
+
+    ggplot2::ggplot(frac_tbl, ggplot2::aes(x = "", y = prop, fill = frac_group)) +
+      ggplot2::geom_col(width = 1, color = "white") +
+      ggplot2::geom_text(ggplot2::aes(label = label),
+                         position = ggplot2::position_stack(vjust = 0.5),
+                         color = "white", size = 3) +
+      ggplot2::coord_polar(theta = "y") +
+      ggplot2::scale_fill_manual(values = c("< 0" = low_pie_color, ">= 0" = high_pie_color)) +
+      ggplot2::labs(x = NULL, y = NULL) +
+      ggplot2::theme_void() +
+      ggplot2::theme(legend.title = ggplot2::element_blank())
+
+    ggplot2::ggsave(file.path(out_dir, glue("frac_pie{file_append}.png")), units = "px", width = 500, height = 500)
+
+    # ---- density plot (reversed x axis) ----
+    d <- ggplot2::ggplot() +
+      ggplot2::geom_density(data = df_background,
+                            ggplot2::aes(x = .data[[col_name]]),
+                            color = "grey70", lwd = 1) +
+      ggplot2::geom_density(data = df_interest,
+                            ggplot2::aes(x = .data[[col_name]]),
+                            color = "maroon", lwd = 1) +
+      ggplot2::geom_vline(xintercept = vline_x, color = "maroon", lty = 2, lwd = 1) +
+      ggplot2::scale_x_reverse() +
+      ggplot2::theme_minimal() +
+      ggplot2::theme(panel.grid.major.x = ggplot2::element_line(color = "grey85"),
+                     panel.grid.minor.x = ggplot2::element_line(color = "grey95", linewidth = 0.3),
+                     axis.text.y        = ggplot2::element_blank(),
+                     axis.title.y       = ggplot2::element_blank()) +
+      ggplot2::labs(x = x_label)
+    
+    if(caption) {
+      d <- d + 
+        ggplot2::labs(caption = caption_text) +
+        ggplot2::theme(plot.caption = ggplot2::element_text(size = 4))
+    }
+
+    ggplot2::ggsave(plot = d, filename = file.path(out_dir, glue("density{file_append}.png")), units = "px", width = 1000, height = 700)
+  }
+  
+  return(interest_deciles)
+}
+
+
+# Operational calls
+raw_f_deciles_bio <- disturbance_density_description(
+  df_background    = d_s_nfire,
+  df_interest      = d_s_fire,
+  col_name         = "biotic_relaxedforestnorm_sum_n5_to_p0",
+  type             = "biotic",
+  dir_figs         = dir_figs,
+  x_label          = "6-year prior cumulative biotic disturbance"
+)
+
+raw_f_deciles_dr <- disturbance_density_description(
+  df_background    = d_s_nfire,
+  df_interest      = d_s_fire,
+  col_name         = "pdsi_annual_sum_n5_to_p0",
+  type             = "drought",
+  dir_figs         = dir_figs,
+  x_label          = "6-year prior cumulative drought"
+)
+
+
+
+# check a few subsets - drought 90% threshold seems to be fairly consistent
+# but biotic 90% is variable... 
+nfgs <- unique(d_s_nfire |> filter(nfg_10k) |> pull(nfg_factor_clean))
+
+dir_figs_density_nfg <- here(dir_figs, "nfg_densities")
+dir_ensure(dir_figs_density_nfg)
+
+for(i in nfgs) {
+
+  disturbance_density_description(
+    df_background    = d_s_nfire |> filter(nfg_factor_clean == i),
+    df_interest      = d_s_fire |> filter(nfg_factor_clean == i),
+    col_name         = "biotic_relaxedforestnorm_sum_n5_to_p0",
+    type             = "biotic",
+    dir_figs         = dir_figs_density_nfg,
+    x_label          = "6-year prior cumulative biotic disturbance",
+    file_append = i,
+    caption = TRUE
   )
-
-ggsave(here(dir_figs, "biotic_frac_pie.png"),
-       units = "px",
-       width = 500,
-       height = 500)
-
-
-
-
-dr_frac_plot <- dr_frac |>
-  dplyr::mutate(
-    dbelowzero = factor(
-      dbelowzero,
-      levels = c(">= 0", "< 0")
-    ),
-    prop = n / sum(n),
-    label = scales::percent(prop, accuracy = 1)
+  
+  disturbance_density_description(
+    df_background    = d_s_nfire |> filter(nfg_factor_clean == i),
+    df_interest      = d_s_fire |> filter(nfg_factor_clean == i),
+    col_name         = "pdsi_annual_sum_n5_to_p0",
+    type             = "drought",
+    dir_figs         = dir_figs_density_nfg,
+    x_label          = "6-year prior cumulative drought",
+    file_append = i,
+    caption = TRUE
   )
+    
+}
 
-
-ggplot(dr_frac_plot, aes(x = "", y = prop, fill = dbelowzero)) +
-  geom_col(width = 1, color = "white") +
-  geom_text(
-    aes(label = label),
-    position = position_stack(vjust = 0.5),
-    color = "white",
-    size = 3
-  ) +
-  coord_polar(theta = "y") +
-  scale_fill_manual(
-    values = c(
-      "< 0" = low_pie_color,
-      ">= 0" = high_pie_color
-    )
-  ) +
-  labs(
-    x = NULL,
-    y = NULL,
-    fill = "dbelowzero"
-  ) +
-  theme_void() +
-  theme(
-    legend.title = element_blank()
-  )
-
-ggsave(here(dir_figs, "drought_frac_pie.png"),
-       units = "px",
-       width = 500,
-       height = 500)
+disturbance_density_description(
+  df_background    = d_s_nfire |> filter(nfg_factor_clean == "lodgepole_pine"),
+  df_interest      = d_s_fire |> filter(nfg_factor_clean == "lodgepole_pine"),
+  col_name         = "pdsi_annual_sum_n5_to_p0",
+  type             = "drought",
+  dir_figs         = dir_figs_density_nfg,
+  x_label          = "6-year prior cumulative drought",
+  file_append = "TEST",
+  caption = TRUE
+)
 
 
 
+# pre-fire exploratory calls
+
+disturbance_density_description(
+  df_background    = d_s_nfire,
+  df_interest      = d_s_fire,
+  col_name         = "biotic_relaxedforestnorm_sum_n2_to_p0",
+  type             = "biotic",
+  dir_figs         = dir_figs,
+  x_label          = "3-year 2-0 prior cumulative biotic disturbance",
+  caption = TRUE
+)
+
+disturbance_density_description(
+  df_background    = d_s_nfire,
+  df_interest      = d_s_fire,
+  col_name         = "biotic_relaxedforestnorm_sum_n5_to_n3",
+  type             = "biotic",
+  dir_figs         = dir_figs,
+  x_label          = "3-year 5-3 prior cumulative biotic disturbance",
+  caption = TRUE
+)
 
 
-major_breaks <- 10^(-1:2)
+disturbance_density_description(
+  df_background    = d_s_nfire,
+  df_interest      = d_s_fire,
+  col_name         = "pdsi_annual_sum_n2_to_p0",
+  type             = "drought",
+  dir_figs         = dir_figs,
+  x_label          = "3-year 2-0 prior cumulative drought",
+  caption = TRUE
+)
 
-minor_breaks <- unlist(lapply(-1:2, function(i) (2:9) * 10^i))
-
-
-ggplot() +
-  geom_density(
-    data = d_s_nfire,
-    aes(x = biotic_relaxedforestnorm_sum_n5_to_p0_densityplot),
-    color = "grey70",
-    lwd = 1
-  ) +
-  # geom_vline(xintercept = raw_nf_deciles_bio[9],
-  #            color = "grey70",
-  #            lty = 2,
-  #            lwd = 1) +
-  geom_density(
-    data = d_s_fire,
-    aes(x = biotic_relaxedforestnorm_sum_n5_to_p0_densityplot),
-    color = "maroon",
-    lwd = 1
-  ) +
-  geom_vline(xintercept = raw_f_deciles_bio[9],
-             color = "maroon",
-             lty = 2,
-             lwd = 1) +
-  scale_x_log10(
-    breaks = major_breaks,
-    minor_breaks = minor_breaks,
-    labels = scales::label_number()
-  ) +
-  theme_minimal() +
-  theme(
-    panel.grid.major.x = element_line(color = "grey85"),
-    panel.grid.minor.x = element_line(color = "grey95", linewidth = 0.3),
-    axis.text.y = element_blank(),
-    axis.title.y = element_blank()
-  ) +
-  labs(x = "6-year cumulative biotic disturbance")
-
-ggsave(here(dir_figs, "biotic_density.png"),
-       units = "px",
-       width = 1000,
-       height = 700)
+disturbance_density_description(
+  df_background    = d_s_nfire,
+  df_interest      = d_s_fire,
+  col_name         = "pdsi_annual_sum_n5_to_n3",
+  type             = "drought",
+  dir_figs         = dir_figs,
+  x_label          = "3-year 5-3 prior cumulative drought",
+  caption = TRUE
+)
 
 
+# post-fire exploratory calls
+
+disturbance_density_description(
+  df_background    = d_s_nfire,
+  df_interest      = d_s_fire,
+  col_name         = "biotic_relaxedforestnorm_sum_p1_to_p3",
+  type             = "biotic",
+  dir_figs         = dir_figs,
+  x_label          = "3-year 1-3 post cumulative biotic disturbance",
+  caption = TRUE
+)
+
+disturbance_density_description(
+  df_background    = d_s_nfire,
+  df_interest      = d_s_fire,
+  col_name         = "biotic_relaxedforestnorm_sum_p4_to_p6",
+  type             = "biotic",
+  dir_figs         = dir_figs,
+  x_label          = "3-year 4-6 post cumulative biotic disturbance",
+  caption = TRUE
+)
+
+disturbance_density_description(
+  df_background    = d_s_nfire,
+  df_interest      = d_s_fire,
+  col_name         = "biotic_relaxedforestnorm_sum_p1_to_p6",
+  type             = "biotic",
+  dir_figs         = dir_figs,
+  x_label          = "6-year 1-6 post cumulative biotic disturbance",
+  caption = TRUE
+)
 
 
-ggplot() +
-  geom_density(
-    data = d_s_nfire,
-    aes(x = pdsi_annual_sum_n5_to_p0),
-    color = "grey70",
-    lwd = 1
-  ) +
-  # geom_vline(xintercept = raw_nf_deciles_dr[1],
-  #            color = "grey70",
-  #            lty = 2,
-  #            lwd = 1) +
-  geom_density(
-    data = d_s_fire,
-    aes(x = pdsi_annual_sum_n5_to_p0),
-    color = "maroon",
-    lwd = 1
-  ) +
-  geom_vline(xintercept = raw_f_deciles_dr[1],
-             color = "maroon",
-             lty = 2,
-             lwd = 1) +
-  theme_minimal() +
-  theme(
-    panel.grid.major.x = element_line(color = "grey85"),
-    panel.grid.minor.x = element_line(color = "grey95", linewidth = 0.3),
-    axis.text.y = element_blank(),
-    axis.title.y = element_blank()
-  ) +
-  labs(x = "6-year cumulative drought") +
-  scale_x_reverse()
+disturbance_density_description(
+  df_background    = d_s_nfire,
+  df_interest      = d_s_fire,
+  col_name         = "pdsi_annual_sum_p1_to_p3",
+  type             = "drought",
+  dir_figs         = dir_figs,
+  x_label          = "3-year 1-3 post cumulative drought",
+  caption = TRUE
+)
 
-ggsave(here(dir_figs, "drought_density.png"),
-       units = "px",
-       width = 1000,
-       height = 700)
+disturbance_density_description(
+  df_background    = d_s_nfire,
+  df_interest      = d_s_fire,
+  col_name         = "pdsi_annual_sum_p4_to_p6",
+  type             = "drought",
+  dir_figs         = dir_figs,
+  x_label          = "3-year 4-6 post cumulative drought",
+  caption = TRUE
+)
 
+disturbance_density_description(
+  df_background    = d_s_nfire,
+  df_interest      = d_s_fire,
+  col_name         = "pdsi_annual_sum_p1_to_p6",
+  type             = "drought",
+  dir_figs         = dir_figs,
+  x_label          = "6-year 1-6 post cumulative drought",
+  caption = TRUE
+)
 
 
 
 ```
+
+
 
 # Set CD groups
 
@@ -421,6 +787,14 @@ d_s_fire <- set_cd_groups(df = d_s_fire,
                    d_threshold = raw_f_deciles_dr[2])
 
 
+
+
+```
+
+# assess sample size and NON-fire impacted sample size
+
+```{r}
+
 cd_counts_90 <- d_s_fire |>
   group_by(cd_group_b90_pdsin90) |>
   count() |>
@@ -438,11 +812,8 @@ ggplot(d_s_fire |> filter(cd_group_b90_pdsin90 == "bf")) +
   geom_density(aes(x = biotic_relaxedforestnorm_sum_p1_to_p6)) +
   scale_x_log10()
 
-```
 
-# assess sample size and NON-fire impacted sample size
 
-```{r}
 
 b <- d_s_nfire |>
   filter(biotic_relaxedforestnorm_sum_n5_to_p0 > 9.7 & pdsi_annual_sum_n5_to_p0 > -11.8)

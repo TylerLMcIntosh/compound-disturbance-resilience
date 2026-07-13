@@ -2065,3 +2065,72 @@ relativize_result_paths <- function(dir_results, base = here::here()) {
   invisible(NULL)
 }
 
+
+
+
+
+rebuild_descriptive_tables <- function(dir_out, write_csv = TRUE, recursive = TRUE) {
+  dir_by_run <- file.path(dir_out, "descriptive", "by_run")
+  dir_all    <- file.path(dir_out, "descriptive", "all")
+  if (!dir.exists(dir_by_run)) stop("descriptive by_run directory does not exist: ", dir_by_run)
+  dir.create(dir_all, recursive = TRUE, showWarnings = FALSE)
+  
+  find_pq <- function(pattern) {
+    list.files(dir_by_run, pattern = pattern, recursive = recursive, full.names = TRUE)
+  }
+  
+  traj_files     <- find_pq("^event_time_trajectory\\.parquet$")
+  registry_files <- find_pq("^registry\\.parquet$")
+  
+  if (length(traj_files) == 0) {
+    message("No event_time_trajectory.parquet files found under: ", dir_by_run)
+  }
+  
+  # mirrors the read_and_dedup pattern from rebuild_estimation_tables();
+  # keeps the most recently written file when the same run appears twice
+  read_and_dedup <- function(files, id_cols) {
+    if (length(files) == 0) return(NULL)
+    purrr::map(files, \(f) {
+      x <- arrow::read_parquet(f)
+      x[] <- lapply(x, \(col) if (is.list(col)) as.character(col) else col)
+      x$.mtime <- file.mtime(f)
+      x
+    }) |>
+      dplyr::bind_rows() |>
+      dplyr::group_by(dplyr::across(dplyr::all_of(id_cols))) |>
+      dplyr::filter(.mtime == max(.mtime)) |>
+      dplyr::ungroup() |>
+      dplyr::select(-.mtime)
+  }
+  
+  write_pair <- function(tbl, stem) {
+    if (is.null(tbl) || nrow(tbl) == 0) return(list(parquet = NULL, csv = NULL))
+    pq  <- file.path(dir_all, paste0(stem, ".parquet"))
+    csv <- if (write_csv) file.path(dir_all, paste0(stem, ".csv")) else NULL
+    arrow::write_parquet(tbl, pq)
+    if (write_csv) readr::write_csv(tbl, csv)
+    list(parquet = pq, csv = csv)
+  }
+  
+  # trajectory dedup key: one row per run x dummy_group x series x event_time
+  traj_tbl     <- read_and_dedup(traj_files,     c("run_id", "dummy_group", "series", "event_time"))
+  registry_tbl <- read_and_dedup(registry_files, c("run_id"))
+  
+  files <- list(
+    event_time_trajectory = write_pair(traj_tbl,     "event_time_trajectory"),
+    run_registry          = write_pair(registry_tbl, "descriptive_run_registry")
+  )
+  
+  if (!is.null(traj_tbl)) {
+    message(glue::glue(
+      "Descriptive tables merged: {nrow(traj_tbl)} trajectory rows, ",
+      "{dplyr::n_distinct(traj_tbl$run_id)} runs"
+    ))
+  }
+  
+  invisible(list(
+    traj_tbl     = traj_tbl,
+    registry_tbl = registry_tbl,
+    files        = files
+  ))
+}
