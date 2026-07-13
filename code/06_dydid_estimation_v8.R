@@ -99,11 +99,11 @@ dir_parquet_short <- file.path(dir_data, "parquet_short")
 
 dir_ensure_local(c(dir_data, dir_parquet_long, dir_raw, dir_manual, dir_results, dir_figs))
 
-# x <- arrow::open_dataset(dir_parquet_long) |> collect()
+x <- arrow::open_dataset(dir_parquet_long) |> collect()
 # summary <- x |> group_by(nfg_factor_clean) |> summarize(n = n())
 # length(unique(x$pt_id))
 # 
-# x_s <- arrow::open_dataset(dir_parquet_short) |> collect()
+x_s <- arrow::open_dataset(dir_parquet_short) |> collect()
 # summary_s <- x_s |> group_by(nfg_factor_clean, fire) |> summarize(n = n())
 
 analysis_portion <- c(1:15)
@@ -229,8 +229,8 @@ nfg_subset_specs <- expand_analysis_subset_specs_by_col(
   short_data_source = dir_parquet_short,
   check_all_files   = TRUE,
   base_filter       = ~ fire == 0 | 
-    (fire == 1 & year_from_fire_index >= -20 & 
-       year_from_fire_index <= 20 & 
+    (fire == 1 & #year_from_fire_index >= -20 & 
+       #year_from_fire_index <= 20 & 
        analysis_subset %in% analysis_portion)
 )
 
@@ -241,8 +241,8 @@ broadtype_subset_specs <- expand_analysis_subset_specs_by_col(
   short_data_source = dir_parquet_short,
   check_all_files   = TRUE,
   base_filter       = ~ fire == 0 | 
-    (fire == 1 & year_from_fire_index >= -20 & 
-       year_from_fire_index <= 20 & 
+    (fire == 1 & #year_from_fire_index >= -20 & 
+       #year_from_fire_index <= 20 & 
        analysis_subset %in% analysis_portion)
 )
 
@@ -256,8 +256,8 @@ broadtype_subset_specs <- expand_analysis_subset_specs_by_col(
 #     short_data_source = dir_parquet_short,
 #     check_all_files   = TRUE,
 #     base_filter = ~ fire == 0 | 
-#       (fire == 1 & year_from_fire_index >= -20 & 
-#          year_from_fire_index <= 20 & 
+#       (fire == 1 & #year_from_fire_index >= -20 & 
+#          #year_from_fire_index <= 20 & 
 #          analysis_subset %in% analysis_portion & burn_year >= 2002 & burn_year <= 2011)
 #   ),
 #   # late burn cohort x nfg group
@@ -268,8 +268,8 @@ broadtype_subset_specs <- expand_analysis_subset_specs_by_col(
 #     short_data_source = dir_parquet_short,
 #     check_all_files   = TRUE,
 #     base_filter = ~ fire == 0 | 
-#       (fire == 1 & year_from_fire_index >= -20 & 
-#          year_from_fire_index <= 20 & 
+#       (fire == 1 & #year_from_fire_index >= -20 & 
+#          #year_from_fire_index <= 20 & 
 #          analysis_subset %in% analysis_portion & burn_year >= 2012 & burn_year <= 2021)
 #   )
 # )
@@ -285,8 +285,8 @@ broadtype_subset_specs <- expand_analysis_subset_specs_by_col(
 #     short_data_source = dir_parquet_short,
 #     check_all_files   = TRUE,
 #     base_filter = ~ fire == 0 | 
-#       (fire == 1 & year_from_fire_index >= -20 & 
-#          year_from_fire_index <= 20 & 
+#       (fire == 1 & #year_from_fire_index >= -20 & 
+#          #year_from_fire_index <= 20 & 
 #          analysis_subset %in% analysis_portion & burn_year >= 2002 & burn_year <= 2011)
 #   ),
 #   # late burn cohort x nfg group
@@ -298,8 +298,8 @@ broadtype_subset_specs <- expand_analysis_subset_specs_by_col(
 #     short_data_source = dir_parquet_short,
 #     check_all_files   = TRUE,
 #     base_filter = ~ fire == 0 | 
-#       (fire == 1 & year_from_fire_index >= -20 & 
-#          year_from_fire_index <= 20 & 
+#       (fire == 1 & #year_from_fire_index >= -20 & 
+#          #year_from_fire_index <= 20 & 
 #          analysis_subset %in% analysis_portion & burn_year >= 2012 & burn_year <= 2021)
 #   )
 # )
