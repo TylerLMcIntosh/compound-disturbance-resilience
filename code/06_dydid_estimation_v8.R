@@ -700,7 +700,7 @@ nfg_results_weighting <- run_weighting_experiment(
   treatment_group_specs = threeyr_treatment_group_specs,
   weighting_specs       = nfg_weighting_specs,
   dir_out               = dir_results,
-  skip_existing         = FALSE,
+  skip_existing         = TRUE,
   verbose_timing        = TRUE,
   .progress             = TRUE
 )
@@ -720,7 +720,7 @@ nfg_results_weighting <- run_weighting_experiment(
   treatment_group_specs = sixyr_treatment_group_specs,
   weighting_specs       = nfg_weighting_specs,
   dir_out               = dir_results,
-  skip_existing         = FALSE,
+  skip_existing         = TRUE,
   verbose_timing        = TRUE,
   .progress             = TRUE
 )
@@ -743,7 +743,7 @@ broad_results_weighting <- run_weighting_experiment(
   treatment_group_specs = threeyr_treatment_group_specs,
   weighting_specs       = broad_weighting_specs,
   dir_out               = dir_results,
-  skip_existing         = FALSE,
+  skip_existing         = TRUE,
   verbose_timing        = TRUE,
   .progress             = TRUE
 )
@@ -763,7 +763,7 @@ broad_results_weighting <- run_weighting_experiment(
   treatment_group_specs = sixyr_treatment_group_specs,
   weighting_specs       = broad_weighting_specs,
   dir_out               = dir_results,
-  skip_existing         = FALSE,
+  skip_existing         = TRUE,
   verbose_timing        = TRUE,
   .progress             = TRUE
 )
@@ -801,7 +801,7 @@ results_sunab_ecor <- run_experiment(
   run_estimation        = TRUE,
   run_descriptive       = TRUE,
   descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
-  skip_existing         = FALSE,
+  skip_existing         = TRUE,
   verbose_timing        = TRUE,
   .progress             = TRUE
 )
@@ -829,7 +829,7 @@ results_sunab_ecor <- run_experiment(
   run_estimation        = TRUE,
   run_descriptive       = TRUE,
   descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
-  skip_existing         = FALSE,
+  skip_existing         = TRUE,
   verbose_timing        = TRUE,
   .progress             = TRUE
 )
@@ -878,7 +878,7 @@ results_sunab_ecor <- run_experiment(
   run_estimation        = TRUE,
   run_descriptive       = TRUE,
   descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
-  skip_existing         = FALSE,
+  skip_existing         = TRUE,
   verbose_timing        = TRUE,
   .progress             = TRUE
 )
@@ -906,7 +906,7 @@ results_sunab_ecor <- run_experiment(
   run_estimation        = TRUE,
   run_descriptive       = TRUE,
   descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
-  skip_existing         = FALSE,
+  skip_existing         = TRUE,
   verbose_timing        = TRUE,
   .progress             = TRUE
 )

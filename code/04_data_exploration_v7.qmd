@@ -599,14 +599,51 @@ for(i in nfgs) {
     
 }
 
+
+
+# do a temporal split check
 disturbance_density_description(
-  df_background    = d_s_nfire |> filter(nfg_factor_clean == "lodgepole_pine"),
-  df_interest      = d_s_fire |> filter(nfg_factor_clean == "lodgepole_pine"),
+  df_background    = d_s_nfire |> filter(mock_burn_year < 2012),
+  df_interest      = d_s_fire |> filter(mock_burn_year < 2012),
+  col_name         = "biotic_relaxedforestnorm_sum_n5_to_p0",
+  type             = "biotic",
+  dir_figs         = dir_figs,
+  x_label          = "6-year prior cumulative biotic disturbance",
+  file_append = "early",
+  caption = TRUE
+)
+
+disturbance_density_description(
+  df_background    = d_s_nfire |> filter(mock_burn_year >= 2012),
+  df_interest      = d_s_fire |> filter(mock_burn_year >= 2012),
+  col_name         = "biotic_relaxedforestnorm_sum_n5_to_p0",
+  type             = "biotic",
+  dir_figs         = dir_figs,
+  x_label          = "6-year prior cumulative biotic disturbance",
+  file_append = "late",
+  caption = TRUE
+)
+
+disturbance_density_description(
+  df_background    = d_s_nfire |> filter(mock_burn_year < 2012),
+  df_interest      = d_s_fire |> filter(mock_burn_year < 2012),
   col_name         = "pdsi_annual_sum_n5_to_p0",
   type             = "drought",
-  dir_figs         = dir_figs_density_nfg,
+  dir_figs         = dir_figs,
   x_label          = "6-year prior cumulative drought",
-  file_append = "TEST",
+  file_append = "early",
+  caption = TRUE
+)
+
+
+disturbance_density_description(
+  df_background    = d_s_nfire |> filter(mock_burn_year >= 2012),
+  df_interest      = d_s_fire |> filter(mock_burn_year >= 2012),
+  col_name         = "pdsi_annual_sum_n5_to_p0",
+  type             = "drought",
+  dir_figs         = dir_figs,
+  x_label          = "6-year prior cumulative drought",
+  file_append = "late",
   caption = TRUE
 )
 
@@ -854,6 +891,26 @@ cd_counts_80
 
 ```
 
+
+# temporal fig
+
+```{r}
+
+counts_by_year <- d_s_fire |>
+  group_by(cd_group_b90_pdsin90, burn_year) |>
+  count() |>
+  ungroup()
+
+
+ggplot(counts_by_year) +
+  geom_col(aes(x = burn_year, y = n)) +
+  facet_wrap( ~ cd_group_b90_pdsin90, scales = "free") +
+  labs(title = "BDF counts over time: 90th percentile all time/all groups")
+
+ggsave(filename = here(dir_figs, "bdf_counts_over_time_90.png"))
+
+
+```
 
 
 # ecoregions map
