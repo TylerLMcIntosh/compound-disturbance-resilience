@@ -393,8 +393,8 @@ set_cd_groups <- function(df,
 
 sixyr_treatment_group_specs <- dplyr::bind_rows(
   make_treatment_group_spec(
-    group_id   = "6yr_b90global_pdsisum90global",
-    group_col  = "6yr_b90global_pdsisum90global",
+    group_id   = "sixyr_b90global_pdsisum90global",
+    group_col  = "sixyr_b90global_pdsisum90global",
     dummy_cols = c("cd_f", "cd_bf", "cd_df", "cd_bdf"),
     group_fun  = set_cd_groups,
     group_args = list(
@@ -408,8 +408,8 @@ sixyr_treatment_group_specs <- dplyr::bind_rows(
 
 threeyr_treatment_group_specs <- dplyr::bind_rows(
   make_treatment_group_spec(
-    group_id   = "3yr_b90global_pdsisum90global",
-    group_col  = "3yr_b90global_pdsisum90global",
+    group_id   = "threeyr_b90global_pdsisum90global",
+    group_col  = "threeyr_b90global_pdsisum90global",
     dummy_cols = c("cd_f", "cd_bf", "cd_df", "cd_bdf"),
     group_fun  = set_cd_groups,
     group_args = list(
