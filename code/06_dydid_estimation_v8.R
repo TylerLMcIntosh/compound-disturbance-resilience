@@ -62,8 +62,8 @@ seed <- 1234
 set.seed(seed)
 
 # Set number of cores to use in FEOLS call
-#fixest::setFixest_nthreads(48)
-fixest::getFixest_nthreads()
+fixest::setFixest_nthreads(48)
+#fixest::getFixest_nthreads()
 
 # log any unhandled errors to the status file before R exits
 options(error = function() {
