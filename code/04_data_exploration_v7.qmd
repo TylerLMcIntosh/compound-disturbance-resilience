@@ -356,32 +356,33 @@ ggsave(here(dir_figs, "nfg_analysis_subset_split.png"))
 
 ```
 
-
 # examine densities functioned
 
 ```{r}
 
-calc_deciles <- function(df, var) {
-  x <- dplyr::pull(df, var)
-
+calc_deciles <- function(df, var, reverse = FALSE) {
+  x <- dplyr::pull(df, {{ var }})
   x <- x[!is.na(x)]
 
   probs <- seq(0.1, 0.9, by = 0.1)
-  dec <- stats::quantile(x, probs = probs, na.rm = TRUE, names = TRUE)
 
-  return(dec)
+  dec <- stats::quantile(
+    x,
+    probs = probs,
+    na.rm = TRUE,
+    names = FALSE
+  )
+
+  if (reverse) {
+    dec <- rev(dec)
+  }
+
+  names(dec) <- paste0("perc_", probs * 100)
+
+  dec
 }
 
-calc_twentciles <- function(df, var) {
-  x <- dplyr::pull(df, var)
 
-  x <- x[!is.na(x)]
-
-  probs <- seq(0.1, 0.9, by = 0.05)
-  dec <- stats::quantile(x, probs = probs, na.rm = TRUE, names = TRUE)
-
-  return(dec)
-}
 
 disturbance_density_description <- function(
     df_background,
@@ -391,43 +392,39 @@ disturbance_density_description <- function(
     dir_figs,
     x_label,
     caption = FALSE,
-    vline_decile_idx = NULL,   # defaults to 9 for biotic, 1 for drought
-    file_append = ""
+    vline_decile_idx = 9,
+    grouping = ""
 ) {
   type <- match.arg(type, c("biotic", "drought"))
 
-  if (is.null(vline_decile_idx)) {
-    vline_decile_idx <- if (type == "biotic") 9L else 1L
-  }
 
   # create output subdirectory
-  out_dir <- here::here(dir_figs, paste0("density_description_", col_name, file_append))
+  out_dir <- here::here(dir_figs, paste0("density_description_", col_name, "_", grouping))
   if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
   # ---- quantiles ----
-  interest_deciles      <- calc_deciles(df_interest,    col_name)
-  background_deciles    <- calc_deciles(df_background,  col_name)
-  interest_twentciles   <- calc_twentciles(df_interest,   col_name)
-  background_twentciles <- calc_twentciles(df_background, col_name)
+  if(type == "biotic") {
+    interest_deciles      <- calc_deciles(df_interest,    col_name)
+    background_deciles    <- calc_deciles(df_background,  col_name)
+  } else {
+    interest_deciles      <- calc_deciles(df_interest,    col_name, reverse = TRUE)
+    background_deciles    <- calc_deciles(df_background,  col_name, reverse = TRUE)
+  }
 
   write.csv(data.frame(quantile = names(interest_deciles),      value = interest_deciles),
             file.path(out_dir, "interest_deciles.csv"),      row.names = FALSE)
   write.csv(data.frame(quantile = names(background_deciles),    value = background_deciles),
             file.path(out_dir, "background_deciles.csv"),    row.names = FALSE)
-  write.csv(data.frame(quantile = names(interest_twentciles),   value = interest_twentciles),
-            file.path(out_dir, "interest_twentciles.csv"),   row.names = FALSE)
-  write.csv(data.frame(quantile = names(background_twentciles), value = background_twentciles),
-            file.path(out_dir, "background_twentciles.csv"), row.names = FALSE)
 
   low_pie_color  <- "slategray3"
   high_pie_color <- "slategray4"
-  vline_x        <- interest_deciles[vline_decile_idx]
+  vline_x        <- interest_deciles[9]
   
   caption_text <- paste(
     paste(names(interest_deciles), round(interest_deciles, 3), sep = ": "),
     collapse = ", "
   )
-  caption_text <- glue::glue("Index {vline_decile_idx} used:\n{caption_text}")
+  caption_text <- glue::glue("Index 9 used:\n{caption_text}")
 
   if (type == "biotic") {
 
@@ -454,7 +451,7 @@ disturbance_density_description <- function(
       ggplot2::theme_void() +
       ggplot2::theme(legend.title = ggplot2::element_blank())
 
-    ggplot2::ggsave(file.path(out_dir, glue("frac_pie{file_append}.png")), units = "px", width = 500, height = 500)
+    ggplot2::ggsave(file.path(out_dir, glue("frac_pie_{grouping}.png")), units = "px", width = 500, height = 500)
 
     # ---- density plot (log scale, values < 0.1 -> NA) ----
     density_col <- paste0(col_name, "_densityplot")
@@ -486,7 +483,7 @@ disturbance_density_description <- function(
         ggplot2::theme(plot.caption = ggplot2::element_text(size = 4))
     }
 
-    ggplot2::ggsave(plot = d, filename = file.path(out_dir, glue("density{file_append}.png")), units = "px", width = 1000, height = 700)
+    ggplot2::ggsave(plot = d, filename = file.path(out_dir, glue("density_{grouping}.png")), units = "px", width = 1000, height = 700)
 
   } else {
 
@@ -513,7 +510,7 @@ disturbance_density_description <- function(
       ggplot2::theme_void() +
       ggplot2::theme(legend.title = ggplot2::element_blank())
 
-    ggplot2::ggsave(file.path(out_dir, glue("frac_pie{file_append}.png")), units = "px", width = 500, height = 500)
+    ggplot2::ggsave(file.path(out_dir, glue("frac_pie_{grouping}.png")), units = "px", width = 500, height = 500)
 
     # ---- density plot (reversed x axis) ----
     d <- ggplot2::ggplot() +
@@ -538,12 +535,38 @@ disturbance_density_description <- function(
         ggplot2::theme(plot.caption = ggplot2::element_text(size = 4))
     }
 
-    ggplot2::ggsave(plot = d, filename = file.path(out_dir, glue("density{file_append}.png")), units = "px", width = 1000, height = 700)
+    ggplot2::ggsave(plot = d, filename = file.path(out_dir, glue("density_{grouping}.png")), units = "px", width = 1000, height = 700)
   }
   
-  return(interest_deciles)
+  frac_results <- frac_tbl |>
+    dplyr::select(frac_group, label) |>
+    tibble::deframe()
+  
+  results <- c(interest_deciles,
+                        disturbance = col_name,
+                        type = type,
+                        grouping = grouping, frac_results)
+
+  
+  results <- tibble::as_tibble_row(
+    c(
+      as.list(interest_deciles),
+      list(
+        disturbance = col_name,
+        type = type,
+        grouping = grouping
+      ),
+      as.list(frac_results)
+    ),
+    .name_repair = "minimal"
+  )
+  
+  return(results)
 }
 
+
+
+all_deciles <- tibble()
 
 # Operational calls
 raw_f_deciles_bio <- disturbance_density_description(
@@ -564,7 +587,10 @@ raw_f_deciles_dr <- disturbance_density_description(
   x_label          = "6-year prior cumulative drought"
 )
 
-
+all_deciles <- bind_rows(
+  raw_f_deciles_bio,
+  raw_f_deciles_dr
+)
 
 # check a few subsets - drought 90% threshold seems to be fairly consistent
 # but biotic 90% is variable... 
@@ -573,85 +599,125 @@ nfgs <- unique(d_s_nfire |> filter(nfg_10k) |> pull(nfg_factor_clean))
 dir_figs_density_nfg <- here(dir_figs, "nfg_densities")
 dir_ensure(dir_figs_density_nfg)
 
+
 for(i in nfgs) {
 
-  disturbance_density_description(
+  bio_t <- disturbance_density_description(
     df_background    = d_s_nfire |> filter(nfg_factor_clean == i),
     df_interest      = d_s_fire |> filter(nfg_factor_clean == i),
     col_name         = "biotic_relaxedforestnorm_sum_n5_to_p0",
     type             = "biotic",
     dir_figs         = dir_figs_density_nfg,
     x_label          = "6-year prior cumulative biotic disturbance",
-    file_append = i,
+    grouping = i,
     caption = TRUE
   )
   
-  disturbance_density_description(
+  dr_t <- disturbance_density_description(
     df_background    = d_s_nfire |> filter(nfg_factor_clean == i),
     df_interest      = d_s_fire |> filter(nfg_factor_clean == i),
     col_name         = "pdsi_annual_sum_n5_to_p0",
     type             = "drought",
     dir_figs         = dir_figs_density_nfg,
     x_label          = "6-year prior cumulative drought",
-    file_append = i,
+    grouping = i,
     caption = TRUE
+  )
+  
+  all_deciles <- bind_rows(
+    all_deciles,
+    bio_t,
+    dr_t
   )
     
 }
 
 
 
+
+ggplot(d_s_nfire |> filter(nfg_10k)) +
+  geom_density(aes(x = gam_rap_tree_pre6_fit, color = nfg_factor_clean))
+
+ggsave(here(dir_figs, "density_rap_pre6fit.png"),
+       units = "px",
+       width = 2000,
+       height = 1000)
+
+
+ggplot(d_s_nfire |> filter(nfg_10k)) +
+  geom_density(aes(x = pdsi_annual_sum_n5_to_p0, color = nfg_factor_clean))
+
+ggsave(here(dir_figs, "density_pdsi_nfg_6yr.png"),
+       units = "px",
+       width = 2000,
+       height = 1000)
+
+
+ggplot(d_s_nfire |> filter(nfg_10k)) +
+  geom_density(aes(x = biotic_relaxedforestnorm_sum_n5_to_p0, color = nfg_factor_clean)) +
+  scale_x_log10()
+
+ggsave(here(dir_figs, "density_biotic_nfg_6yr.png"),
+       units = "px",
+       width = 2000,
+       height = 1000)
+
+
 # do a temporal split check
-disturbance_density_description(
+d <- disturbance_density_description(
   df_background    = d_s_nfire |> filter(mock_burn_year < 2012),
   df_interest      = d_s_fire |> filter(mock_burn_year < 2012),
   col_name         = "biotic_relaxedforestnorm_sum_n5_to_p0",
   type             = "biotic",
   dir_figs         = dir_figs,
   x_label          = "6-year prior cumulative biotic disturbance",
-  file_append = "early",
+  grouping = "early",
   caption = TRUE
 )
+all_deciles <- bind_rows(all_deciles, d)
 
-disturbance_density_description(
+d <- disturbance_density_description(
   df_background    = d_s_nfire |> filter(mock_burn_year >= 2012),
   df_interest      = d_s_fire |> filter(mock_burn_year >= 2012),
   col_name         = "biotic_relaxedforestnorm_sum_n5_to_p0",
   type             = "biotic",
   dir_figs         = dir_figs,
   x_label          = "6-year prior cumulative biotic disturbance",
-  file_append = "late",
+  grouping = "late",
   caption = TRUE
 )
+all_deciles <- bind_rows(all_deciles, d)
 
-disturbance_density_description(
+d <- disturbance_density_description(
   df_background    = d_s_nfire |> filter(mock_burn_year < 2012),
   df_interest      = d_s_fire |> filter(mock_burn_year < 2012),
   col_name         = "pdsi_annual_sum_n5_to_p0",
   type             = "drought",
   dir_figs         = dir_figs,
   x_label          = "6-year prior cumulative drought",
-  file_append = "early",
+  grouping = "early",
   caption = TRUE
 )
+all_deciles <- bind_rows(all_deciles, d)
 
 
-disturbance_density_description(
+d <- disturbance_density_description(
   df_background    = d_s_nfire |> filter(mock_burn_year >= 2012),
   df_interest      = d_s_fire |> filter(mock_burn_year >= 2012),
   col_name         = "pdsi_annual_sum_n5_to_p0",
   type             = "drought",
   dir_figs         = dir_figs,
   x_label          = "6-year prior cumulative drought",
-  file_append = "late",
+  grouping = "late",
   caption = TRUE
 )
+all_deciles <- bind_rows(all_deciles, d)
 
 
 
 # pre-fire exploratory calls
 
-disturbance_density_description(
+d <- disturbance_density_description(
   df_background    = d_s_nfire,
   df_interest      = d_s_fire,
   col_name         = "biotic_relaxedforestnorm_sum_n2_to_p0",
@@ -660,8 +726,9 @@ disturbance_density_description(
   x_label          = "3-year 2-0 prior cumulative biotic disturbance",
   caption = TRUE
 )
+all_deciles <- bind_rows(all_deciles, d)
 
-disturbance_density_description(
+d <- disturbance_density_description(
   df_background    = d_s_nfire,
   df_interest      = d_s_fire,
   col_name         = "biotic_relaxedforestnorm_sum_n5_to_n3",
@@ -670,9 +737,10 @@ disturbance_density_description(
   x_label          = "3-year 5-3 prior cumulative biotic disturbance",
   caption = TRUE
 )
+all_deciles <- bind_rows(all_deciles, d)
 
 
-disturbance_density_description(
+d <- disturbance_density_description(
   df_background    = d_s_nfire,
   df_interest      = d_s_fire,
   col_name         = "pdsi_annual_sum_n2_to_p0",
@@ -681,8 +749,9 @@ disturbance_density_description(
   x_label          = "3-year 2-0 prior cumulative drought",
   caption = TRUE
 )
+all_deciles <- bind_rows(all_deciles, d)
 
-disturbance_density_description(
+d <- disturbance_density_description(
   df_background    = d_s_nfire,
   df_interest      = d_s_fire,
   col_name         = "pdsi_annual_sum_n5_to_n3",
@@ -691,11 +760,12 @@ disturbance_density_description(
   x_label          = "3-year 5-3 prior cumulative drought",
   caption = TRUE
 )
+all_deciles <- bind_rows(all_deciles, d)
 
 
 # post-fire exploratory calls
 
-disturbance_density_description(
+d <- disturbance_density_description(
   df_background    = d_s_nfire,
   df_interest      = d_s_fire,
   col_name         = "biotic_relaxedforestnorm_sum_p1_to_p3",
@@ -704,8 +774,9 @@ disturbance_density_description(
   x_label          = "3-year 1-3 post cumulative biotic disturbance",
   caption = TRUE
 )
+all_deciles <- bind_rows(all_deciles, d)
 
-disturbance_density_description(
+d <- disturbance_density_description(
   df_background    = d_s_nfire,
   df_interest      = d_s_fire,
   col_name         = "biotic_relaxedforestnorm_sum_p4_to_p6",
@@ -714,8 +785,9 @@ disturbance_density_description(
   x_label          = "3-year 4-6 post cumulative biotic disturbance",
   caption = TRUE
 )
+all_deciles <- bind_rows(all_deciles, d)
 
-disturbance_density_description(
+d <- disturbance_density_description(
   df_background    = d_s_nfire,
   df_interest      = d_s_fire,
   col_name         = "biotic_relaxedforestnorm_sum_p1_to_p6",
@@ -724,9 +796,10 @@ disturbance_density_description(
   x_label          = "6-year 1-6 post cumulative biotic disturbance",
   caption = TRUE
 )
+all_deciles <- bind_rows(all_deciles, d)
 
 
-disturbance_density_description(
+d <- disturbance_density_description(
   df_background    = d_s_nfire,
   df_interest      = d_s_fire,
   col_name         = "pdsi_annual_sum_p1_to_p3",
@@ -735,8 +808,9 @@ disturbance_density_description(
   x_label          = "3-year 1-3 post cumulative drought",
   caption = TRUE
 )
+all_deciles <- bind_rows(all_deciles, d)
 
-disturbance_density_description(
+d <- disturbance_density_description(
   df_background    = d_s_nfire,
   df_interest      = d_s_fire,
   col_name         = "pdsi_annual_sum_p4_to_p6",
@@ -745,8 +819,9 @@ disturbance_density_description(
   x_label          = "3-year 4-6 post cumulative drought",
   caption = TRUE
 )
+all_deciles <- bind_rows(all_deciles, d)
 
-disturbance_density_description(
+d <- disturbance_density_description(
   df_background    = d_s_nfire,
   df_interest      = d_s_fire,
   col_name         = "pdsi_annual_sum_p1_to_p6",
@@ -755,10 +830,15 @@ disturbance_density_description(
   x_label          = "6-year 1-6 post cumulative drought",
   caption = TRUE
 )
+all_deciles <- bind_rows(all_deciles, d) |>
+  arrange(desc(disturbance))
 
+write_csv(all_deciles, file = here(dir_figs, "deciles_all.csv"))
 
 
 ```
+
+
 
 
 
@@ -806,36 +886,365 @@ set_cd_groups <- function(df,
   return(df_new)
 }
 
+
+
+
 # deciles
 raw_f_deciles_dr
 raw_f_deciles_bio
 
 
-d_s_fire <- set_cd_groups(df = d_s_fire,
+d_s <- set_cd_groups(df = d_s,
                    b_nm = "biotic_relaxedforestnorm_sum_n5_to_p0",
                    d_nm = "pdsi_annual_sum_n5_to_p0",
                    cd_nm = "cd_group_b90_pdsin90",
-                   b_threshold = raw_f_deciles_bio[9],
-                   d_threshold = raw_f_deciles_dr[1]) |>
+                   b_threshold = raw_f_deciles_bio[[9]],
+                   d_threshold = raw_f_deciles_dr[[9]]) |>
   set_cd_groups(b_nm = "biotic_relaxedforestnorm_sum_n5_to_p0",
                    d_nm = "pdsi_annual_sum_n5_to_p0",
                    cd_nm = "cd_group_b80_pdsin80",
-                   b_threshold = raw_f_deciles_bio[8],
-                   d_threshold = raw_f_deciles_dr[2])
+                   b_threshold = raw_f_deciles_bio[[8]],
+                   d_threshold = raw_f_deciles_dr[[8]])
 
 
 
 
 ```
 
+# test some new grouping functions
+
+```{r}
+
+
+set_cd_groups_extended <- function(df,
+                          b_nm,
+                          d_nm,
+                          cd_nm,
+                          b_threshold,
+                          d_threshold) {
+  
+  if(d_threshold < 0) {
+    df_new <- df |>
+    dplyr::mutate(
+      "{cd_nm}" := dplyr::case_when(
+        .data[[b_nm]] <  b_threshold &
+          fire == 1 & 
+          .data[[d_nm]] > d_threshold ~ "f",
+        .data[[b_nm]] >= b_threshold & 
+          fire == 1 & 
+          .data[[d_nm]] > d_threshold ~ "bf",
+        .data[[b_nm]] < b_threshold & 
+          fire == 1 & 
+          .data[[d_nm]] <= d_threshold ~ "df",
+        .data[[b_nm]] >= b_threshold & 
+          fire == 1 & 
+          .data[[d_nm]] <= d_threshold ~ "bdf",
+        .data[[b_nm]] >= b_threshold & 
+          fire == 0 & 
+          .data[[d_nm]] <= d_threshold ~ "bd",
+        .data[[b_nm]] >= b_threshold & 
+          fire == 0 & 
+          .data[[d_nm]] > d_threshold ~ "b",
+        .data[[b_nm]] < b_threshold & 
+          fire == 0 & 
+          .data[[d_nm]] <= d_threshold ~ "d",
+        .data[[b_nm]] < b_threshold & 
+          fire == 0 & 
+          .data[[d_nm]] > d_threshold ~ NA_character_,
+        TRUE ~ "DROP"
+      )
+    )
+  } else {
+    stop("please use drought threshold < 0")
+    
+  }
+  
+  df_new <- df_new |>
+    dplyr::mutate(
+      "{cd_nm}" := forcats::fct_relevel(.data[[cd_nm]], "f")
+    )
+
+  return(df_new)
+}
+
+
+
+set_cd_groups_extended_strict <- function(df,
+                          b_nm,
+                          d_nm,
+                          b_rollmax_nm,
+                          d_rollmax_nm,
+                          cd_nm,
+                          b_threshold,
+                          d_threshold) {
+  
+  if(d_threshold < 0) {
+    df_new <- df |>
+    dplyr::mutate(
+      "{cd_nm}" := dplyr::case_when(
+        .data[[b_rollmax_nm]] <  b_threshold &
+           .data[[b_nm]] <  b_threshold &
+          fire == 1 &
+          .data[[d_nm]] > d_threshold &
+          .data[[d_rollmax_nm]] > d_threshold ~ "f",
+        .data[[b_nm]] >  b_threshold &
+          fire == 1 &
+          .data[[d_nm]] > d_threshold &
+          .data[[d_rollmax_nm]] > d_threshold ~ "bf",
+        .data[[b_nm]] <  b_threshold &
+          .data[[b_rollmax_nm]] < b_threshold &
+          fire == 1 &
+          .data[[d_nm]] <= d_threshold ~ "df",
+        .data[[b_nm]] >= b_threshold & 
+          fire == 1 & 
+          .data[[d_nm]] <= d_threshold ~ "bdf",
+        .data[[b_nm]] >= b_threshold & 
+          fire == 0 & 
+          .data[[d_nm]] <= d_threshold ~ "bd",
+        .data[[b_nm]] >= b_threshold & 
+          fire == 0 & 
+          .data[[d_rollmax_nm]] > d_threshold &
+          .data[[d_nm]] > d_threshold ~ "b",
+        .data[[b_rollmax_nm]] < b_threshold & 
+          .data[[b_nm]] < b_threshold &
+          fire == 0 & 
+          .data[[d_nm]] <= d_threshold ~ "d",
+        .data[[b_rollmax_nm]] < b_threshold & 
+          .data[[b_nm]] < b_threshold &
+          fire == 0 & 
+          .data[[d_nm]] > d_threshold &
+          .data[[d_rollmax_nm]] > d_threshold ~ NA_character_,
+        TRUE ~ "DROP"
+      )
+    )
+  } else {
+    stop("please use drought threshold < 0")
+    
+  }
+  
+  df_new <- df_new |>
+    dplyr::filter(.data[[cd_nm]] != "DROP") |>
+    dplyr::mutate(
+      "{cd_nm}" := forcats::fct_relevel(.data[[cd_nm]], "f")
+    )
+
+  return(df_new)
+}
+
+
+
+
+set_cd_groups_extended_strict_v2 <- function(df,
+                          b_nm,
+                          d_nm,
+                          b_rollmax_nm,
+                          d_rollmax_nm,
+                          cd_nm,
+                          b_threshold,
+                          d_threshold) {
+  
+  if(d_threshold < 0) {
+    df_new <- df |>
+    dplyr::mutate(
+      "{cd_nm}" := dplyr::case_when(
+        .data[[b_rollmax_nm]] <  b_threshold &
+           .data[[b_nm]] <  b_threshold &
+          fire == 1 &
+          .data[[d_nm]] > d_threshold &
+          .data[[d_rollmax_nm]] > d_threshold ~ "f",
+        .data[[b_nm]] >  b_threshold &
+          .data[[b_nm]] >= .data[[b_rollmax_nm]] &
+          fire == 1 &
+          .data[[d_nm]] > d_threshold &
+          .data[[d_rollmax_nm]] > d_threshold ~ "bf",
+        .data[[b_nm]] <  b_threshold &
+          .data[[b_rollmax_nm]] < b_threshold &
+          fire == 1 &
+          .data[[d_nm]] <= .data[[d_rollmax_nm]] &
+          .data[[d_nm]] <= d_threshold ~ "df",
+        .data[[b_nm]] >= b_threshold & 
+          .data[[b_nm]] >= .data[[b_rollmax_nm]] &
+          fire == 1 & 
+          .data[[d_nm]] <= .data[[d_rollmax_nm]] &
+          .data[[d_nm]] <= d_threshold ~ "bdf",
+        .data[[b_nm]] >= b_threshold & 
+          .data[[b_nm]] >= .data[[b_rollmax_nm]] &
+          fire == 0 & 
+          .data[[d_nm]] <= .data[[d_rollmax_nm]] &
+          .data[[d_nm]] <= d_threshold ~ "bd",
+        .data[[b_nm]] >= b_threshold & 
+          .data[[b_nm]] >= .data[[b_rollmax_nm]] &
+          fire == 0 & 
+          .data[[d_rollmax_nm]] > d_threshold &
+          .data[[d_nm]] > d_threshold ~ "b",
+        .data[[b_rollmax_nm]] < b_threshold & 
+          .data[[b_nm]] < b_threshold &
+          fire == 0 & 
+          .data[[d_nm]] <= .data[[d_rollmax_nm]] &
+          .data[[d_nm]] <= d_threshold ~ "d",
+        .data[[b_rollmax_nm]] < b_threshold & 
+          .data[[b_nm]] < b_threshold &
+          fire == 0 & 
+          .data[[d_nm]] > d_threshold &
+          .data[[d_rollmax_nm]] > d_threshold ~ NA_character_,
+        TRUE ~ "DROP"
+      )
+    )
+  } else {
+    stop("please use drought threshold < 0")
+    
+  }
+  
+  df_new <- df_new |>
+    dplyr::filter(.data[[cd_nm]] != "DROP") |>
+    dplyr::mutate(
+      "{cd_nm}" := forcats::fct_relevel(.data[[cd_nm]], "f")
+    )
+
+  return(df_new)
+}
+
+
+# test 6 year
+d_s <- set_cd_groups_extended(df = d_s,
+                   b_nm = "biotic_relaxedforestnorm_sum_n5_to_p0",
+                   d_nm = "pdsi_annual_sum_n5_to_p0",
+                   cd_nm = "cd_90_extended",
+                   b_threshold = raw_f_deciles_bio[[9]],
+                   d_threshold = raw_f_deciles_dr[[9]])
+
+d_s <- set_cd_groups_extended_strict(df = d_s,
+                   b_nm = "biotic_relaxedforestnorm_sum_n5_to_p0",
+                   d_nm = "pdsi_annual_sum_n5_to_p0",
+                   b_rollmax_nm = "biotic_relaxedforestnorm_rollsum6max",
+                   d_rollmax_nm = "pdsi_annual_rollsum6max",
+                   cd_nm = "cd_90_extended_strict",
+                   b_threshold = raw_f_deciles_bio[[9]],
+                   d_threshold = raw_f_deciles_dr[[9]])
+
+d_s <- set_cd_groups_extended_strict_v2(df = d_s,
+                   b_nm = "biotic_relaxedforestnorm_sum_n5_to_p0",
+                   d_nm = "pdsi_annual_sum_n5_to_p0",
+                   b_rollmax_nm = "biotic_relaxedforestnorm_rollsum6max",
+                   d_rollmax_nm = "pdsi_annual_rollsum6max",
+                   cd_nm = "cd_90_extended_strict_v2",
+                   b_threshold = raw_f_deciles_bio[[9]],
+                   d_threshold = raw_f_deciles_dr[[9]])
+
+
+# test 3 year
+d_s <- set_cd_groups_extended(df = d_s,
+                   b_nm = "biotic_relaxedforestnorm_sum_n2_to_p0",
+                   d_nm = "pdsi_annual_sum_n2_to_p0",
+                   cd_nm = "cd_90_extended_3yr",
+                   b_threshold = raw_f_deciles_bio[[9]],
+                   d_threshold = raw_f_deciles_dr[[9]])
+
+d_s <- set_cd_groups_extended_strict(df = d_s,
+                   b_nm = "biotic_relaxedforestnorm_sum_n2_to_p0",
+                   d_nm = "pdsi_annual_sum_n2_to_p0",
+                   b_rollmax_nm = "biotic_relaxedforestnorm_rollsum3max",
+                   d_rollmax_nm = "pdsi_annual_rollsum3max",
+                   cd_nm = "cd_90_extended_strict_3yr",
+                   b_threshold = raw_f_deciles_bio[[9]],
+                   d_threshold = raw_f_deciles_dr[[9]])
+
+d_s <- set_cd_groups_extended_strict_v2(df = d_s,
+                   b_nm = "biotic_relaxedforestnorm_sum_n2_to_p0",
+                   d_nm = "pdsi_annual_sum_n2_to_p0",
+                   b_rollmax_nm = "biotic_relaxedforestnorm_rollsum3max",
+                   d_rollmax_nm = "pdsi_annual_rollsum3max",
+                   cd_nm = "cd_90_extended_strict_v2_3yr",
+                   b_threshold = raw_f_deciles_bio[[9]],
+                   d_threshold = raw_f_deciles_dr[[9]])
+
+```
+
+
+
 # assess sample size and NON-fire impacted sample size
 
 ```{r}
 
-cd_counts_90 <- d_s_fire |>
+# check 6-year
+cd_counts_90 <- d_s |>
   group_by(cd_group_b90_pdsin90) |>
   count() |>
   ungroup()
+
+cd_counts_90_extended <- d_s |>
+  group_by(cd_90_extended) |>
+  count() |>
+  ungroup()
+
+cd_counts_90_extended_strict <- d_s |>
+  group_by(cd_90_extended_strict) |>
+  count() |>
+  ungroup()
+
+cd_counts_90_extended_strict_v2 <- d_s |>
+  group_by(cd_90_extended_strict_v2) |>
+  count() |>
+  ungroup()
+
+
+analyze_strict_req <- cd_counts_90_extended |>
+  rename(cd_group = cd_90_extended,
+         cd_counts_90_extended = n) |>
+  left_join(cd_counts_90_extended_strict |>
+              rename(cd_group = cd_90_extended_strict,
+                     cd_counts_90_extended_strict = n)) |>
+  left_join(cd_counts_90_extended_strict_v2 |>
+              rename(cd_group = cd_90_extended_strict_v2,
+                     cd_counts_90_extended_strict_v2 = n)) |>
+  mutate(strict_dropped = cd_counts_90_extended - cd_counts_90_extended_strict,
+         perc_strict_dropped = round(strict_dropped / cd_counts_90_extended * 100),
+         strict_v2_dropped = cd_counts_90_extended - cd_counts_90_extended_strict_v2,
+         perc_strict_v2_dropped = round(strict_v2_dropped / cd_counts_90_extended * 100))
+
+
+write_csv(analyze_strict_req, file = here(dir_figs, "analyze_strict_req.csv"))
+
+
+# check 3-year
+
+cd_counts_90_extended_3yr <- d_s |>
+  group_by(cd_90_extended_3yr) |>
+  count() |>
+  ungroup()
+
+cd_counts_90_extended_strict_3yr <- d_s |>
+  group_by(cd_90_extended_strict_3yr) |>
+  count() |>
+  ungroup()
+
+cd_counts_90_extended_strict_v2_3yr <- d_s |>
+  group_by(cd_90_extended_strict_v2_3yr) |>
+  count() |>
+  ungroup()
+
+
+
+analyze_strict_req_3yr <- cd_counts_90_extended_3yr |>
+  rename(cd_group_3yr = cd_90_extended_3yr,
+         cd_counts_90_extended_3yr = n) |>
+  left_join(cd_counts_90_extended_strict_3yr |>
+              rename(cd_group_3yr = cd_90_extended_strict_3yr,
+                     cd_counts_90_extended_strict_3yr = n)) |>
+  left_join(cd_counts_90_extended_strict_v2_3yr |>
+              rename(cd_group_3yr = cd_90_extended_strict_v2_3yr,
+                     cd_counts_90_extended_strict_v2_3yr = n)) |>
+  mutate(strict_dropped_3yr = cd_counts_90_extended_3yr - cd_counts_90_extended_strict_3yr,
+         perc_strict_dropped_3yr = round(strict_dropped_3yr / cd_counts_90_extended_3yr * 100),
+         strict_v2_dropped_3yr = cd_counts_90_extended_3yr - cd_counts_90_extended_strict_v2_3yr,
+         perc_strict_v2_dropped_3yr = round(strict_v2_dropped_3yr / cd_counts_90_extended_3yr * 100))
+
+
+write_csv(analyze_strict_req_3yr, file = here(dir_figs, "analyze_strict_req_3yr.csv"))
+
+
+
+
 
 cd_counts_80 <- d_s_fire |>
   group_by(cd_group_b80_pdsin80) |>
@@ -844,52 +1253,63 @@ cd_counts_80 <- d_s_fire |>
 
 
 
-
-ggplot(d_s_fire |> filter(cd_group_b90_pdsin90 == "bf")) +
-  geom_density(aes(x = biotic_relaxedforestnorm_sum_p1_to_p6)) +
-  scale_x_log10()
-
-
-
-
-b <- d_s_nfire |>
-  filter(biotic_relaxedforestnorm_sum_n5_to_p0 > 9.7 & pdsi_annual_sum_n5_to_p0 > -11.8)
-
-bpost_log <- ggplot(b) +
-  geom_density(aes(x = biotic_relaxedforestnorm_sum_p1_to_p6)) +
-  scale_x_log10()
-bpost <- ggplot(b) +
-  geom_density(aes(x = biotic_relaxedforestnorm_sum_p1_to_p6))
-bpost + bpost_log
-
-ball <- d_s_nfire |>
-  filter(biotic_6roll_max > 9.7)
-
-nb <- d_s_nfire |>
-  filter(biotic_6roll_max < 9.7)
+d_s_fire |>
+  group_by(nfg_factor_clean) |>
+  count() |>
+  left_join(d_s_nfire |>
+    group_by(nfg_factor_clean) |>
+    count() |> rename(n2 = n)) |>
+  mutate(total = n + n2) |>
+  arrange(desc(total))
 
 
-d <- d_s_nfire |>
-  filter(pdsi_annual_sum_n5_to_p0 < -11.8 & biotic_relaxedforestnorm_sum_n5_to_p0 < 9.7)
+d_s_fire |>
+  group_by(nfg_broad_type) |>
+  count() |>
+  left_join(d_s_nfire |>
+    group_by(nfg_broad_type) |>
+    count() |> rename(n2 = n)) |>
+  mutate(total = n + n2) |>
+  arrange(desc(total))
 
-bd <- d_s_nfire |>
-  filter(pdsi_annual_sum_n5_to_p0 < -11.8 & biotic_relaxedforestnorm_sum_n5_to_p0 > 9.7)
-
-
-ndnb <- d_s_nfire |>
-  filter(biotic_relaxedforestnorm_sum_n5_to_p0 < 9.7 & pdsi_annual_sum_n5_to_p0 > -11.8)
-
-ndnb2 <- d_s_nfire |>
-  filter(biotic_6roll_max < 9.7 & pdsi_annual_sum_n5_to_p0 > -11.8)
-
-
-d
-
-cd_counts_90
-
-cd_counts_80
 
 ```
+
+
+# assess rolling maximums
+
+
+How often are there multiple rollmaxes that pass the threshold?
+
+How often is there a rollmax higher than the pre-fire rollmax for fire units?
+
+Are fire versus non-fire biotic classes 
+
+```{r}
+
+ggplot(d_s) +
+  geom_density(aes(x = biotic_relaxedforestnorm_rollsum6max, color = factor(fire))) +
+  scale_x_log10()
+
+ggplot(d_s) +
+  geom_density(aes(x = biotic_relaxedforestnorm_rollsum3max, color = factor(fire))) +
+  scale_x_log10()
+
+
+
+
+
+
+d_l <- open_dataset(here(dir_derived, "parquet_long"), format = "parquet") |>
+  collect()
+
+
+
+# d_l_fire <- d_l |> filter(fire == 1)
+
+
+```
+
 
 
 # temporal fig
@@ -901,7 +1321,6 @@ counts_by_year <- d_s_fire |>
   count() |>
   ungroup()
 
-
 ggplot(counts_by_year) +
   geom_col(aes(x = burn_year, y = n)) +
   facet_wrap( ~ cd_group_b90_pdsin90, scales = "free") +
@@ -910,7 +1329,38 @@ ggplot(counts_by_year) +
 ggsave(filename = here(dir_figs, "bdf_counts_over_time_90.png"))
 
 
+
+
+
+counts_by_year_extended <- d_s |>
+  group_by(cd_90_extended, mock_burn_year) |>
+  count() |>
+  ungroup()
+
+ggplot(counts_by_year_extended) +
+  geom_col(aes(x = mock_burn_year, y = n)) +
+  facet_wrap( ~ cd_90_extended, scales = "free") +
+  labs(title = "BDF counts over time: 90th percentile all time/all groups")
+
+ggsave(filename = here(dir_figs, "bdf_counts_over_time_90_extended.png"))
+
+
+
+
+counts_by_year_extended_strict <- d_s |>
+  group_by(cd_90_extended_strict, mock_burn_year) |>
+  count() |>
+  ungroup()
+
+ggplot(counts_by_year_extended_strict) +
+  geom_col(aes(x = mock_burn_year, y = n)) +
+  facet_wrap( ~ cd_90_extended_strict, scales = "free") +
+  labs(title = "BDF counts over time: 90th percentile all time/all groups")
+
+ggsave(filename = here(dir_figs, "bdf_counts_over_time_90_extended_strict.png"))
+
 ```
+
 
 
 # ecoregions map

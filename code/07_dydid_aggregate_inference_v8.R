@@ -27,7 +27,7 @@ rm(list = ls())
 
 if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
 library(here)
-here::i_am("code/07_dydid_aggregate_inference_v7.R")
+here::i_am("code/07_dydid_aggregate_inference_v8.R")
 
 required_pkgs <- c("dplyr", "readr", "purrr", "tibble", "stringr", "arrow", "glue", "here")
 missing_pkgs  <- required_pkgs[!vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)]
@@ -45,7 +45,7 @@ source(here::here("code", "weight_dydid_pipeline_v7.R"))
 # ══════════════════════════════════════════════════════════════════════════════
 
 run_name    <- "GEE_resilience_v7_operational_ss500_ts50000"
-version     <- "v7"
+version     <- "v8"
 dir_results <- here::here("results-exo", version)
 dir_infout  <- file.path(dir_results, "tables", "inference", "all")
 dir.create(dir_infout, recursive = TRUE, showWarnings = FALSE)
@@ -384,18 +384,18 @@ message(glue::glue("[{Sys.time()}] Done."))
 
 
 
-run_one_inference(
-  run_spec_file             = run_spec_files[[1]],
-  main_agg_id               = main_agg_id,
-  cohortgroup_agg_id        = cohortgroup_agg_id,
-  cohortgroup_agg_col       = cohortgroup_agg_col,
-  cohortgroup_spec_ids      = cohortgroup_spec_ids,
-  pretrend_specs            = pretrend_specs,
-  posttreatment_window_specs = posttreatment_window_specs,
-  comparison_pairs          = comparison_pairs,
-  ci_level                  = ci_level,
-  skip_existing             = FALSE
-)
+# run_one_inference(
+#   run_spec_file             = run_spec_files[[1]],
+#   main_agg_id               = main_agg_id,
+#   cohortgroup_agg_id        = cohortgroup_agg_id,
+#   cohortgroup_agg_col       = cohortgroup_agg_col,
+#   cohortgroup_spec_ids      = cohortgroup_spec_ids,
+#   pretrend_specs            = pretrend_specs,
+#   posttreatment_window_specs = posttreatment_window_specs,
+#   comparison_pairs          = comparison_pairs,
+#   ci_level                  = ci_level,
+#   skip_existing             = FALSE
+# )
 
 
 # ══════════════════════════════════════════════════════════════════════════════

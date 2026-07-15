@@ -1,3 +1,4 @@
+
 # 06_dydid_estimation_v8.R
 # Execution script: weighting and DiD coefficient estimation
 # -------------------------------------------------------
@@ -27,6 +28,7 @@
 
 
 # v8: started run 11:34pm on 250gb machine 
+# had crash next day at 4:22pm on fir-spruce-hemlock 6-yr run. ~ 12 hours for full 3-yr run
 
 # Sys.setenv(LD_LIBRARY_PATH = paste("/opt/conda/lib", Sys.getenv("LD_LIBRARY_PATH"), sep = ":"))
 # Sys.setenv(PATH = paste("/usr/bin:/bin:/usr/local/bin", Sys.getenv("PATH"), sep = ":"))
@@ -66,6 +68,7 @@ set.seed(seed)
 # Set number of cores to use in FEOLS call
 fixest::setFixest_nthreads(48)
 #fixest::getFixest_nthreads()
+ram_size <- 250 # either 250 or 1000
 
 # log any unhandled errors to the status file before R exits
 options(error = function() {
@@ -101,11 +104,12 @@ dir_parquet_short <- file.path(dir_data, "parquet_short")
 
 dir_ensure_local(c(dir_data, dir_parquet_long, dir_raw, dir_manual, dir_results, dir_figs))
 
-x <- arrow::open_dataset(dir_parquet_long) |> collect()
+#x <- arrow::open_dataset(dir_parquet_long) |> collect()
+#xx <- x[1:300,]
 # summary <- x |> group_by(nfg_factor_clean) |> summarize(n = n())
 # length(unique(x$pt_id))
 # 
-x_s <- arrow::open_dataset(dir_parquet_short) |> collect()
+#x_s <- arrow::open_dataset(dir_parquet_short) |> collect()
 # summary_s <- x_s |> group_by(nfg_factor_clean, fire) |> summarize(n = n())
 
 analysis_portion <- c(1:15)
@@ -181,7 +185,15 @@ dataset_spec <- make_dataset_spec(
   time_var   = "year",
   trt_col    = "fire",
   cohort_var = "FirstTreat",
-  event_id   = "fireid"
+  event_id   = "fireid" #pass NA_character_ to get NAs for event_time_support instead of error if needed
+)
+
+extended_dataset_spec <- make_dataset_spec(
+  unit_id    = "pt_id",
+  time_var   = "year",
+  trt_col    = "extended_treat",
+  cohort_var = "FirstTreat",
+  event_id   = NA_character_ #pass NA_character_ to get NAs for event_time_support instead of error if needed
 )
 
 
@@ -227,7 +239,21 @@ nfg_subset_specs <- expand_analysis_subset_specs_by_col(
   long_data_source  = dir_parquet_long,
   split_col         = "nfg_factor_clean",
   id_prefix         = "nfg",
-  values            = nfg_code_names,
+  values            = nfg_code_names[nfg_code_names != "fir_spruce_mountain_hemlock"],
+  short_data_source = dir_parquet_short,
+  check_all_files   = TRUE,
+  base_filter       = ~ fire == 0 | 
+    (fire == 1 & #year_from_fire_index >= -20 & 
+       #year_from_fire_index <= 20 & 
+       analysis_subset %in% analysis_portion)
+)
+
+
+nfg_large_subset_specs <- expand_analysis_subset_specs_by_col(
+  long_data_source  = dir_parquet_long,
+  split_col         = "nfg_factor_clean",
+  id_prefix         = "nfg",
+  values            = "fir_spruce_mountain_hemlock",
   short_data_source = dir_parquet_short,
   check_all_files   = TRUE,
   base_filter       = ~ fire == 0 | 
@@ -307,23 +333,22 @@ broadtype_subset_specs <- expand_analysis_subset_specs_by_col(
 # )
 
 
-all_nfg_specs <- dplyr::bind_rows(
-  nfg_subset_specs#,
-  #nfg_temporalsplit_subset_specs
-)
-
-all_broadtype_specs <- dplyr::bind_rows(
-  broadtype_subset_specs#,
-  #broadtype_temporalsplit_subset_specs
-)
+# small_machine_specs <- dplyr::bind_rows(
+#   nfg_subset_specs
+# )
+# 
+# large_machine_specs <- dplyr::bind_rows(
+#   broadtype_subset_specs,
+#   nfg_large_subset_specs
+# )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 4. Outcome specs ----
 # ══════════════════════════════════════════════════════════════════════════════
 
-outcome_specs <- tibble::tibble(outcome = c("rap_tree",
-                                            "vcf_tree"
+outcome_specs <- tibble::tibble(outcome = c("rap_tree"#,
+                                            #"vcf_tree"
                                             )
                                 )
 
@@ -393,6 +418,104 @@ set_cd_groups <- function(df,
 }
 
 
+
+
+
+
+
+set_cd_groups_extended_strict <- function(df,
+                                          group_col,
+                                          b_nm,
+                                          d_nm,
+                                          b_rollmax_nm,
+                                          d_rollmax_nm,
+                                          b_threshold,
+                                          d_threshold,
+                                          dummy_cols      = c("cd_f", "cd_bf", "cd_df", "cd_bdf", "cd_bd", "cd_b", "cd_d"),
+                                          include_control = FALSE) {
+  
+  if(d_threshold < 0) {
+    df_new <- df |>
+      dplyr::mutate(
+        "{group_col}" := dplyr::case_when(
+          .data[[b_rollmax_nm]] <  b_threshold &
+            .data[[b_nm]] <  b_threshold &
+            fire == 1 &
+            .data[[d_nm]] > d_threshold &
+            .data[[d_rollmax_nm]] > d_threshold ~ "f",
+          .data[[b_nm]] >=  b_threshold &
+            fire == 1 &
+            .data[[d_nm]] > d_threshold &
+            .data[[d_rollmax_nm]] > d_threshold ~ "bf",
+          .data[[b_nm]] <  b_threshold &
+            .data[[b_rollmax_nm]] < b_threshold &
+            fire == 1 &
+            .data[[d_nm]] <= d_threshold ~ "df",
+          .data[[b_nm]] >= b_threshold & 
+            fire == 1 & 
+            .data[[d_nm]] <= d_threshold ~ "bdf",
+          .data[[b_nm]] >= b_threshold & 
+            fire == 0 & 
+            .data[[d_nm]] <= d_threshold ~ "bd",
+          .data[[b_nm]] >= b_threshold & 
+            fire == 0 & 
+            .data[[d_rollmax_nm]] > d_threshold &
+            .data[[d_nm]] > d_threshold ~ "b",
+          .data[[b_rollmax_nm]] < b_threshold & 
+            .data[[b_nm]] < b_threshold &
+            fire == 0 & 
+            .data[[d_nm]] <= d_threshold ~ "d",
+          .data[[b_rollmax_nm]] < b_threshold & 
+            .data[[b_nm]] < b_threshold &
+            fire == 0 & 
+            .data[[d_nm]] > d_threshold &
+            .data[[d_rollmax_nm]] > d_threshold ~ ifelse(include_control, "control", NA_character_),
+          TRUE ~ "DROP"
+        )
+      )
+  } else {
+    stop("please use drought threshold < 0")
+    
+  }
+  
+  df_new <- df_new |>
+    dplyr::filter(is.na(.data[[group_col]]) | .data[[group_col]] != "DROP") |>
+    dplyr::mutate("{group_col}" := relevel(factor(.data[[group_col]]), ref = "f"))
+  
+  
+  level_names <- c("f", "bf", "df", "bdf", "bd", "b", "d")
+  
+  
+  # fix the dydid columns to adapt bd, d, b for the long data; these units will as of now
+  # not have FirstTreat, etc data that is necessary for the estimator
+  if("year" %in% names(df_new)) { #only exists in long data
+    df_new <- df_new |>
+      dplyr::mutate(
+        treated        = dplyr::if_else(year_from_fire_index >= 0 & 
+                                          .data[[group_col]] %in% level_names, 1L, 0L),
+        extended_treat = dplyr::if_else(.data[[group_col]] %in% level_names, 1L, 0L),
+        FirstTreat     = dplyr::if_else(.data[[group_col]] %in% level_names, 
+                                        as.integer(mock_burn_year), 1000L)
+      )
+  }
+  
+  # binary dummies for feols; NAs become 0 (control units get 0 for all dummies)
+  for (i in seq_along(dummy_cols)) {
+    lv <- level_names[i]
+    df_new[[dummy_cols[i]]] <- tidyr::replace_na(
+      as.integer(!is.na(df_new[[group_col]]) & as.character(df_new[[group_col]]) == lv),
+      0L
+    )
+  }
+  
+  return(df_new)
+}
+
+
+
+
+# standard definitions
+
 sixyr_treatment_group_specs <- dplyr::bind_rows(
   make_treatment_group_spec(
     group_id   = "sixyr_b90global_pdsisum90global",
@@ -419,6 +542,42 @@ threeyr_treatment_group_specs <- dplyr::bind_rows(
       d_nm        = "pdsi_annual_sum_n2_to_p0",
       b_threshold = 4,
       d_threshold = -7.9
+    )    
+  )
+)
+
+
+# extended definitions
+sixyr_treatment_group_specs_extended_strict <- dplyr::bind_rows(
+  make_treatment_group_spec(
+    group_id   = "sixyr_b90global_pdsisum90global_extended_strict",
+    group_col  = "sixyr_b90global_pdsisum90global_extended_strict",
+    dummy_cols = c("cd_f", "cd_bf", "cd_df", "cd_bdf", "cd_bd", "cd_b", "cd_d"),
+    group_fun  = set_cd_groups_extended_strict ,
+    group_args = list(
+      b_nm        = "biotic_relaxedforestnorm_sum_n5_to_p0",
+      d_nm        = "pdsi_annual_sum_n5_to_p0",
+      b_threshold = 9.7,
+      d_threshold = -11.8,
+      b_rollmax_nm = "biotic_relaxedforestnorm_rollsum6max",
+      d_rollmax_nm = "pdsi_annual_rollsum6max"
+    )
+  )
+)
+
+threeyr_treatment_group_specs_extended_strict <- dplyr::bind_rows(
+  make_treatment_group_spec(
+    group_id   = "threeyr_b90global_pdsisum90global_extended_strict",
+    group_col  = "threeyr_b90global_pdsisum90global_extended_strict",
+    dummy_cols = c("cd_f", "cd_bf", "cd_df", "cd_bdf", "cd_bd", "cd_b", "cd_d"),
+    group_fun  = set_cd_groups_extended_strict ,
+    group_args = list(
+      b_nm        = "biotic_relaxedforestnorm_sum_n2_to_p0",
+      d_nm        = "pdsi_annual_sum_n2_to_p0",
+      b_threshold = 4,
+      d_threshold = -7.9,
+      b_rollmax_nm = "biotic_relaxedforestnorm_rollsum3max",
+      d_rollmax_nm = "pdsi_annual_rollsum3max"
     )    
   )
 )
@@ -487,6 +646,32 @@ sunab_formula_3yr <- paste0(
   " | pt_id + year"
 )
 
+sunab_formula_6yr_extended <- paste0(
+  "{outcome} ~ ",
+  "sunab(FirstTreat, year, ref.p = -6, no_agg = TRUE):cd_f + ",
+  "sunab(FirstTreat, year, ref.p = -6, no_agg = TRUE):cd_bf + ",
+  "sunab(FirstTreat, year, ref.p = -6, no_agg = TRUE):cd_df + ",
+  "sunab(FirstTreat, year, ref.p = -6, no_agg = TRUE):cd_bdf + ",
+  "sunab(FirstTreat, year, ref.p = -6, no_agg = TRUE):cd_bd + ",
+  "sunab(FirstTreat, year, ref.p = -6, no_agg = TRUE):cd_b + ",
+  "sunab(FirstTreat, year, ref.p = -6, no_agg = TRUE):cd_d",
+  " | pt_id + year"
+)
+
+sunab_formula_3yr_extended <- paste0(
+  "{outcome} ~ ",
+  "sunab(FirstTreat, year, ref.p = -3, no_agg = TRUE):cd_f + ",
+  "sunab(FirstTreat, year, ref.p = -3, no_agg = TRUE):cd_bf + ",
+  "sunab(FirstTreat, year, ref.p = -3, no_agg = TRUE):cd_df + ",
+  "sunab(FirstTreat, year, ref.p = -3, no_agg = TRUE):cd_bdf + ",
+  "sunab(FirstTreat, year, ref.p = -3, no_agg = TRUE):cd_bd + ",
+  "sunab(FirstTreat, year, ref.p = -3, no_agg = TRUE):cd_b + ",
+  "sunab(FirstTreat, year, ref.p = -3, no_agg = TRUE):cd_d",
+  " | pt_id + year"
+)
+
+
+
 sixyr_model_specs <- dplyr::bind_rows(
 
   make_model_spec(
@@ -530,6 +715,55 @@ threeyr_model_specs <- dplyr::bind_rows(
   )
   
 )
+
+
+
+# extended versions
+
+sixyr_model_specs_extended <- dplyr::bind_rows(
+  
+  make_model_spec(
+    model_id         = "sunab_twfe_unweighted_6yr_extended",
+    formula_template = sunab_formula_6yr_extended,
+    estimator_type   = "sunab",
+    term_pattern     = "^year::",
+    weights_col      = NA_character_,
+    feols_args       = list(mem.clean = TRUE)
+  ),
+  
+  make_model_spec(
+    model_id         = "sunab_twfe_glm_ato_topoclimnfgrap_6yr_extended",
+    formula_template = sunab_formula_6yr_extended,
+    estimator_type   = "sunab",
+    term_pattern     = "^year::",
+    weights_col      = "glm_ato_topoclimnfgrap_weights",
+    feols_args       = list(mem.clean = TRUE)
+  )
+  
+)
+
+threeyr_model_specs_extended <- dplyr::bind_rows(
+  
+  make_model_spec(
+    model_id         = "sunab_twfe_unweighted_3yr_extended",
+    formula_template = sunab_formula_3yr_extended,
+    estimator_type   = "sunab",
+    term_pattern     = "^year::",
+    weights_col      = NA_character_,
+    feols_args       = list(mem.clean = TRUE)
+  ),
+  
+  make_model_spec(
+    model_id         = "sunab_twfe_glm_ato_topoclimnfgrap_3yr_extended",
+    formula_template = sunab_formula_3yr_extended,
+    estimator_type   = "sunab",
+    term_pattern     = "^year::",
+    weights_col      = "glm_ato_topoclimnfgrap_weights",
+    feols_args       = list(mem.clean = TRUE)
+  )
+  
+)
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -622,7 +856,10 @@ group_palette <- c(
   "cd_f"   = "#E69F00",
   "cd_bf"  = "#56B4E9",
   "cd_df"  = "#009E73",
-  "cd_bdf" = "#CC79A7"
+  "cd_bdf" = "#CC79A7",
+  "cd_bd"  = "#0072B2",
+  "cd_b"   = "#D55E00",
+  "cd_d"   = "#F0E442"
 )
 
 
@@ -655,18 +892,39 @@ preview_run_grid <- function(subset_specs, outcome_specs, treatment_group_specs,
 # outcome_specs <- outcome_specs[1,]
 # vcov_specs <- vcov_specs[1,]
 
-prev <- preview_run_grid(all_nfg_specs, outcome_specs, threeyr_treatment_group_specs,
-                 threeyr_model_specs, vcov_specs, agg_specs)
+if(ram_size == 250) {
+  
+  small_3 <- preview_run_grid(nfg_subset_specs, outcome_specs, threeyr_treatment_group_specs,
+                              threeyr_model_specs, vcov_specs, agg_specs)
+  
+  small_6 <- preview_run_grid(nfg_subset_specs, outcome_specs, sixyr_treatment_group_specs,
+                              sixyr_model_specs, vcov_specs, agg_specs)
+  
+  small_3_extended <- preview_run_grid(nfg_subset_specs, outcome_specs, threeyr_treatment_group_specs_extended_strict,
+                                       threeyr_model_specs_extended, vcov_specs, agg_specs)
+  
+  small_6_extended <- preview_run_grid(nfg_subset_specs, outcome_specs, sixyr_treatment_group_specs_extended_strict,
+                                       sixyr_model_specs_extended, vcov_specs, agg_specs)
+  
+}
 
-prev <- preview_run_grid(all_nfg_specs, outcome_specs, sixyr_treatment_group_specs,
-                         sixyr_model_specs, vcov_specs, agg_specs)
 
 
-prev <- preview_run_grid(all_broadtype_specs, outcome_specs, threeyr_treatment_group_specs,
-                         threeyr_model_specs, vcov_specs, agg_specs)
-
-prev <- preview_run_grid(all_broadtype_specs, outcome_specs, sixyr_treatment_group_specs,
-                         sixyr_model_specs, vcov_specs, agg_specs)
+if(ram_size == 1000) {
+  
+  large_3 <- preview_run_grid(broadtype_subset_specs, outcome_specs, threeyr_treatment_group_specs,
+                              threeyr_model_specs, vcov_specs, agg_specs)
+  
+  large_6 <- preview_run_grid(broadtype_subset_specs, outcome_specs, sixyr_treatment_group_specs,
+                              sixyr_model_specs, vcov_specs, agg_specs)
+  
+  large_3_extended <- preview_run_grid(broadtype_subset_specs, outcome_specs, threeyr_treatment_group_specs_extended_strict,
+                                       threeyr_model_specs_extended, vcov_specs, agg_specs)
+  
+  large_6_extended <- preview_run_grid(broadtype_subset_specs, outcome_specs, sixyr_treatment_group_specs_extended_strict,
+                                       sixyr_model_specs_extended, vcov_specs, agg_specs)
+   
+}
 
 
 
@@ -693,90 +951,266 @@ prev <- preview_run_grid(all_broadtype_specs, outcome_specs, sixyr_treatment_gro
 #   purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
 # }
 
-tic('weighting 3-yr forest groups')
-nfg_results_weighting <- run_weighting_experiment(
-  dataset_spec          = dataset_spec,
-  analysis_subset_specs = all_nfg_specs,
-  treatment_group_specs = threeyr_treatment_group_specs,
-  weighting_specs       = nfg_weighting_specs,
-  dir_out               = dir_results,
-  skip_existing         = TRUE,
-  verbose_timing        = TRUE,
-  .progress             = TRUE
-)
-toc()
-
-failed_weighting <- purrr::keep(nfg_results_weighting$run_results, \(r) !is.null(r$error))
-if (length(failed_weighting) > 0) {
-  message("Failed weighting runs:")
-  purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
+if(ram_size == 250) {
+  
+  # normal groups
+  tic('weighting 3-yr forest groups')
+  nfg_results_weighting <- run_weighting_experiment(
+    dataset_spec          = dataset_spec,
+    analysis_subset_specs = nfg_subset_specs,
+    treatment_group_specs = threeyr_treatment_group_specs,
+    weighting_specs       = nfg_weighting_specs,
+    dir_out               = dir_results,
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_weighting <- purrr::keep(nfg_results_weighting$run_results, \(r) !is.null(r$error))
+  if (length(failed_weighting) > 0) {
+    message("Failed weighting runs:")
+    purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
+  }
+  
+  
+  tic('weighting 6-yr forest groups')
+  nfg_results_weighting <- run_weighting_experiment(
+    dataset_spec          = dataset_spec,
+    analysis_subset_specs = nfg_subset_specs,
+    treatment_group_specs = sixyr_treatment_group_specs,
+    weighting_specs       = nfg_weighting_specs,
+    dir_out               = dir_results,
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_weighting <- purrr::keep(nfg_results_weighting$run_results, \(r) !is.null(r$error))
+  if (length(failed_weighting) > 0) {
+    message("Failed weighting runs:")
+    purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
+  }
+  
+  
+  # extended groups
+  tic('weighting 3-yr forest groups')
+  nfg_results_weighting <- run_weighting_experiment(
+    dataset_spec          = extended_dataset_spec,
+    analysis_subset_specs = nfg_subset_specs,
+    treatment_group_specs = threeyr_treatment_group_specs_extended_strict,
+    weighting_specs       = nfg_weighting_specs,
+    dir_out               = dir_results,
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_weighting <- purrr::keep(nfg_results_weighting$run_results, \(r) !is.null(r$error))
+  if (length(failed_weighting) > 0) {
+    message("Failed weighting runs:")
+    purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
+  }
+  
+  
+  tic('weighting 6-yr forest groups')
+  nfg_results_weighting <- run_weighting_experiment(
+    dataset_spec          = extended_dataset_spec,
+    analysis_subset_specs = nfg_subset_specs,
+    treatment_group_specs = sixyr_treatment_group_specs_extended_strict,
+    weighting_specs       = nfg_weighting_specs,
+    dir_out               = dir_results,
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_weighting <- purrr::keep(nfg_results_weighting$run_results, \(r) !is.null(r$error))
+  if (length(failed_weighting) > 0) {
+    message("Failed weighting runs:")
+    purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
+  }
+  
 }
 
 
-tic('weighting 6-yr forest groups')
-nfg_results_weighting <- run_weighting_experiment(
-  dataset_spec          = dataset_spec,
-  analysis_subset_specs = all_nfg_specs,
-  treatment_group_specs = sixyr_treatment_group_specs,
-  weighting_specs       = nfg_weighting_specs,
-  dir_out               = dir_results,
-  skip_existing         = TRUE,
-  verbose_timing        = TRUE,
-  .progress             = TRUE
-)
-toc()
 
-failed_weighting <- purrr::keep(nfg_results_weighting$run_results, \(r) !is.null(r$error))
-if (length(failed_weighting) > 0) {
-  message("Failed weighting runs:")
-  purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
+
+
+if(ram_size == 1000) {
+  
+  # BROADTYPE
+  
+  # normal groups
+  tic('weighting 3-yr broad groups')
+  broad_results_weighting <- run_weighting_experiment(
+    dataset_spec          = dataset_spec,
+    analysis_subset_specs = broadtype_subset_specs,
+    treatment_group_specs = threeyr_treatment_group_specs,
+    weighting_specs       = broad_weighting_specs,
+    dir_out               = dir_results,
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_weighting <- purrr::keep(broad_results_weighting$run_results, \(r) !is.null(r$error))
+  if (length(failed_weighting) > 0) {
+    message("Failed weighting runs:")
+    purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
+  }
+  
+  
+  tic('weighting 6-yr broad groups')
+  broad_results_weighting <- run_weighting_experiment(
+    dataset_spec          = dataset_spec,
+    analysis_subset_specs = broadtype_subset_specs,
+    treatment_group_specs = sixyr_treatment_group_specs,
+    weighting_specs       = broad_weighting_specs,
+    dir_out               = dir_results,
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_weighting <- purrr::keep(broad_results_weighting$run_results, \(r) !is.null(r$error))
+  if (length(failed_weighting) > 0) {
+    message("Failed weighting runs:")
+    purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
+  }
+  
+  
+  # extended groups
+  tic('weighting 3-yr broad groups')
+  broad_results_weighting <- run_weighting_experiment(
+    dataset_spec          = extended_dataset_spec,
+    analysis_subset_specs = broadtype_subset_specs,
+    treatment_group_specs = threeyr_treatment_group_specs_extended_strict,
+    weighting_specs       = broad_weighting_specs,
+    dir_out               = dir_results,
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_weighting <- purrr::keep(broad_results_weighting$run_results, \(r) !is.null(r$error))
+  if (length(failed_weighting) > 0) {
+    message("Failed weighting runs:")
+    purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
+  }
+  
+  
+  tic('weighting 6-yr broad groups')
+  broad_results_weighting <- run_weighting_experiment(
+    dataset_spec          = extended_dataset_spec,
+    analysis_subset_specs = broadtype_subset_specs,
+    treatment_group_specs = sixyr_treatment_group_specs_extended_strict,
+    weighting_specs       = broad_weighting_specs,
+    dir_out               = dir_results,
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_weighting <- purrr::keep(broad_results_weighting$run_results, \(r) !is.null(r$error))
+  if (length(failed_weighting) > 0) {
+    message("Failed weighting runs:")
+    purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
+  }
+  
+  
+  
+  #### LARGE NFG
+  
+  # normal groups
+  tic('weighting 3-yr forest groups')
+  nfg_results_weighting <- run_weighting_experiment(
+    dataset_spec          = dataset_spec,
+    analysis_subset_specs = nfg_large_subset_specs,
+    treatment_group_specs = threeyr_treatment_group_specs,
+    weighting_specs       = nfg_weighting_specs,
+    dir_out               = dir_results,
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_weighting <- purrr::keep(nfg_results_weighting$run_results, \(r) !is.null(r$error))
+  if (length(failed_weighting) > 0) {
+    message("Failed weighting runs:")
+    purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
+  }
+  
+  
+  tic('weighting 6-yr forest groups')
+  nfg_results_weighting <- run_weighting_experiment(
+    dataset_spec          = dataset_spec,
+    analysis_subset_specs = nfg_large_subset_specs,
+    treatment_group_specs = sixyr_treatment_group_specs,
+    weighting_specs       = nfg_weighting_specs,
+    dir_out               = dir_results,
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_weighting <- purrr::keep(nfg_results_weighting$run_results, \(r) !is.null(r$error))
+  if (length(failed_weighting) > 0) {
+    message("Failed weighting runs:")
+    purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
+  }
+  
+  
+  # extended groups
+  tic('weighting 3-yr forest groups')
+  nfg_results_weighting <- run_weighting_experiment(
+    dataset_spec          = extended_dataset_spec,
+    analysis_subset_specs = nfg_large_subset_specs,
+    treatment_group_specs = threeyr_treatment_group_specs_extended_strict,
+    weighting_specs       = nfg_weighting_specs,
+    dir_out               = dir_results,
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_weighting <- purrr::keep(nfg_results_weighting$run_results, \(r) !is.null(r$error))
+  if (length(failed_weighting) > 0) {
+    message("Failed weighting runs:")
+    purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
+  }
+  
+  
+  tic('weighting 6-yr forest groups')
+  nfg_results_weighting <- run_weighting_experiment(
+    dataset_spec          = extended_dataset_spec,
+    analysis_subset_specs = nfg_large_subset_specs,
+    treatment_group_specs = sixyr_treatment_group_specs_extended_strict,
+    weighting_specs       = nfg_weighting_specs,
+    dir_out               = dir_results,
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_weighting <- purrr::keep(nfg_results_weighting$run_results, \(r) !is.null(r$error))
+  if (length(failed_weighting) > 0) {
+    message("Failed weighting runs:")
+    purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
+  }
+  
 }
-
-
-
-
-
-tic('weighting 3-yr broad groups')
-broad_results_weighting <- run_weighting_experiment(
-  dataset_spec          = dataset_spec,
-  analysis_subset_specs = all_broadtype_specs,
-  treatment_group_specs = threeyr_treatment_group_specs,
-  weighting_specs       = broad_weighting_specs,
-  dir_out               = dir_results,
-  skip_existing         = TRUE,
-  verbose_timing        = TRUE,
-  .progress             = TRUE
-)
-toc()
-
-failed_weighting <- purrr::keep(broad_results_weighting$run_results, \(r) !is.null(r$error))
-if (length(failed_weighting) > 0) {
-  message("Failed weighting runs:")
-  purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
-}
-
-
-tic('weighting 6-yr broad groups')
-broad_results_weighting <- run_weighting_experiment(
-  dataset_spec          = dataset_spec,
-  analysis_subset_specs = all_broadtype_specs,
-  treatment_group_specs = sixyr_treatment_group_specs,
-  weighting_specs       = broad_weighting_specs,
-  dir_out               = dir_results,
-  skip_existing         = TRUE,
-  verbose_timing        = TRUE,
-  .progress             = TRUE
-)
-toc()
-
-failed_weighting <- purrr::keep(broad_results_weighting$run_results, \(r) !is.null(r$error))
-if (length(failed_weighting) > 0) {
-  message("Failed weighting runs:")
-  purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
-}
-
-
-
 
 
 rebuild_weighting_tables(dir_out = dir_results, write_csv = TRUE)
@@ -786,140 +1220,359 @@ rebuild_weighting_tables(dir_out = dir_results, write_csv = TRUE)
 # 12. Run estimation experiment ----
 # ══════════════════════════════════════════════════════════════════════════════
 
-tic('sunab estimation 3 yr nfg')
-results_sunab_ecor <- run_experiment(
-  dataset_spec          = dataset_spec,
-  analysis_subset_specs = all_nfg_specs,
-  outcome_specs         = outcome_specs,
-  treatment_group_specs = threeyr_treatment_group_specs,
-  model_specs           = threeyr_model_specs,
-  vcov_specs            = vcov_specs,
-  agg_specs             = agg_specs,
-  dir_out               = dir_results,
-  group_palette         = group_palette,
-  ci_level              = 0.95,
-  run_estimation        = TRUE,
-  run_descriptive       = TRUE,
-  descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
-  skip_existing         = TRUE,
-  verbose_timing        = TRUE,
-  .progress             = TRUE
-)
-toc()
 
-failed_ecor <- purrr::keep(results_sunab_ecor$run_results, \(r) !is.null(r$error))
-if (length(failed_ecor) > 0) {
-  message("Failed estimation runs:")
-  purrr::walk(failed_ecor, \(r) message("  ", r$run_id, ": ", r$error))
-}
-
-
-tic('sunab estimation 6 yr nfg')
-results_sunab_ecor <- run_experiment(
-  dataset_spec          = dataset_spec,
-  analysis_subset_specs = all_nfg_specs,
-  outcome_specs         = outcome_specs,
-  treatment_group_specs = sixyr_treatment_group_specs,
-  model_specs           = sixyr_model_specs,
-  vcov_specs            = vcov_specs,
-  agg_specs             = agg_specs,
-  dir_out               = dir_results,
-  group_palette         = group_palette,
-  ci_level              = 0.95,
-  run_estimation        = TRUE,
-  run_descriptive       = TRUE,
-  descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
-  skip_existing         = TRUE,
-  verbose_timing        = TRUE,
-  .progress             = TRUE
-)
-toc()
-
-failed_ecor <- purrr::keep(results_sunab_ecor$run_results, \(r) !is.null(r$error))
-if (length(failed_ecor) > 0) {
-  message("Failed estimation runs:")
-  purrr::walk(failed_ecor, \(r) message("  ", r$run_id, ": ", r$error))
-}
-
-
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Rebuild merged output tables ----
-# ══════════════════════════════════════════════════════════════════════════════
-
-all_estimation_tables <- rebuild_estimation_tables(dir_out = dir_results, write_csv = TRUE)
-all_descriptive_tables <- rebuild_descriptive_tables(dir_out = dir_results, write_csv = TRUE)
-
-message(glue::glue(
-  "Coef rows:       {nrow(all_estimation_tables$coef_tbl)}\n",
-  "Agg specs found: {paste(names(all_estimation_tables$agg_tbls), collapse = ', ')}\n",
-  "Unique run_ids:  {dplyr::n_distinct(all_estimation_tables$run_registry$run_id)}"
-))
-
-relativize_result_paths(dir_results = dir_results, base = here::here())
-
-
-
-
-
-tic('sunab estimation 3 yr broad')
-results_sunab_ecor <- run_experiment(
-  dataset_spec          = dataset_spec,
-  analysis_subset_specs = all_broadtype_specs,
-  outcome_specs         = outcome_specs,
-  treatment_group_specs = threeyr_treatment_group_specs,
-  model_specs           = threeyr_model_specs,
-  vcov_specs            = vcov_specs,
-  agg_specs             = agg_specs,
-  dir_out               = dir_results,
-  group_palette         = group_palette,
-  ci_level              = 0.95,
-  run_estimation        = TRUE,
-  run_descriptive       = TRUE,
-  descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
-  skip_existing         = TRUE,
-  verbose_timing        = TRUE,
-  .progress             = TRUE
-)
-toc()
-
-failed_ecor <- purrr::keep(results_sunab_ecor$run_results, \(r) !is.null(r$error))
-if (length(failed_ecor) > 0) {
-  message("Failed estimation runs:")
-  purrr::walk(failed_ecor, \(r) message("  ", r$run_id, ": ", r$error))
-}
-
-
-tic('sunab estimation 6 yr broad')
-results_sunab_ecor <- run_experiment(
-  dataset_spec          = dataset_spec,
-  analysis_subset_specs = all_broadtype_specs,
-  outcome_specs         = outcome_specs,
-  treatment_group_specs = sixyr_treatment_group_specs,
-  model_specs           = sixyr_model_specs,
-  vcov_specs            = vcov_specs,
-  agg_specs             = agg_specs,
-  dir_out               = dir_results,
-  group_palette         = group_palette,
-  ci_level              = 0.95,
-  run_estimation        = TRUE,
-  run_descriptive       = TRUE,
-  descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
-  skip_existing         = TRUE,
-  verbose_timing        = TRUE,
-  .progress             = TRUE
-)
-toc()
-
-failed_ecor <- purrr::keep(results_sunab_ecor$run_results, \(r) !is.null(r$error))
-if (length(failed_ecor) > 0) {
-  message("Failed estimation runs:")
-  purrr::walk(failed_ecor, \(r) message("  ", r$run_id, ": ", r$error))
+if(ram_size == 250) {
+  
+  tic('sunab estimation 3 yr nfg')
+  results_sunab_ecor <- run_experiment(
+    dataset_spec          = dataset_spec,
+    analysis_subset_specs = nfg_subset_specs,
+    outcome_specs         = outcome_specs,
+    treatment_group_specs = threeyr_treatment_group_specs,
+    model_specs           = threeyr_model_specs,
+    vcov_specs            = vcov_specs,
+    agg_specs             = agg_specs,
+    dir_out               = dir_results,
+    group_palette         = group_palette,
+    ci_level              = 0.95,
+    run_estimation        = TRUE,
+    run_descriptive       = TRUE,
+    descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_ecor <- purrr::keep(results_sunab_ecor$run_results, \(r) !is.null(r$error))
+  if (length(failed_ecor) > 0) {
+    message("Failed estimation runs:")
+    purrr::walk(failed_ecor, \(r) message("  ", r$run_id, ": ", r$error))
+  }
+  
+  
+  tic('sunab estimation 6 yr nfg')
+  results_sunab_ecor <- run_experiment(
+    dataset_spec          = dataset_spec,
+    analysis_subset_specs = nfg_subset_specs,
+    outcome_specs         = outcome_specs,
+    treatment_group_specs = sixyr_treatment_group_specs,
+    model_specs           = sixyr_model_specs,
+    vcov_specs            = vcov_specs,
+    agg_specs             = agg_specs,
+    dir_out               = dir_results,
+    group_palette         = group_palette,
+    ci_level              = 0.95,
+    run_estimation        = TRUE,
+    run_descriptive       = TRUE,
+    descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_ecor <- purrr::keep(results_sunab_ecor$run_results, \(r) !is.null(r$error))
+  if (length(failed_ecor) > 0) {
+    message("Failed estimation runs:")
+    purrr::walk(failed_ecor, \(r) message("  ", r$run_id, ": ", r$error))
+  }
+  
+  
+  tic('sunab estimation 3 yr nfg EXTENDED')
+  results_sunab_ecor <- run_experiment(
+    dataset_spec          = extended_dataset_spec,
+    analysis_subset_specs = nfg_subset_specs,
+    outcome_specs         = outcome_specs,
+    treatment_group_specs = threeyr_treatment_group_specs_extended_strict,
+    model_specs           = threeyr_model_specs_extended,
+    vcov_specs            = vcov_specs,
+    agg_specs             = agg_specs,
+    dir_out               = dir_results,
+    group_palette         = group_palette,
+    ci_level              = 0.95,
+    run_estimation        = TRUE,
+    run_descriptive       = TRUE,
+    descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_ecor <- purrr::keep(results_sunab_ecor$run_results, \(r) !is.null(r$error))
+  if (length(failed_ecor) > 0) {
+    message("Failed estimation runs:")
+    purrr::walk(failed_ecor, \(r) message("  ", r$run_id, ": ", r$error))
+  }
+  
+  
+  tic('sunab estimation 6 yr nfg EXTENDED')
+  results_sunab_ecor <- run_experiment(
+    dataset_spec          = extended_dataset_spec,
+    analysis_subset_specs = nfg_subset_specs,
+    outcome_specs         = outcome_specs,
+    treatment_group_specs = sixyr_treatment_group_specs_extended_strict,
+    model_specs           = sixyr_model_specs_extended,
+    vcov_specs            = vcov_specs,
+    agg_specs             = agg_specs,
+    dir_out               = dir_results,
+    group_palette         = group_palette,
+    ci_level              = 0.95,
+    run_estimation        = TRUE,
+    run_descriptive       = TRUE,
+    descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_ecor <- purrr::keep(results_sunab_ecor$run_results, \(r) !is.null(r$error))
+  if (length(failed_ecor) > 0) {
+    message("Failed estimation runs:")
+    purrr::walk(failed_ecor, \(r) message("  ", r$run_id, ": ", r$error))
+  }
+  
+  
 }
 
 
 
+
+
+if(ram_size == 1000) {
+  
+  
+  ########## LARGE NFG
+  
+  
+  tic('sunab estimation 3 yr nfg')
+  results_sunab_ecor <- run_experiment(
+    dataset_spec          = dataset_spec,
+    analysis_subset_specs = nfg_large_subset_specs,
+    outcome_specs         = outcome_specs,
+    treatment_group_specs = threeyr_treatment_group_specs,
+    model_specs           = threeyr_model_specs,
+    vcov_specs            = vcov_specs,
+    agg_specs             = agg_specs,
+    dir_out               = dir_results,
+    group_palette         = group_palette,
+    ci_level              = 0.95,
+    run_estimation        = TRUE,
+    run_descriptive       = TRUE,
+    descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_ecor <- purrr::keep(results_sunab_ecor$run_results, \(r) !is.null(r$error))
+  if (length(failed_ecor) > 0) {
+    message("Failed estimation runs:")
+    purrr::walk(failed_ecor, \(r) message("  ", r$run_id, ": ", r$error))
+  }
+  
+  
+  tic('sunab estimation 6 yr nfg')
+  results_sunab_ecor <- run_experiment(
+    dataset_spec          = dataset_spec,
+    analysis_subset_specs = nfg_large_subset_specs,
+    outcome_specs         = outcome_specs,
+    treatment_group_specs = sixyr_treatment_group_specs,
+    model_specs           = sixyr_model_specs,
+    vcov_specs            = vcov_specs,
+    agg_specs             = agg_specs,
+    dir_out               = dir_results,
+    group_palette         = group_palette,
+    ci_level              = 0.95,
+    run_estimation        = TRUE,
+    run_descriptive       = TRUE,
+    descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_ecor <- purrr::keep(results_sunab_ecor$run_results, \(r) !is.null(r$error))
+  if (length(failed_ecor) > 0) {
+    message("Failed estimation runs:")
+    purrr::walk(failed_ecor, \(r) message("  ", r$run_id, ": ", r$error))
+  }
+  
+  
+  tic('sunab estimation 3 yr nfg EXTENDED')
+  results_sunab_ecor <- run_experiment(
+    dataset_spec          = extended_dataset_spec,
+    analysis_subset_specs = nfg_large_subset_specs,
+    outcome_specs         = outcome_specs,
+    treatment_group_specs = threeyr_treatment_group_specs_extended_strict,
+    model_specs           = threeyr_model_specs_extended,
+    vcov_specs            = vcov_specs,
+    agg_specs             = agg_specs,
+    dir_out               = dir_results,
+    group_palette         = group_palette,
+    ci_level              = 0.95,
+    run_estimation        = TRUE,
+    run_descriptive       = TRUE,
+    descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_ecor <- purrr::keep(results_sunab_ecor$run_results, \(r) !is.null(r$error))
+  if (length(failed_ecor) > 0) {
+    message("Failed estimation runs:")
+    purrr::walk(failed_ecor, \(r) message("  ", r$run_id, ": ", r$error))
+  }
+  
+  
+  tic('sunab estimation 6 yr nfg EXTENDED')
+  results_sunab_ecor <- run_experiment(
+    dataset_spec          = extended_dataset_spec,
+    analysis_subset_specs = nfg_large_subset_specs,
+    outcome_specs         = outcome_specs,
+    treatment_group_specs = sixyr_treatment_group_specs_extended_strict,
+    model_specs           = sixyr_model_specs_extended,
+    vcov_specs            = vcov_specs,
+    agg_specs             = agg_specs,
+    dir_out               = dir_results,
+    group_palette         = group_palette,
+    ci_level              = 0.95,
+    run_estimation        = TRUE,
+    run_descriptive       = TRUE,
+    descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_ecor <- purrr::keep(results_sunab_ecor$run_results, \(r) !is.null(r$error))
+  if (length(failed_ecor) > 0) {
+    message("Failed estimation runs:")
+    purrr::walk(failed_ecor, \(r) message("  ", r$run_id, ": ", r$error))
+  }
+  
+  
+  ############ BROAD
+  
+  tic('sunab estimation 3 yr broad')
+  results_sunab_ecor <- run_experiment(
+    dataset_spec          = dataset_spec,
+    analysis_subset_specs = broadtype_subset_specs,
+    outcome_specs         = outcome_specs,
+    treatment_group_specs = threeyr_treatment_group_specs,
+    model_specs           = threeyr_model_specs,
+    vcov_specs            = vcov_specs,
+    agg_specs             = agg_specs,
+    dir_out               = dir_results,
+    group_palette         = group_palette,
+    ci_level              = 0.95,
+    run_estimation        = TRUE,
+    run_descriptive       = TRUE,
+    descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_ecor <- purrr::keep(results_sunab_ecor$run_results, \(r) !is.null(r$error))
+  if (length(failed_ecor) > 0) {
+    message("Failed estimation runs:")
+    purrr::walk(failed_ecor, \(r) message("  ", r$run_id, ": ", r$error))
+  }
+  
+  
+  tic('sunab estimation 6 yr broad')
+  results_sunab_ecor <- run_experiment(
+    dataset_spec          = dataset_spec,
+    analysis_subset_specs = broadtype_subset_specs,
+    outcome_specs         = outcome_specs,
+    treatment_group_specs = sixyr_treatment_group_specs,
+    model_specs           = sixyr_model_specs,
+    vcov_specs            = vcov_specs,
+    agg_specs             = agg_specs,
+    dir_out               = dir_results,
+    group_palette         = group_palette,
+    ci_level              = 0.95,
+    run_estimation        = TRUE,
+    run_descriptive       = TRUE,
+    descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_ecor <- purrr::keep(results_sunab_ecor$run_results, \(r) !is.null(r$error))
+  if (length(failed_ecor) > 0) {
+    message("Failed estimation runs:")
+    purrr::walk(failed_ecor, \(r) message("  ", r$run_id, ": ", r$error))
+  }
+  
+  
+  tic('sunab estimation 3 yr broad EXTENDED')
+  results_sunab_ecor <- run_experiment(
+    dataset_spec          = extended_dataset_spec,
+    analysis_subset_specs = broadtype_subset_specs,
+    outcome_specs         = outcome_specs,
+    treatment_group_specs = threeyr_treatment_group_specs_extended_strict,
+    model_specs           = threeyr_model_specs_extended,
+    vcov_specs            = vcov_specs,
+    agg_specs             = agg_specs,
+    dir_out               = dir_results,
+    group_palette         = group_palette,
+    ci_level              = 0.95,
+    run_estimation        = TRUE,
+    run_descriptive       = TRUE,
+    descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_ecor <- purrr::keep(results_sunab_ecor$run_results, \(r) !is.null(r$error))
+  if (length(failed_ecor) > 0) {
+    message("Failed estimation runs:")
+    purrr::walk(failed_ecor, \(r) message("  ", r$run_id, ": ", r$error))
+  }
+  
+  
+  tic('sunab estimation 6 yr broad EXTENDED')
+  results_sunab_ecor <- run_experiment(
+    dataset_spec          = extended_dataset_spec,
+    analysis_subset_specs = broadtype_subset_specs,
+    outcome_specs         = outcome_specs,
+    treatment_group_specs = sixyr_treatment_group_specs_extended_strict,
+    model_specs           = sixyr_model_specs_extended,
+    vcov_specs            = vcov_specs,
+    agg_specs             = agg_specs,
+    dir_out               = dir_results,
+    group_palette         = group_palette,
+    ci_level              = 0.95,
+    run_estimation        = TRUE,
+    run_descriptive       = TRUE,
+    descriptive_args      = list(treated_year_var = "burn_year", control_year_var = "mock_burn_year"),
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_ecor <- purrr::keep(results_sunab_ecor$run_results, \(r) !is.null(r$error))
+  if (length(failed_ecor) > 0) {
+    message("Failed estimation runs:")
+    purrr::walk(failed_ecor, \(r) message("  ", r$run_id, ": ", r$error))
+  }
+  
+}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
