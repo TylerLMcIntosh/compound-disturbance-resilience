@@ -239,7 +239,7 @@ nfg_subset_specs <- expand_analysis_subset_specs_by_col(
   long_data_source  = dir_parquet_long,
   split_col         = "nfg_factor_clean",
   id_prefix         = "nfg",
-  values            = nfg_code_names[nfg_code_names != "fir_spruce_mountain_hemlock"],
+  values            = nfg_code_names[nfg_code_names != "fir_spruce_mountain_hemlock" & nfg_code_names != "douglas_fir"],
   short_data_source = dir_parquet_short,
   check_all_files   = TRUE,
   base_filter       = ~ fire == 0 | 
@@ -253,7 +253,7 @@ nfg_large_subset_specs <- expand_analysis_subset_specs_by_col(
   long_data_source  = dir_parquet_long,
   split_col         = "nfg_factor_clean",
   id_prefix         = "nfg",
-  values            = "fir_spruce_mountain_hemlock",
+  values            = c("fir_spruce_mountain_hemlock", "douglas_fir"),
   short_data_source = dir_parquet_short,
   check_all_files   = TRUE,
   base_filter       = ~ fire == 0 | 

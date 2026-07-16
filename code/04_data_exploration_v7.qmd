@@ -75,6 +75,15 @@ l3_sf <- access_data_epa_l3_ecoregions_vsi()
 d_s_fire <- d_s |> filter(fire == 1)
 d_s_nfire <- d_s |> filter(fire == 0)
 
+d_s_fire |>
+  group_by(nfg_factor_clean) |>
+  count() |>
+  left_join(d_s_nfire |>
+    group_by(nfg_factor_clean) |>
+    count() |> rename(n2 = n)) |>
+  mutate(total = n + n2) |>
+  arrange(desc(total))
+
 ```
 
 ```{r}
