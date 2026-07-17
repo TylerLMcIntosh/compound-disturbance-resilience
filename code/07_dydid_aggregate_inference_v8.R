@@ -12,7 +12,8 @@
 #   att_windows_{vcov_id}.parquet
 #   post_slopes_{vcov_id}.parquet
 #   att_comparisons_{vcov_id}.parquet     (with BH + Holm corrections)
-#   slope_comparisons_{vcov_id}.parquet   (with BH + Holm corrections)
+#   slope_comparisons_{vcov_id}.parquet       (with BH + Holm corrections)
+#   normalized_att_comparisons_{vcov_id}.parquet (with BH + Holm corrections)
 #   cohortgroup_att_windows_{vcov_id}.parquet
 #   cohortgroup_post_slopes_{vcov_id}.parquet
 #
@@ -94,6 +95,13 @@ multi_comparison_sets <- list(
 )
 
 
+# Baseline-adjusted pairs: (group_a[window] - group_a[t=-1]) vs group_b[window]
+# Mirrors comparison_pairs by default; add extended-group pairs here if needed
+normalized_comparison_pairs <- list(
+  c("cd_f", "cd_bf"),
+  c("cd_f", "cd_df"),
+  c("cd_f", "cd_bdf")
+)
 
 ci_level <- 0.95
 
@@ -104,7 +112,7 @@ ci_level <- 0.95
 
 dir_by_run <- file.path(dir_results, "tables", "by_run")
 run_spec_files <- list.files(dir_by_run, pattern = "^run_spec\\.rds$",
-                              recursive = TRUE, full.names = TRUE)
+                             recursive = TRUE, full.names = TRUE)
 
 if (length(run_spec_files) == 0) stop("No run_spec.rds files found under: ", dir_by_run)
 message(glue::glue("Discovered {length(run_spec_files)} estimation runs to process."))
@@ -117,12 +125,12 @@ message(glue::glue("Discovered {length(run_spec_files)} estimation runs to proce
 #' Attach run/vcov metadata columns to any output tibble
 add_inference_meta <- function(tbl, meta, vcov_id) {
   dplyr::mutate(tbl,
-    run_id    = meta$run_id,
-    subset_id = meta$subset_id,
-    outcome   = meta$outcome,
-    group_id  = meta$group_id,
-    model_id  = meta$model_id,
-    vcov_id   = vcov_id
+                run_id    = meta$run_id,
+                subset_id = meta$subset_id,
+                outcome   = meta$outcome,
+                group_id  = meta$group_id,
+                model_id  = meta$model_id,
+                vcov_id   = vcov_id
   )
 }
 
@@ -158,21 +166,21 @@ write_if_nonempty <- function(tbl, path) {
 #' @param cohort_group_id Value of cohort_group_col to keep.
 #' @param cohort_group_col Column name identifying strata (default "cohort_bin").
 subset_agg_by_cohort_group <- function(cg_agg_obj,
-                                        cohort_group_id,
-                                        cohort_group_col = "cohort_bin") {
+                                       cohort_group_id,
+                                       cohort_group_col = "cohort_bin") {
   if (!cohort_group_col %in% names(cg_agg_obj$groups)) {
     warning(glue::glue("Column '{cohort_group_col}' not found in agg_obj$groups. ",
                        "Available: ", paste(names(cg_agg_obj$groups), collapse = ", ")))
     return(NULL)
   }
-
+  
   idx <- which(cg_agg_obj$groups[[cohort_group_col]] == cohort_group_id)
   if (length(idx) == 0) {
     warning(glue::glue("No rows for cohort_group_id='{cohort_group_id}' ",
                        "in column '{cohort_group_col}'."))
     return(NULL)
   }
-
+  
   # drop cohort_group_col (and key/estimate/se bookkeeping cols) so inference
   # functions only see event_time and dummy_group
   drop_cols <- intersect(names(cg_agg_obj$groups),
@@ -181,7 +189,7 @@ subset_agg_by_cohort_group <- function(cg_agg_obj,
     coef   = cg_agg_obj$coef[idx],
     vcov   = cg_agg_obj$vcov[idx, idx, drop = FALSE],
     groups = cg_agg_obj$groups[idx, setdiff(names(cg_agg_obj$groups), drop_cols),
-                                drop = FALSE]
+                               drop = FALSE]
   )
 }
 
@@ -191,35 +199,36 @@ subset_agg_by_cohort_group <- function(cg_agg_obj,
 # ══════════════════════════════════════════════════════════════════════════════
 
 run_one_inference <- function(run_spec_file,
-                               main_agg_id,
-                               cohortgroup_agg_id,
-                               cohortgroup_agg_col,
-                               cohortgroup_spec_ids,
-                               pretrend_width = 9L,
-                               posttreatment_window_specs,
-                               comparison_pairs,
-                               multi_comparison_sets = NULL,
-                               ci_level,
-                               skip_existing = TRUE) {
-
+                              main_agg_id,
+                              cohortgroup_agg_id,
+                              cohortgroup_agg_col,
+                              cohortgroup_spec_ids,
+                              pretrend_width = 9L,
+                              posttreatment_window_specs,
+                              comparison_pairs,
+                              multi_comparison_sets = NULL,
+                              normalized_comparison_pairs = NULL,
+                              ci_level,
+                              skip_existing = TRUE) {
+  
   run_spec  <- readRDS(run_spec_file)
   run_dir   <- dirname(run_spec_file)
   inf_dir   <- file.path(run_dir, "inference")
   dir.create(inf_dir, recursive = TRUE, showWarnings = FALSE)
-
+  
   run_id     <- run_spec$run_id
   dummy_cols <- run_spec$dummy_cols
   vcov_specs <- run_spec$vcov_specs
   
   extended_groups  <- c("cd_b", "cd_d", "cd_bd")
   is_extended_run  <- all(extended_groups %in% dummy_cols)
-
+  
   meta <- list(
     run_id    = run_id,       subset_id = run_spec$subset_id,
     outcome   = run_spec$outcome, group_id  = run_spec$group_id,
     model_id  = run_spec$model_id
   )
-
+  
   message(glue::glue("  Processing: {run_id}"))
   
   ref_p <- if (stringr::str_detect(run_spec$formula_template, "ref\\.p\\s*=\\s*-3")) -3L else -6L
@@ -227,7 +236,7 @@ run_one_inference <- function(run_spec_file,
   active_pretrend_specs <- list(
     list(id = paste0("pre_", abs(ref_p - 1L), "_to_", abs(ref_p - pretrend_width)), years = (ref_p - pretrend_width):(ref_p - 1L))
   )
-
+  
   # verify that the requested agg_ids were computed in this run
   run_agg_ids <- purrr::map_chr(run_spec$agg_specs, "id")
   if (!main_agg_id %in% run_agg_ids) {
@@ -235,22 +244,22 @@ run_one_inference <- function(run_spec_file,
                        paste(run_agg_ids, collapse = ", ")))
     return(invisible(NULL))
   }
-
+  
   results <- list()
-
+  
   # ── Per-vcov inference on the main agg_spec ─────────────────────────────────
   for (vi in seq_len(nrow(vcov_specs))) {
     v_id         <- vcov_specs$vcov_id[[vi]]
     agg_rds_file <- file.path(run_dir,
-      glue::glue("agg_{safe_path_component(main_agg_id)}__{safe_path_component(v_id)}.rds"))
-
+                              glue::glue("agg_{safe_path_component(main_agg_id)}__{safe_path_component(v_id)}.rds"))
+    
     if (!file.exists(agg_rds_file)) {
       warning(glue::glue("[{run_id}] agg RDS not found: {basename(agg_rds_file)}"))
       next
     }
-
+    
     agg_obj <- readRDS(agg_rds_file)
-
+    
     # pre-trend flatness
     pretrend_flat_rows <- purrr::map_dfr(active_pretrend_specs, function(ps) {
       purrr::map_dfr(dummy_cols, function(dc) {
@@ -258,7 +267,7 @@ run_one_inference <- function(run_spec_file,
           dplyr::mutate(pretrend_id = ps$id)
       })
     }) |> add_inference_meta(meta, v_id)
-
+    
     # pre-trend slope
     pretrend_slope_rows <- purrr::map_dfr(active_pretrend_specs, function(ps) {
       purrr::map_dfr(dummy_cols, function(dc) {
@@ -266,7 +275,7 @@ run_one_inference <- function(run_spec_file,
           dplyr::mutate(pretrend_id = ps$id)
       })
     }) |> add_inference_meta(meta, v_id)
-
+    
     # ATT windows
     att_window_rows <- purrr::map_dfr(posttreatment_window_specs, function(ws) {
       purrr::map_dfr(dummy_cols, function(dc) {
@@ -274,7 +283,7 @@ run_one_inference <- function(run_spec_file,
           dplyr::mutate(window_id = ws$id)
       })
     }) |> add_inference_meta(meta, v_id)
-
+    
     # post-treatment slopes
     post_slope_rows <- purrr::map_dfr(posttreatment_window_specs, function(ws) {
       purrr::map_dfr(dummy_cols, function(dc) {
@@ -282,7 +291,7 @@ run_one_inference <- function(run_spec_file,
           dplyr::mutate(window_id = ws$id)
       })
     }) |> add_inference_meta(meta, v_id)
-
+    
     # pairwise ATT comparisons with MTC within each window
     att_comp_rows <- purrr::map_dfr(posttreatment_window_specs, function(ws) {
       purrr::map_dfr(comparison_pairs, function(pair) {
@@ -292,7 +301,7 @@ run_one_inference <- function(run_spec_file,
     }) |>
       add_inference_meta(meta, v_id) |>
       apply_mtc(p_col = "p", grouping = "window_id")
-
+    
     # pairwise slope comparisons with MTC within each window
     slope_comp_rows <- purrr::map_dfr(posttreatment_window_specs, function(ws) {
       purrr::map_dfr(comparison_pairs, function(pair) {
@@ -302,6 +311,30 @@ run_one_inference <- function(run_spec_file,
     }) |>
       add_inference_meta(meta, v_id) |>
       apply_mtc(p_col = "p", grouping = "window_id")
+    
+    # baseline-adjusted ATT comparisons: (group_a[window] - group_a[t=-1]) vs group_b[window]
+    if (!is.null(normalized_comparison_pairs)) {
+      active_norm_pairs <- purrr::keep(normalized_comparison_pairs, function(p) all(p %in% dummy_cols))
+      norm_att_comp_rows <- purrr::map_dfr(posttreatment_window_specs, function(ws) {
+        purrr::map_dfr(active_norm_pairs, function(pair) {
+          wald_compare_att_normalized(
+            agg_obj,
+            group_a  = pair[1],
+            group_b  = pair[2],
+            years    = ws$years,
+            ref_year = -1L,
+            ci_level = ci_level
+          ) |>
+            dplyr::mutate(window_id = ws$id)
+        })
+      }) |>
+        add_inference_meta(meta, v_id) |>
+        apply_mtc(p_col = "p", grouping = "window_id")
+      
+      write_if_nonempty(norm_att_comp_rows,
+                        file.path(inf_dir, glue::glue("normalized_att_comparisons_{safe_path_component(v_id)}.parquet")))
+      results[[v_id]]$normalized_att_comparisons <- norm_att_comp_rows
+    }
     
     # multi-group comparisons: (group_a + group_b) vs group_c
     if (is_extended_run && !is.null(multi_comparison_sets)) {
@@ -326,14 +359,14 @@ run_one_inference <- function(run_spec_file,
       
       results[[v_id]]$multi_att_comparisons <- multi_comp_rows
     }
-
+    
     write_if_nonempty(pretrend_flat_rows,  file.path(inf_dir, glue::glue("pretrend_flat_{safe_path_component(v_id)}.parquet")))
     write_if_nonempty(pretrend_slope_rows, file.path(inf_dir, glue::glue("pretrend_slope_{safe_path_component(v_id)}.parquet")))
     write_if_nonempty(att_window_rows,     file.path(inf_dir, glue::glue("att_windows_{safe_path_component(v_id)}.parquet")))
     write_if_nonempty(post_slope_rows,     file.path(inf_dir, glue::glue("post_slopes_{safe_path_component(v_id)}.parquet")))
     write_if_nonempty(att_comp_rows,       file.path(inf_dir, glue::glue("att_comparisons_{safe_path_component(v_id)}.parquet")))
     write_if_nonempty(slope_comp_rows,     file.path(inf_dir, glue::glue("slope_comparisons_{safe_path_component(v_id)}.parquet")))
-
+    
     results[[v_id]] <- list(
       pretrend_flat     = pretrend_flat_rows,
       pretrend_slope    = pretrend_slope_rows,
@@ -343,22 +376,22 @@ run_one_inference <- function(run_spec_file,
       slope_comparisons = slope_comp_rows
     )
   }
-
+  
   # ── Cohort-group inference ────────────────────────────────────────────────────
   # agg_cohort_early_late__{vcov_id}.rds was pre-computed in Script 06.
   # We load it per vcov_spec and subset by cohort_bin to run inference per stratum.
-
+  
   if (!is.null(cohortgroup_agg_id) && cohortgroup_agg_id %in% run_agg_ids) {
     results$cohortgroup <- list()
-
+    
     for (vi in seq_len(nrow(vcov_specs))) {
       v_id <- vcov_specs$vcov_id[[vi]]
       cg_rds_file <- file.path(run_dir,
-        glue::glue("agg_{safe_path_component(cohortgroup_agg_id)}__{safe_path_component(v_id)}.rds"))
-
+                               glue::glue("agg_{safe_path_component(cohortgroup_agg_id)}__{safe_path_component(v_id)}.rds"))
+      
       if (!file.exists(cg_rds_file)) next
       cg_agg_obj <- readRDS(cg_rds_file)
-
+      
       # ATT windows per cohort stratum
       cg_att_rows <- purrr::map_dfr(cohortgroup_spec_ids, function(cg_id) {
         cg_sub <- subset_agg_by_cohort_group(cg_agg_obj, cg_id, cohortgroup_agg_col)
@@ -370,7 +403,7 @@ run_one_inference <- function(run_spec_file,
           })
         })
       }) |> add_inference_meta(meta, v_id)
-
+      
       # slopes per cohort stratum
       cg_slope_rows <- purrr::map_dfr(cohortgroup_spec_ids, function(cg_id) {
         cg_sub <- subset_agg_by_cohort_group(cg_agg_obj, cg_id, cohortgroup_agg_col)
@@ -382,14 +415,14 @@ run_one_inference <- function(run_spec_file,
           })
         })
       }) |> add_inference_meta(meta, v_id)
-
+      
       write_if_nonempty(cg_att_rows,   file.path(inf_dir, glue::glue("cohortgroup_att_windows_{safe_path_component(v_id)}.parquet")))
       write_if_nonempty(cg_slope_rows, file.path(inf_dir, glue::glue("cohortgroup_post_slopes_{safe_path_component(v_id)}.parquet")))
-
+      
       results$cohortgroup[[v_id]] <- list(att_windows = cg_att_rows, post_slopes = cg_slope_rows)
     }
   }
-
+  
   invisible(results)
 }
 
@@ -411,8 +444,9 @@ inference_results <- purrr::map(run_spec_files, function(f) {
       pretrend_width            = 9L,
       posttreatment_window_specs = posttreatment_window_specs,
       comparison_pairs          = comparison_pairs,
-      multi_comparison_sets = multi_comparison_sets,
-      ci_level                  = ci_level,
+      multi_comparison_sets         = multi_comparison_sets,
+      normalized_comparison_pairs   = normalized_comparison_pairs,
+      ci_level                      = ci_level,
       skip_existing             = TRUE
     ),
     error = function(e) {
@@ -448,16 +482,16 @@ rebuild_inference_tables <- function(dir_results, write_csv = TRUE) {
   dir_by_run <- file.path(dir_results, "tables", "by_run")
   dir_inf    <- file.path(dir_results, "tables", "inference", "all")
   dir.create(dir_inf, recursive = TRUE, showWarnings = FALSE)
-
+  
   inf_files <- list.files(file.path(dir_by_run), pattern = "\\.parquet$",
-                           recursive = TRUE, full.names = TRUE) |>
+                          recursive = TRUE, full.names = TRUE) |>
     grep("inference/", x = _, value = TRUE, fixed = TRUE)
-
+  
   if (length(inf_files) == 0) {
     warning("No inference parquets found.")
     return(invisible(NULL))
   }
-
+  
   # group by file type prefix (strip vcov_id suffix to get the type name)
   file_type_prefixes <- c(
     "pretrend_flat",
@@ -467,10 +501,11 @@ rebuild_inference_tables <- function(dir_results, write_csv = TRUE) {
     "att_comparisons",
     "slope_comparisons",
     "multi_att_comparisons",
+    "normalized_att_comparisons",
     "cohortgroup_att_windows",
     "cohortgroup_post_slopes"
   )
-
+  
   read_and_merge <- function(pattern_files) {
     if (length(pattern_files) == 0) return(NULL)
     purrr::map_dfr(pattern_files, \(f) {
@@ -485,7 +520,7 @@ rebuild_inference_tables <- function(dir_results, write_csv = TRUE) {
       dplyr::ungroup() |>
       dplyr::select(-.mtime)
   }
-
+  
   write_pair <- function(tbl, stem) {
     if (is.null(tbl) || nrow(tbl) == 0) return(NULL)
     pq  <- file.path(dir_inf, paste0(stem, ".parquet"))
@@ -494,25 +529,25 @@ rebuild_inference_tables <- function(dir_results, write_csv = TRUE) {
     if (write_csv) readr::write_csv(tbl, csv)
     list(parquet = pq, csv = csv)
   }
-
+  
   merged <- purrr::set_names(
     purrr::map(file_type_prefixes, function(prefix) {
       prefix_files <- inf_files[stringr::str_detect(basename(inf_files),
-                                                      paste0("^", prefix, "_"))]
+                                                    paste0("^", prefix, "_"))]
       read_and_merge(prefix_files)
     }),
     file_type_prefixes
   )
-
+  
   files <- purrr::imap(merged, function(tbl, nm) write_pair(tbl, nm))
-
+  
   message("Inference tables merged:")
   purrr::iwalk(merged, function(tbl, nm) {
     if (!is.null(tbl)) {
       message(glue::glue("  {nm}: {nrow(tbl)} rows, {dplyr::n_distinct(tbl$run_id)} runs"))
     }
   })
-
+  
   invisible(list(tables = merged, files = files))
 }
 
