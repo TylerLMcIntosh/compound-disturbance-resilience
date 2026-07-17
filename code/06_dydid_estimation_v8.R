@@ -1345,7 +1345,7 @@ if(ram_size == 1000) {
   
   
   ########## LARGE NFG
-  
+  print("STARTING ESTIMATION OF LARGE NFG GROUPS")
   
   tic('sunab estimation 3 yr nfg')
   results_sunab_ecor <- run_experiment(
@@ -1460,6 +1460,7 @@ if(ram_size == 1000) {
   
   
   ############ BROAD
+  print("STARTING ESTIMATION OF BROAD GROUPS")
   
   tic('sunab estimation 3 yr broad')
   results_sunab_ecor <- run_experiment(
