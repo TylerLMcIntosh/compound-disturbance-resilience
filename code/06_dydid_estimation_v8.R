@@ -1041,91 +1041,8 @@ if(ram_size == 250) {
 
 
 if(ram_size == 1000) {
-  
-  # BROADTYPE
-  
-  # normal groups
-  tic('weighting 3-yr broad groups')
-  broad_results_weighting <- run_weighting_experiment(
-    dataset_spec          = dataset_spec,
-    analysis_subset_specs = broadtype_subset_specs,
-    treatment_group_specs = threeyr_treatment_group_specs,
-    weighting_specs       = broad_weighting_specs,
-    dir_out               = dir_results,
-    skip_existing         = TRUE,
-    verbose_timing        = TRUE,
-    .progress             = TRUE
-  )
-  toc()
-  
-  failed_weighting <- purrr::keep(broad_results_weighting$run_results, \(r) !is.null(r$error))
-  if (length(failed_weighting) > 0) {
-    message("Failed weighting runs:")
-    purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
-  }
-  
-  
-  tic('weighting 6-yr broad groups')
-  broad_results_weighting <- run_weighting_experiment(
-    dataset_spec          = dataset_spec,
-    analysis_subset_specs = broadtype_subset_specs,
-    treatment_group_specs = sixyr_treatment_group_specs,
-    weighting_specs       = broad_weighting_specs,
-    dir_out               = dir_results,
-    skip_existing         = TRUE,
-    verbose_timing        = TRUE,
-    .progress             = TRUE
-  )
-  toc()
-  
-  failed_weighting <- purrr::keep(broad_results_weighting$run_results, \(r) !is.null(r$error))
-  if (length(failed_weighting) > 0) {
-    message("Failed weighting runs:")
-    purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
-  }
-  
-  
-  # extended groups
-  tic('weighting 3-yr broad groups')
-  broad_results_weighting <- run_weighting_experiment(
-    dataset_spec          = extended_dataset_spec,
-    analysis_subset_specs = broadtype_subset_specs,
-    treatment_group_specs = threeyr_treatment_group_specs_extended_strict,
-    weighting_specs       = broad_weighting_specs,
-    dir_out               = dir_results,
-    skip_existing         = TRUE,
-    verbose_timing        = TRUE,
-    .progress             = TRUE
-  )
-  toc()
-  
-  failed_weighting <- purrr::keep(broad_results_weighting$run_results, \(r) !is.null(r$error))
-  if (length(failed_weighting) > 0) {
-    message("Failed weighting runs:")
-    purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
-  }
-  
-  
-  tic('weighting 6-yr broad groups')
-  broad_results_weighting <- run_weighting_experiment(
-    dataset_spec          = extended_dataset_spec,
-    analysis_subset_specs = broadtype_subset_specs,
-    treatment_group_specs = sixyr_treatment_group_specs_extended_strict,
-    weighting_specs       = broad_weighting_specs,
-    dir_out               = dir_results,
-    skip_existing         = TRUE,
-    verbose_timing        = TRUE,
-    .progress             = TRUE
-  )
-  toc()
-  
-  failed_weighting <- purrr::keep(broad_results_weighting$run_results, \(r) !is.null(r$error))
-  if (length(failed_weighting) > 0) {
-    message("Failed weighting runs:")
-    purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
-  }
-  
-  
+
+  print("Starting weighting of large NFGs")
   
   #### LARGE NFG
   
@@ -1209,6 +1126,92 @@ if(ram_size == 1000) {
     message("Failed weighting runs:")
     purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
   }
+  
+  
+  # BROADTYPE
+  print("Starting weighting of broad types")
+  
+  # normal groups
+  tic('weighting 3-yr broad groups')
+  broad_results_weighting <- run_weighting_experiment(
+    dataset_spec          = dataset_spec,
+    analysis_subset_specs = broadtype_subset_specs,
+    treatment_group_specs = threeyr_treatment_group_specs,
+    weighting_specs       = broad_weighting_specs,
+    dir_out               = dir_results,
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_weighting <- purrr::keep(broad_results_weighting$run_results, \(r) !is.null(r$error))
+  if (length(failed_weighting) > 0) {
+    message("Failed weighting runs:")
+    purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
+  }
+  
+  
+  tic('weighting 6-yr broad groups')
+  broad_results_weighting <- run_weighting_experiment(
+    dataset_spec          = dataset_spec,
+    analysis_subset_specs = broadtype_subset_specs,
+    treatment_group_specs = sixyr_treatment_group_specs,
+    weighting_specs       = broad_weighting_specs,
+    dir_out               = dir_results,
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_weighting <- purrr::keep(broad_results_weighting$run_results, \(r) !is.null(r$error))
+  if (length(failed_weighting) > 0) {
+    message("Failed weighting runs:")
+    purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
+  }
+  
+  
+  # extended groups
+  tic('weighting 3-yr broad groups')
+  broad_results_weighting <- run_weighting_experiment(
+    dataset_spec          = extended_dataset_spec,
+    analysis_subset_specs = broadtype_subset_specs,
+    treatment_group_specs = threeyr_treatment_group_specs_extended_strict,
+    weighting_specs       = broad_weighting_specs,
+    dir_out               = dir_results,
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_weighting <- purrr::keep(broad_results_weighting$run_results, \(r) !is.null(r$error))
+  if (length(failed_weighting) > 0) {
+    message("Failed weighting runs:")
+    purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
+  }
+  
+  
+  tic('weighting 6-yr broad groups')
+  broad_results_weighting <- run_weighting_experiment(
+    dataset_spec          = extended_dataset_spec,
+    analysis_subset_specs = broadtype_subset_specs,
+    treatment_group_specs = sixyr_treatment_group_specs_extended_strict,
+    weighting_specs       = broad_weighting_specs,
+    dir_out               = dir_results,
+    skip_existing         = TRUE,
+    verbose_timing        = TRUE,
+    .progress             = TRUE
+  )
+  toc()
+  
+  failed_weighting <- purrr::keep(broad_results_weighting$run_results, \(r) !is.null(r$error))
+  if (length(failed_weighting) > 0) {
+    message("Failed weighting runs:")
+    purrr::walk(failed_weighting, \(r) message("  ", r$weight_run_id, ": ", r$error))
+  }
+  
   
 }
 
