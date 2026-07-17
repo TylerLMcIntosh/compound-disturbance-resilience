@@ -65,12 +65,8 @@ cohortgroup_agg_id   <- "cohort_early_late"
 cohortgroup_agg_col  <- "cohort_bin"          # column in groups tibble identifying strata
 cohortgroup_spec_ids <- c("early", "late")    # expected values of cohort_bin
 
-# Pre-trend windows
-# NOTE: do not include ref.p (here -6) in pre_years; that estimate is
-# mechanically zero and should not be tested.
-pretrend_specs <- list(
-  list(id = "pre_7_to_15", years = -15:-7)
-)
+
+
 
 # Post-treatment windows
 posttreatment_window_specs <- list(
@@ -87,6 +83,17 @@ comparison_pairs <- list(
   c("cd_f", "cd_df"),
   c("cd_f", "cd_bdf")
 )
+
+
+# Multi-comparison sets (index 1 + index 2 compared to index 3)
+
+multi_comparison_sets <- list(
+  c("cd_f", "cd_b", "cd_bf"),
+  c("cd_f", "cd_d", "cd_df"),
+  c("cd_f", "cd_bd", "cd_bdf")
+)
+
+
 
 ci_level <- 0.95
 
@@ -188,9 +195,10 @@ run_one_inference <- function(run_spec_file,
                                cohortgroup_agg_id,
                                cohortgroup_agg_col,
                                cohortgroup_spec_ids,
-                               pretrend_specs,
+                               pretrend_width = 9L,
                                posttreatment_window_specs,
                                comparison_pairs,
+                               multi_comparison_sets = NULL,
                                ci_level,
                                skip_existing = TRUE) {
 
@@ -202,6 +210,9 @@ run_one_inference <- function(run_spec_file,
   run_id     <- run_spec$run_id
   dummy_cols <- run_spec$dummy_cols
   vcov_specs <- run_spec$vcov_specs
+  
+  extended_groups  <- c("cd_b", "cd_d", "cd_bd")
+  is_extended_run  <- all(extended_groups %in% dummy_cols)
 
   meta <- list(
     run_id    = run_id,       subset_id = run_spec$subset_id,
@@ -210,6 +221,12 @@ run_one_inference <- function(run_spec_file,
   )
 
   message(glue::glue("  Processing: {run_id}"))
+  
+  ref_p <- if (stringr::str_detect(run_spec$formula_template, "ref\\.p\\s*=\\s*-3")) -3L else -6L
+  pretrend_years_safe <- (ref_p - pretrend_width):(ref_p - 1L)  # exclude ref_p and everything above it
+  active_pretrend_specs <- list(
+    list(id = paste0("pre_", abs(ref_p - 1L), "_to_", abs(ref_p - pretrend_width)), years = (ref_p - pretrend_width):(ref_p - 1L))
+  )
 
   # verify that the requested agg_ids were computed in this run
   run_agg_ids <- purrr::map_chr(run_spec$agg_specs, "id")
@@ -235,7 +252,7 @@ run_one_inference <- function(run_spec_file,
     agg_obj <- readRDS(agg_rds_file)
 
     # pre-trend flatness
-    pretrend_flat_rows <- purrr::map_dfr(pretrend_specs, function(ps) {
+    pretrend_flat_rows <- purrr::map_dfr(active_pretrend_specs, function(ps) {
       purrr::map_dfr(dummy_cols, function(dc) {
         wald_pretrend_flat(agg_obj, dummy_group = dc, pre_years = ps$years) |>
           dplyr::mutate(pretrend_id = ps$id)
@@ -243,7 +260,7 @@ run_one_inference <- function(run_spec_file,
     }) |> add_inference_meta(meta, v_id)
 
     # pre-trend slope
-    pretrend_slope_rows <- purrr::map_dfr(pretrend_specs, function(ps) {
+    pretrend_slope_rows <- purrr::map_dfr(active_pretrend_specs, function(ps) {
       purrr::map_dfr(dummy_cols, function(dc) {
         wald_pretrend_slope(agg_obj, dummy_group = dc, pre_years = ps$years) |>
           dplyr::mutate(pretrend_id = ps$id)
@@ -285,6 +302,30 @@ run_one_inference <- function(run_spec_file,
     }) |>
       add_inference_meta(meta, v_id) |>
       apply_mtc(p_col = "p", grouping = "window_id")
+    
+    # multi-group comparisons: (group_a + group_b) vs group_c
+    if (is_extended_run && !is.null(multi_comparison_sets)) {
+      multi_comp_rows <- purrr::map_dfr(posttreatment_window_specs, function(ws) {
+        purrr::map_dfr(multi_comparison_sets, function(s) {
+          wald_compare_att_multi(
+            agg_obj,
+            group_a  = s[1],
+            group_b  = s[2],
+            group_c  = s[3],
+            years    = ws$years,
+            ci_level = ci_level
+          ) |>
+            dplyr::mutate(window_id = ws$id)
+        })
+      }) |>
+        add_inference_meta(meta, v_id) |>
+        apply_mtc(p_col = "p", grouping = "window_id")
+      
+      write_if_nonempty(multi_comp_rows,
+                        file.path(inf_dir, glue::glue("multi_att_comparisons_{safe_path_component(v_id)}.parquet")))
+      
+      results[[v_id]]$multi_att_comparisons <- multi_comp_rows
+    }
 
     write_if_nonempty(pretrend_flat_rows,  file.path(inf_dir, glue::glue("pretrend_flat_{safe_path_component(v_id)}.parquet")))
     write_if_nonempty(pretrend_slope_rows, file.path(inf_dir, glue::glue("pretrend_slope_{safe_path_component(v_id)}.parquet")))
@@ -367,9 +408,10 @@ inference_results <- purrr::map(run_spec_files, function(f) {
       cohortgroup_agg_id        = cohortgroup_agg_id,
       cohortgroup_agg_col       = cohortgroup_agg_col,
       cohortgroup_spec_ids      = cohortgroup_spec_ids,
-      pretrend_specs            = pretrend_specs,
+      pretrend_width            = 9L,
       posttreatment_window_specs = posttreatment_window_specs,
       comparison_pairs          = comparison_pairs,
+      multi_comparison_sets = multi_comparison_sets,
       ci_level                  = ci_level,
       skip_existing             = TRUE
     ),
@@ -424,6 +466,7 @@ rebuild_inference_tables <- function(dir_results, write_csv = TRUE) {
     "post_slopes",
     "att_comparisons",
     "slope_comparisons",
+    "multi_att_comparisons",
     "cohortgroup_att_windows",
     "cohortgroup_post_slopes"
   )

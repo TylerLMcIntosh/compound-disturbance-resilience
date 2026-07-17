@@ -847,10 +847,6 @@ write_csv(all_deciles, file = here(dir_figs, "deciles_all.csv"))
 
 ```
 
-
-
-
-
 # Set CD groups
 
 ```{r}
@@ -1169,8 +1165,6 @@ d_s <- set_cd_groups_extended_strict_v2(df = d_s,
 
 ```
 
-
-
 # assess sample size and NON-fire impacted sample size
 
 ```{r}
@@ -1284,15 +1278,13 @@ d_s_fire |>
 
 ```
 
-
 # assess rolling maximums
-
 
 How often are there multiple rollmaxes that pass the threshold?
 
 How often is there a rollmax higher than the pre-fire rollmax for fire units?
 
-Are fire versus non-fire biotic classes 
+Are fire versus non-fire biotic classes
 
 ```{r}
 
@@ -1318,8 +1310,6 @@ d_l <- open_dataset(here(dir_derived, "parquet_long"), format = "parquet") |>
 
 
 ```
-
-
 
 # temporal fig
 
@@ -1369,8 +1359,6 @@ ggplot(counts_by_year_extended_strict) +
 ggsave(filename = here(dir_figs, "bdf_counts_over_time_90_extended_strict.png"))
 
 ```
-
-
 
 # ecoregions map
 

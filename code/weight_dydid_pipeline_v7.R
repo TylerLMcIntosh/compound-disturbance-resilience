@@ -1372,6 +1372,97 @@ wald_compare_att <- function(agg_obj, group_a, group_b, years) {
   )
 }
 
+# a version of the att-comparison, but normalized by a reference year (e.g. year prior to burn)
+wald_compare_att_normalized <- function(agg_obj, group_a, group_b, years,
+                                        ref_year = -1L, ci_level = 0.95) {
+  groups <- agg_obj$groups
+  coef   <- agg_obj$coef
+  sigma  <- agg_obj$vcov
+  
+  idx_a_win <- which(groups$dummy_group == group_a & groups$event_time %in% years)
+  idx_a_ref <- which(groups$dummy_group == group_a & groups$event_time == ref_year)
+  idx_b_win <- which(groups$dummy_group == group_b & groups$event_time %in% years)
+  
+  if (any(c(length(idx_a_win), length(idx_b_win)) == 0) || length(idx_a_ref) != 1) {
+    warning(glue::glue("Missing support: {group_a} window({length(idx_a_win)}) ",
+                       "{group_a} ref({length(idx_a_ref)}) {group_b} window({length(idx_b_win)})"))
+    return(tibble::tibble())
+  }
+  
+  # contrast: (mean(group_a[window]) - group_a[ref_year]) - mean(group_b[window])
+  c_vec            <- numeric(length(coef))
+  c_vec[idx_a_win] <-  1 / length(idx_a_win)
+  c_vec[idx_a_ref] <- -1                        # single year, not averaged
+  c_vec[idx_b_win] <- -1 / length(idx_b_win)
+  
+  est  <- as.numeric(c_vec %*% coef)
+  se   <- sqrt(as.numeric(c_vec %*% sigma %*% c_vec))
+  z    <- est / se
+  p    <- 2 * pnorm(-abs(z))
+  crit <- qnorm(1 - (1 - ci_level) / 2)
+  
+  tibble::tibble(
+    contrast = glue::glue("{group_a}[win-ref{ref_year}]_vs_{group_b}[win]"),
+    group_a  = group_a,
+    group_b  = group_b,
+    ref_year = ref_year,
+    estimate = est,
+    se       = se,
+    z        = z,
+    p        = p,
+    ci_lo    = est - crit * se,
+    ci_hi    = est + crit * se
+  )
+}
+
+
+wald_compare_att_multi <- function(agg_obj, group_a, group_b, group_c, years,
+                                   ci_level = 0.95) {
+  groups <- agg_obj$groups
+  coef   <- agg_obj$coef
+  sigma  <- agg_obj$vcov
+  
+  idx_a <- which(groups$dummy_group == group_a & groups$event_time %in% years)
+  idx_b <- which(groups$dummy_group == group_b & groups$event_time %in% years)
+  idx_c <- which(groups$dummy_group == group_c & groups$event_time %in% years)
+  
+  if (any(c(length(idx_a), length(idx_b), length(idx_c)) == 0)) {
+    warning(glue::glue("Missing window support for one or more groups: ",
+                       "{group_a}({length(idx_a)}) {group_b}({length(idx_b)}) ",
+                       "{group_c}({length(idx_c)})"))
+    return(tibble::tibble())
+  }
+  
+  # contrast vector: ATT_a + ATT_b - ATT_c
+  # each group is averaged separately over its own window indices
+  c_vec          <- numeric(length(coef))
+  c_vec[idx_a]   <-  1 / length(idx_a)
+  c_vec[idx_b]   <-  1 / length(idx_b)
+  c_vec[idx_c]   <- -1 / length(idx_c)
+  
+  est    <- as.numeric(c_vec %*% coef)
+  var_e  <- as.numeric(c_vec %*% sigma %*% c_vec)
+  se     <- sqrt(var_e)
+  z      <- est / se
+  p      <- 2 * pnorm(-abs(z))
+  crit   <- qnorm(1 - (1 - ci_level) / 2)
+  
+  tibble::tibble(
+    contrast = glue::glue("{group_a}+{group_b}_vs_{group_c}"),
+    group_a  = group_a,
+    group_b  = group_b,
+    group_c  = group_c,
+    estimate = est,    # positive = (a+b) > c
+    se       = se,
+    z        = z,
+    p        = p,
+    ci_lo    = est - crit * se,
+    ci_hi    = est + crit * se
+  )
+}
+
+
+
 
 #' Pairwise contrast of post-treatment GLS slopes
 compare_gls_slopes <- function(agg_obj, group_a, group_b, years) {

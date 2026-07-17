@@ -11,36 +11,35 @@
 rm(list = ls())
 
 library(here)
-here::i_am("code/08_dydid_plots_v8.R")
+here::i_am("code/08_dydid_plots_extended_v8.R")
 
 library(dplyr); library(ggplot2); library(readr); library(purrr)
 library(tibble); library(stringr); library(arrow); library(glue)
+library(patchwork)
 
 source(here::here("code", "weight_dydid_pipeline_v7.R"))
+source(here("utils", "functions.R"))
 
 run_name    <- "GEE_resilience_v7_operational_ss500_ts50000"
 version     <- "v8"
 dir_results <- here::here("results-exo", version)
 dir_figs    <- here::here("figs",    version, "exo")
-dir_figs_ecor <- here(dir_figs, "ecor")
-dir_figs_nfg <- here(dir_figs, "nfg")
 
-dir.create(dir_figs, recursive = TRUE, showWarnings = FALSE)
-dir.create(dir_figs_ecor, recursive = TRUE, showWarnings = FALSE)
-dir.create(dir_figs_nfg, recursive = TRUE, showWarnings = FALSE)
+dir_ensure(dir_figs)
 
 
-# Make sure all tables have been built
-all_estimation_tables <- rebuild_estimation_tables(dir_out = dir_results, write_csv = TRUE)
-all_descriptive_tables <- rebuild_descriptive_tables(dir_out = dir_results, write_csv = TRUE)
 
-message(glue::glue(
-  "Coef rows:       {nrow(all_estimation_tables$coef_tbl)}\n",
-  "Agg specs found: {paste(names(all_estimation_tables$agg_tbls), collapse = ', ')}\n",
-  "Unique run_ids:  {dplyr::n_distinct(all_estimation_tables$run_registry$run_id)}"
-))
-
-relativize_result_paths(dir_results = dir_results, base = here::here())
+# # Make sure all tables have been built if downloaded incomplete set from exo
+# all_estimation_tables <- rebuild_estimation_tables(dir_out = dir_results, write_csv = TRUE)
+# all_descriptive_tables <- rebuild_descriptive_tables(dir_out = dir_results, write_csv = TRUE)
+# 
+# message(glue::glue(
+#   "Coef rows:       {nrow(all_estimation_tables$coef_tbl)}\n",
+#   "Agg specs found: {paste(names(all_estimation_tables$agg_tbls), collapse = ', ')}\n",
+#   "Unique run_ids:  {dplyr::n_distinct(all_estimation_tables$run_registry$run_id)}"
+# ))
+# 
+# relativize_result_paths(dir_results = dir_results, base = here::here())
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Load merged tables ----
@@ -50,6 +49,8 @@ dir_all      <- file.path(dir_results, "tables", "all")
 dir_inf_all  <- file.path(dir_results, "tables", "inference", "all")
 
 agg_es_tbl  <- arrow::read_parquet(file.path(dir_all, "agg_event_study.parquet"))
+agg_es_tbl_timesplit <- arrow::read_parquet(file.path(dir_all, "agg_cohort_early_late.parquet"))
+
 registry    <- arrow::read_parquet(file.path(dir_all, "run_registry.parquet"))
 dg_summary  <- arrow::read_parquet(file.path(dir_all, "dummy_group_summary.parquet"))
 support <- arrow::read_parquet(file.path(dir_all, "event_time_support.parquet"))
@@ -72,6 +73,16 @@ dummy_group_labels <- c(
   "cd_bdf" = "Drought + biotic + fire"
 )
 
+dummy_group_labels_extended <- c(
+  "cd_f"   = "Fire only",
+  "cd_bf"  = "Biotic stress + fire",
+  "cd_df"  = "Drought + fire",
+  "cd_bdf" = "Drought + biotic + fire",
+  "cd_b" = "Biotic",
+  "cd_d" = "Drought",
+  "cd_bd" = "Biotic + Drought"
+)
+
 # Default palette (override via group_palette from Script 6)
 dummy_group_palette_old <- c(
   "cd_f"   = "maroon3",
@@ -88,6 +99,17 @@ dummy_group_palette <- c(
 )
 
 
+dummy_group_palette_extended <- c(
+  "cd_f"   = "#C9BFB4",
+  "cd_bf"  = "#0072B2",  
+  "cd_df"  = "#E69F00",
+  "cd_bdf" = "#7A0177",
+  "cd_b" = "forestgreen",
+  "cd_d" = "maroon",
+  "cd_bd" = "purple3"
+  
+)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Event study plot ----
@@ -101,8 +123,8 @@ plot_event_study <- function(agg_es,
                              vcov_id_filter      = NULL,
                              event_time_range    = c(-15, 20),
                              ref_period          = -6,
-                             palette             = dummy_group_palette,
-                             group_labels        = dummy_group_labels,
+                             palette             = dummy_group_palette_extended,
+                             group_labels        = dummy_group_labels_extended,
                              title               = NULL,
                              facet_by_dummy      = TRUE,
                              facet               = NULL,
@@ -925,71 +947,115 @@ nfg_subsets <- agg_es_tbl |>
   pull(subset_id) |>
   unique()
 
-# ecor_subsets <- agg_es_tbl |>
-#   filter(grepl("ecor_", subset_id)) |>
-#   pull(subset_id) |>
-#   unique()
 
+nfg_plot_combinations <- agg_es_tbl |>
+  dplyr::filter(
+    subset_id %in% nfg_subsets,
+    !is.na(model_id),
+    !is.na(group_id),
+    !is.na(outcome),
+    !is.na(vcov_id),
+    !is.na(subset_id)
+  ) |>
+  dplyr::distinct(
+    model_id,
+    group_id,
+    outcome,
+    vcov_id,
+    subset_id
+  )
 
-## event_study ----
-
-for(i in nfg_subsets) {
+#for(i in 1:1) {
+for(i in seq_len(nrow(nfg_plot_combinations))) {
+  
+  pars <- plot_combinations[i, ]
+  
+  dir_figs_nfg <- here(
+    dir_figs,
+    pars$model_id,
+    pars$group_id,
+    pars$outcome,
+    pars$vcov_id,
+    "nfg"
+  )
+  
+  dir_ensure(dir_figs_nfg)
+  
+  # Normal event study
   p <- plot_event_study(
     agg_es           = agg_es_tbl,
-    subset_id_filter = i,
-    outcome_filter   = "rap_tree",
-    group_id_filter  = "threeyr_b90global_pdsisum90global",
-    model_id_filter  = "sunab_twfe_glm_ato_topoclimnfgrap_3yr",
-    vcov_id_filter   = "conley_75km_5km",
+    subset_id_filter = pars$subset_id,
+    outcome_filter   = pars$outcome,
+    group_id_filter  = pars$group_id,
+    model_id_filter  = pars$model_id,
+    vcov_id_filter   = pars$vcov_id,
     support          = support,
+    facet_by_dummy   = FALSE,
     #min_n_events     = 3,
-    #min_n_points     = 20,
-    facet_by_dummy = FALSE,
-    title = glue(i, "3yr, glmatotopoclimnfg, conley")
-  ) + xlim(-10, 20)
+    min_n_points     = 20,
+    title = glue::glue(
+      "{pars$model_id}: {pars$group_id}\n",
+      "{pars$subset_id}\n",
+      "{pars$outcome}-{pars$vcov_id}"
+    )
+  ) +
+    coord_cartesian(xlim = c(-10, 20))
   
-  ggsave(plot = p, filename = here(dir_figs_nfg, glue("event_study_", i, "3yr.png")))
+  ggsave(
+    plot = p,
+    filename = here(
+      dir_figs_nfg,
+      glue::glue("event_study_{pars$subset_id}_.png")
+    )
+  )
+  
+  # Time-split event study
+  p_timesplit <- plot_event_study(
+    agg_es           = agg_es_tbl_timesplit,
+    subset_id_filter = pars$subset_id,
+    outcome_filter   = pars$outcome,
+    group_id_filter  = pars$group_id,
+    model_id_filter  = pars$model_id,
+    vcov_id_filter   = pars$vcov_id,
+    support          = support,
+    facet_by_dummy   = FALSE,
+    #min_n_events     = 3,
+    min_n_points     = 20,
+    title = glue::glue(
+      "{pars$model_id}: {pars$group_id}\n",
+      "{pars$subset_id}\n",
+      "{pars$outcome}-{pars$vcov_id}"
+    )
+  ) +
+    coord_cartesian(xlim = c(-10, 20)) +
+    facet_wrap(~cohort_bin)
+
+  ggsave(
+    plot = p_timesplit,
+    filename = here(
+      dir_figs_nfg,
+      glue::glue("timesplit_event_study_{pars$subset_id}_.png")
+    )
+  )
+  
+  
+  # print(p)
+  # print(p_timesplit)
+  
 }
 
 
-
-for(i in nfg_subsets) {
-  p <- plot_event_study(
-    agg_es           = agg_es_tbl,
-    subset_id_filter = i,
-    outcome_filter   = "rap_tree",
-    group_id_filter  = "sixyr_b90global_pdsisum90global",
-    model_id_filter  = "sunab_twfe_glm_ato_topoclimnfgrap_6yr",
-    vcov_id_filter   = "conley_75km_5km",
-    support          = support,
-    #min_n_events     = 3,
-    #min_n_points     = 20,
-    facet_by_dummy = FALSE,
-    title = glue(i, "6yr, glmatotopoclimnfg, conley")
-  ) + xlim(-20, 20)
-  
-  ggsave(plot = p, filename = here(dir_figs_nfg, glue("event_study_", i, "6yr.png")))
-}
+xx <- agg_es_tbl |>
+  filter(outcome == "rap_tree",
+         subset_id == "nfg_lodgepole_pine",
+         group_id == "threeyr_b90global_pdsisum90global_extended_strict",
+         model_id == "sunab_twfe_glm_ato_topoclimnfgrap_3yr_extended",
+         vcov_id == "conley_75km_5km")
 
 
 
-# for(i in ecor_subsets) {
-#   plot_event_study(
-#     agg_es           = agg_es_tbl,
-#     subset_id_filter = i,
-#     outcome_filter   = "rap_tree",
-#     group_id_filter  = "b10_pdsisumn10",
-#     model_id_filter  = "sunab_twfe_glmatotopoclimnfg",
-#     vcov_id_filter   = "conley_75km_5km",
-#     support          = support,
-#     min_n_events     = 3,
-#     min_n_points     = 20,
-#     facet_by_dummy = FALSE,
-#     title = glue(i, " glmatotopoclimnfg, conley")
-#   ) + xlim(-10, 20)
-#   
-#   ggsave(here(dir_figs_ecor, glue("event_study_", i, ".png")))
-# }
+
+
 
 
 
