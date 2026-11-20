@@ -1410,8 +1410,8 @@ wald_compare_att_normalized <- function(agg_obj, group_a, group_b, years,
     se       = se,
     z        = z,
     p        = p,
-    ci_lo    = est - crit * se,
-    ci_hi    = est + crit * se
+    ci_lower    = est - crit * se,
+    ci_upper    = est + crit * se
   )
 }
 
@@ -1456,8 +1456,8 @@ wald_compare_att_multi <- function(agg_obj, group_a, group_b, group_c, years,
     se       = se,
     z        = z,
     p        = p,
-    ci_lo    = est - crit * se,
-    ci_hi    = est + crit * se
+    ci_lower    = est - crit * se,
+    ci_upper    = est + crit * se
   )
 }
 

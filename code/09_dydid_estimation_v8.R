@@ -104,13 +104,18 @@ dir_parquet_short <- file.path(dir_data, "parquet_short")
 
 dir_ensure_local(c(dir_data, dir_parquet_long, dir_raw, dir_manual, dir_results, dir_figs))
 
-#x <- arrow::open_dataset(dir_parquet_long) |> collect()
-#xx <- x[1:300,]
-# summary <- x |> group_by(nfg_factor_clean) |> summarize(n = n())
-# length(unique(x$pt_id))
+# x <- arrow::open_dataset(dir_parquet_long) |> collect()
 # 
-#x_s <- arrow::open_dataset(dir_parquet_short) |> collect()
-# summary_s <- x_s |> group_by(nfg_factor_clean, fire) |> summarize(n = n())
+# typ_counts <- x |>
+#   count(nfg_factor_clean)
+# 
+# typ_counts_filt <- x |>
+#   filter(fire == 0 | 
+#            (fire == 1 & analysis_subset %in% 1:15)) |>
+#   count(nfg_factor_clean)
+
+unique(x$year)
+
 
 analysis_portion <- c(1:15)
 
@@ -191,7 +196,7 @@ dataset_spec <- make_dataset_spec(
 extended_dataset_spec <- make_dataset_spec(
   unit_id    = "pt_id",
   time_var   = "year",
-  trt_col    = "extended_treat",
+  trt_col    = "ext_treat",
   cohort_var = "FirstTreat",
   event_id   = NA_character_ #pass NA_character_ to get NAs for event_time_support instead of error if needed
 )
@@ -493,7 +498,7 @@ set_cd_groups_extended_strict <- function(df,
       dplyr::mutate(
         treated        = dplyr::if_else(year_from_fire_index >= 0 & 
                                           .data[[group_col]] %in% level_names, 1L, 0L),
-        extended_treat = dplyr::if_else(.data[[group_col]] %in% level_names, 1L, 0L),
+        ext_treat = dplyr::if_else(.data[[group_col]] %in% level_names, 1L, 0L),
         FirstTreat     = dplyr::if_else(.data[[group_col]] %in% level_names, 
                                         as.integer(mock_burn_year), 1000L)
       )
@@ -518,8 +523,8 @@ set_cd_groups_extended_strict <- function(df,
 
 sixyr_treatment_group_specs <- dplyr::bind_rows(
   make_treatment_group_spec(
-    group_id   = "sixyr_b90global_pdsisum90global",
-    group_col  = "sixyr_b90global_pdsisum90global",
+    group_id   = "sixyr_b90d90",
+    group_col  = "sixyr_b90d90",
     dummy_cols = c("cd_f", "cd_bf", "cd_df", "cd_bdf"),
     group_fun  = set_cd_groups,
     group_args = list(
@@ -533,8 +538,8 @@ sixyr_treatment_group_specs <- dplyr::bind_rows(
 
 threeyr_treatment_group_specs <- dplyr::bind_rows(
   make_treatment_group_spec(
-    group_id   = "threeyr_b90global_pdsisum90global",
-    group_col  = "threeyr_b90global_pdsisum90global",
+    group_id   = "threeyr_b90d90",
+    group_col  = "threeyr_b90d90",
     dummy_cols = c("cd_f", "cd_bf", "cd_df", "cd_bdf"),
     group_fun  = set_cd_groups,
     group_args = list(
@@ -550,8 +555,8 @@ threeyr_treatment_group_specs <- dplyr::bind_rows(
 # extended definitions
 sixyr_treatment_group_specs_extended_strict <- dplyr::bind_rows(
   make_treatment_group_spec(
-    group_id   = "sixyr_b90global_pdsisum90global_extended_strict",
-    group_col  = "sixyr_b90global_pdsisum90global_extended_strict",
+    group_id   = "sixyr_b90d90_extstr",
+    group_col  = "sixyr_b90d90_extstr",
     dummy_cols = c("cd_f", "cd_bf", "cd_df", "cd_bdf", "cd_bd", "cd_b", "cd_d"),
     group_fun  = set_cd_groups_extended_strict ,
     group_args = list(
@@ -567,8 +572,8 @@ sixyr_treatment_group_specs_extended_strict <- dplyr::bind_rows(
 
 threeyr_treatment_group_specs_extended_strict <- dplyr::bind_rows(
   make_treatment_group_spec(
-    group_id   = "threeyr_b90global_pdsisum90global_extended_strict",
-    group_col  = "threeyr_b90global_pdsisum90global_extended_strict",
+    group_id   = "threeyr_b90d90_extstr",
+    group_col  = "threeyr_b90d90_extstr",
     dummy_cols = c("cd_f", "cd_bf", "cd_df", "cd_bdf", "cd_bd", "cd_b", "cd_d"),
     group_fun  = set_cd_groups_extended_strict ,
     group_args = list(
@@ -675,7 +680,7 @@ sunab_formula_3yr_extended <- paste0(
 sixyr_model_specs <- dplyr::bind_rows(
 
   make_model_spec(
-    model_id         = "sunab_twfe_unweighted_6yr",
+    model_id         = "sunab_unweighted_6yr",
     formula_template = sunab_formula_6yr,
     estimator_type   = "sunab",
     term_pattern     = "^year::",
@@ -684,7 +689,7 @@ sixyr_model_specs <- dplyr::bind_rows(
   ),
 
   make_model_spec(
-    model_id         = "sunab_twfe_glm_ato_topoclimnfgrap_6yr",
+    model_id         = "sunab_glm_ato_topoclimnfgrap_6yr",
     formula_template = sunab_formula_6yr,
     estimator_type   = "sunab",
     term_pattern     = "^year::",
@@ -697,7 +702,7 @@ sixyr_model_specs <- dplyr::bind_rows(
 threeyr_model_specs <- dplyr::bind_rows(
   
   make_model_spec(
-    model_id         = "sunab_twfe_unweighted_3yr",
+    model_id         = "sunab_unweighted_3yr",
     formula_template = sunab_formula_3yr,
     estimator_type   = "sunab",
     term_pattern     = "^year::",
@@ -706,7 +711,7 @@ threeyr_model_specs <- dplyr::bind_rows(
   ),
   
   make_model_spec(
-    model_id         = "sunab_twfe_glm_ato_topoclimnfgrap_3yr",
+    model_id         = "sunab_glm_ato_topoclimnfgrap_3yr",
     formula_template = sunab_formula_3yr,
     estimator_type   = "sunab",
     term_pattern     = "^year::",
@@ -723,7 +728,7 @@ threeyr_model_specs <- dplyr::bind_rows(
 sixyr_model_specs_extended <- dplyr::bind_rows(
   
   make_model_spec(
-    model_id         = "sunab_twfe_unweighted_6yr_extended",
+    model_id         = "sunab_unweighted_6yr_ext",
     formula_template = sunab_formula_6yr_extended,
     estimator_type   = "sunab",
     term_pattern     = "^year::",
@@ -732,7 +737,7 @@ sixyr_model_specs_extended <- dplyr::bind_rows(
   ),
   
   make_model_spec(
-    model_id         = "sunab_twfe_glm_ato_topoclimnfgrap_6yr_extended",
+    model_id         = "sunab_glm_ato_topoclimnfgrap_6yr_ext",
     formula_template = sunab_formula_6yr_extended,
     estimator_type   = "sunab",
     term_pattern     = "^year::",
@@ -745,7 +750,7 @@ sixyr_model_specs_extended <- dplyr::bind_rows(
 threeyr_model_specs_extended <- dplyr::bind_rows(
   
   make_model_spec(
-    model_id         = "sunab_twfe_unweighted_3yr_extended",
+    model_id         = "sunab_unweighted_3yr_ext",
     formula_template = sunab_formula_3yr_extended,
     estimator_type   = "sunab",
     term_pattern     = "^year::",
@@ -754,7 +759,7 @@ threeyr_model_specs_extended <- dplyr::bind_rows(
   ),
   
   make_model_spec(
-    model_id         = "sunab_twfe_glm_ato_topoclimnfgrap_3yr_extended",
+    model_id         = "sunab_glm_ato_topoclimnfgrap_3yr_ext",
     formula_template = sunab_formula_3yr_extended,
     estimator_type   = "sunab",
     term_pattern     = "^year::",
