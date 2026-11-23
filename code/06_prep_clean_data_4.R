@@ -1,9 +1,3 @@
-# This code takes data exported from GDrive and prepares it for analyses
-
-
-# The code requires the following source files:
-# utils/functions.R
-# code/clean_prep_functions_v4.R
 
 
 # 5.6 hours in series locally; much faster on Exosphere :) 
@@ -41,7 +35,7 @@ install_load_packages(c(
   "data.table"))
 
 set.seed(1234)
-gdrive_folder <- "GEE_resilience_v9_operational_ss500_ts50000"
+gdrive_folder <- "GEE_resilience_v6_operational_ss500_ts50000"
 
 dir_derived <- here::here('data', 'derived', gdrive_folder)
 dir_raw <- here::here('data', 'raw')
@@ -276,19 +270,8 @@ process_ecoregion <- function(l3, parquet_path, out_dir, utils_path, clean_prep_
 
 # Use functions ----
 
-
-# create parquet if not created yet
+# Started 5:24pm
 parquet_path <- file.path(dir_derived, "merged_dats_raw.parquet")
-if(!file.exists(parquet_path)) {
-  all_files <- list.files(dir_derived, full.names = TRUE, pattern = ".csv")
-  files_with_data <- all_files[fs::file_size(all_files) > 2]
-  all_dats <- lapply(files_with_data, fread) |>
-    bind_rows()
-  
-  arrow::write_parquet(x = all_dats, sink = here(dir_derived, "merged_dats_raw.parquet"))
-  write_csv(x = all_dats, file = here(dir_derived, "merged_dats_raw.csv"))
-}
-
 
 dir_ensure(c(
   file.path(dir_derived, "parquet_short"),
