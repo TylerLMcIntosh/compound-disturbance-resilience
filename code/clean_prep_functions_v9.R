@@ -131,12 +131,13 @@ basic_prep_fire <- function(dats) {
   
   #Clean up factors & years as integers 
   dats <- dats |>
-    mutate(frg_reclass_desc = case_when(frg_reclass == 1 ~ "<35 return, low/mixed",
-                                        frg_reclass == 2 ~ "<35 return, replacement",
-                                        frg_reclass == 3 ~ "35-200 return, low/mixed",
-                                        frg_reclass == 4 ~ "35-200 return replacement",
-                                        frg_reclass == 5 ~ ">200 return any"),
-           frg_reclass_desc = as.factor(frg_reclass_desc),
+    mutate(
+      # frg_reclass_desc = case_when(frg_reclass == 1 ~ "<35 return, low/mixed",
+      #                                   frg_reclass == 2 ~ "<35 return, replacement",
+      #                                   frg_reclass == 3 ~ "35-200 return, low/mixed",
+      #                                   frg_reclass == 4 ~ "35-200 return replacement",
+      #                                   frg_reclass == 5 ~ ">200 return any"),
+      #      frg_reclass_desc = as.factor(frg_reclass_desc),
            burn_sev = factor(
              burn_sev,
              levels = c("Never", "Negligible", "Low", "Moderate", "High")
